@@ -2,11 +2,12 @@
   "State management for hyper applications.
 
    Manages session and tab-scoped state using atoms and cursors.
-   Cursors implement IRef for familiar Clojure semantics.")
+   Cursors implement IRef for familiar Clojure semantics.
 
-;; Global state stores
-(defonce session-states (atom {})) ;; {session-id atom}
-(defonce tab-states (atom {}))     ;; {tab-id atom}
+   State structure:
+   {:sessions {session-id {:data {} :tabs #{tab-id}}}
+    :tabs {tab-id {:data {} :session-id session-id :render-fn fn :sse-channel ch}}
+    :actions {action-id {:fn fn :session-id sid :tab-id tid}}}")
 
 (defn normalize-path
   "Convert keyword or vector to vector path."
@@ -15,28 +16,10 @@
     [path]
     (vec path)))
 
-(defn get-or-create-session-state!
-  "Get or create an atom for the given session-id."
-  [session-id]
-  (if-let [state-atom (get @session-states session-id)]
-    state-atom
-    (let [new-atom (atom {})]
-      (swap! session-states assoc session-id new-atom)
-      new-atom)))
-
-(defn get-or-create-tab-state!
-  "Get or create an atom for the given tab-id."
-  [tab-id]
-  (if-let [state-atom (get @tab-states tab-id)]
-    state-atom
-    (let [new-atom (atom {})]
-      (swap! tab-states assoc tab-id new-atom)
-      new-atom)))
-
-(deftype Cursor [parent-atom path meta-data ^:volatile-mutable validator watches]
+(deftype Cursor [parent-atom path-prefix path meta-data ^:volatile-mutable validator watches]
   clojure.lang.IRef
   (deref [_]
-    (get-in @parent-atom (normalize-path path)))
+    (get-in @parent-atom (concat path-prefix (normalize-path path))))
 
   (setValidator [_ vf]
     (set! validator vf))
@@ -49,12 +32,13 @@
 
   (addWatch [this key callback]
     (swap! watches assoc key callback)
-    (add-watch parent-atom key
-               (fn [k _r old-state new-state]
-                 (let [old-val (get-in old-state (normalize-path path))
-                       new-val (get-in new-state (normalize-path path))]
-                   (when (not= old-val new-val)
-                     (callback k this old-val new-val)))))
+    (let [full-path (concat path-prefix (normalize-path path))]
+      (add-watch parent-atom key
+                 (fn [k _r old-state new-state]
+                   (let [old-val (get-in old-state full-path)
+                         new-val (get-in new-state full-path)]
+                     (when (not= old-val new-val)
+                       (callback k this old-val new-val))))))
     this)
 
   (removeWatch [_this key]
@@ -64,41 +48,41 @@
 
   clojure.lang.IAtom
   (swap [_this f]
-    (let [normalized-path (normalize-path path)]
-      (swap! parent-atom update-in normalized-path f)
-      (get-in @parent-atom normalized-path)))
+    (let [full-path (concat path-prefix (normalize-path path))]
+      (swap! parent-atom update-in full-path f)
+      (get-in @parent-atom full-path)))
 
   (swap [_this f arg]
-    (let [normalized-path (normalize-path path)]
-      (swap! parent-atom update-in normalized-path f arg)
-      (get-in @parent-atom normalized-path)))
+    (let [full-path (concat path-prefix (normalize-path path))]
+      (swap! parent-atom update-in full-path f arg)
+      (get-in @parent-atom full-path)))
 
   (swap [_this f arg1 arg2]
-    (let [normalized-path (normalize-path path)]
-      (swap! parent-atom update-in normalized-path f arg1 arg2)
-      (get-in @parent-atom normalized-path)))
+    (let [full-path (concat path-prefix (normalize-path path))]
+      (swap! parent-atom update-in full-path f arg1 arg2)
+      (get-in @parent-atom full-path)))
 
   (swap [_this f arg1 arg2 args]
-    (let [normalized-path (normalize-path path)]
-      (apply swap! parent-atom update-in normalized-path f arg1 arg2 args)
-      (get-in @parent-atom normalized-path)))
+    (let [full-path (concat path-prefix (normalize-path path))]
+      (apply swap! parent-atom update-in full-path f arg1 arg2 args)
+      (get-in @parent-atom full-path)))
 
   (compareAndSet [_ oldv newv]
-    (let [normalized-path (normalize-path path)]
+    (let [full-path (concat path-prefix (normalize-path path))]
       (loop []
         (let [current-state @parent-atom
-              current-val (get-in current-state normalized-path)]
+              current-val (get-in current-state full-path)]
           (if (= current-val oldv)
             (if (compare-and-set! parent-atom
                                   current-state
-                                  (assoc-in current-state normalized-path newv))
+                                  (assoc-in current-state full-path newv))
               true
               (recur))
             false)))))
 
   (reset [_this newv]
-    (let [normalized-path (normalize-path path)]
-      (swap! parent-atom assoc-in normalized-path newv)
+    (let [full-path (concat path-prefix (normalize-path path))]
+      (swap! parent-atom assoc-in full-path newv)
       newv))
 
   clojure.lang.IMeta
@@ -112,43 +96,64 @@
     (reset! meta-data m)))
 
 (defn create-cursor
-  "Create a cursor pointing to a path in the parent atom."
-  [parent-atom path]
-  (->Cursor parent-atom path (atom {}) nil (atom {})))
+  "Create a cursor pointing to a path in the parent atom.
+   path-prefix is the base path, path is relative to that."
+  [parent-atom path-prefix path]
+  (->Cursor parent-atom path-prefix path (atom {}) nil (atom {})))
 
 (defn session-cursor
-  "Create a cursor to session state at the given path.
-   Requires session-id in the request context."
-  [session-id path]
-  (let [state-atom (get-or-create-session-state! session-id)]
-    (create-cursor state-atom path)))
+  "Create a cursor to session state at the given path."
+  [app-state* session-id path]
+  (create-cursor app-state* [:sessions session-id :data] path))
 
 (defn tab-cursor
-  "Create a cursor to tab state at the given path.
-   Requires tab-id in the request context."
-  [tab-id path]
-  (let [state-atom (get-or-create-tab-state! tab-id)]
-    (create-cursor state-atom path)))
+  "Create a cursor to tab state at the given path."
+  [app-state* tab-id path]
+  (create-cursor app-state* [:tabs tab-id :data] path))
 
-(defn get-session-atom
-  "Get the atom for a session (for internal use, e.g., watchers)."
-  [session-id]
-  (get @session-states session-id))
+(defn init-state
+  "Create initial app state structure."
+  []
+  {:sessions {}
+   :tabs {}
+   :actions {}})
 
-(defn get-tab-atom
-  "Get the atom for a tab (for internal use, e.g., watchers)."
-  [tab-id]
-  (get @tab-states tab-id))
+(defn get-or-create-session!
+  "Ensure session exists in app-state."
+  [app-state* session-id]
+  (swap! app-state* update-in [:sessions session-id]
+         #(or % {:data {} :tabs #{}}))
+  nil)
 
-(defn cleanup-session!
-  "Remove session state and all associated tabs."
-  [session-id]
-  (swap! session-states dissoc session-id)
-  ;; Note: tab cleanup will be handled separately
+(defn get-or-create-tab!
+  "Ensure tab exists in app-state and is linked to session."
+  [app-state* session-id tab-id]
+  (get-or-create-session! app-state* session-id)
+  (swap! app-state* (fn [state]
+                      (-> state
+                          (update-in [:sessions session-id :tabs] (fnil conj #{}) tab-id)
+                          (update-in [:tabs tab-id]
+                                     #(or % {:data {}
+                                            :session-id session-id
+                                            :render-fn nil
+                                            :sse-channel nil})))))
   nil)
 
 (defn cleanup-tab!
-  "Remove tab state."
-  [tab-id]
-  (swap! tab-states dissoc tab-id)
+  "Remove tab state and unlink from session."
+  [app-state* tab-id]
+  (let [session-id (get-in @app-state* [:tabs tab-id :session-id])]
+    (swap! app-state* (fn [state]
+                        (-> state
+                            (update-in [:sessions session-id :tabs] disj tab-id)
+                            (update :tabs dissoc tab-id)))))
+  nil)
+
+(defn cleanup-session!
+  "Remove session state and all associated tabs."
+  [app-state* session-id]
+  (let [tab-ids (get-in @app-state* [:sessions session-id :tabs])]
+    (doseq [tab-id tab-ids]
+      (cleanup-tab! app-state* tab-id))
+    (swap! app-state* update :sessions dissoc session-id))
   nil)

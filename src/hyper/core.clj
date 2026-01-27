@@ -4,10 +4,14 @@
    Provides:
    - session-cursor and tab-cursor for state management
    - action macro for handling user interactions
-   - start! and stop! for server lifecycle"
+   - navigate function for SPA navigation
+   - create-handler for building ring handlers"
   (:require [hyper.state :as state]
             [hyper.actions :as actions]
-            [hyper.server :as server]))
+            [hyper.server :as server]
+            [reitit.core :as reitit]
+            [reitit.ring :as ring]
+            [clojure.string]))
 
 ;; Dynamic var to hold current request context
 (def ^:dynamic *request* nil)
@@ -22,10 +26,13 @@
   [path]
   (when-not *request*
     (throw (ex-info "session-cursor called outside request context" {})))
-  (let [session-id (get *request* :hyper/session-id)]
+  (let [session-id (get *request* :hyper/session-id)
+        app-state* (get *request* :hyper/app-state)]
     (when-not session-id
       (throw (ex-info "No session-id in request" {:request *request*})))
-    (state/session-cursor session-id path)))
+    (when-not app-state*
+      (throw (ex-info "No app-state in request" {:request *request*})))
+    (state/session-cursor app-state* session-id path)))
 
 (defn tab-cursor
   "Create a cursor to tab state at the given path.
@@ -37,10 +44,13 @@
   [path]
   (when-not *request*
     (throw (ex-info "tab-cursor called outside request context" {})))
-  (let [tab-id (get *request* :hyper/tab-id)]
+  (let [tab-id (get *request* :hyper/tab-id)
+        app-state* (get *request* :hyper/app-state)]
     (when-not tab-id
       (throw (ex-info "No tab-id in request" {:request *request*})))
-    (state/tab-cursor tab-id path)))
+    (when-not app-state*
+      (throw (ex-info "No app-state in request" {:request *request*})))
+    (state/tab-cursor app-state* tab-id path)))
 
 (defmacro action
   "Create an action that executes the given body when triggered.
@@ -54,36 +64,93 @@
       \"Increment\"]"
   [& body]
   `(let [session-id# (get *request* :hyper/session-id)
-         tab-id# (get *request* :hyper/tab-id)]
+         tab-id# (get *request* :hyper/tab-id)
+         app-state*# (get *request* :hyper/app-state)]
      (when-not session-id#
        (throw (ex-info "action macro called outside request context" {})))
      (when-not tab-id#
        (throw (ex-info "No tab-id in request context" {})))
+     (when-not app-state*#
+       (throw (ex-info "No app-state in request context" {})))
 
      (let [action-fn# (fn []
                         (binding [*request* {:hyper/session-id session-id#
-                                            :hyper/tab-id tab-id#}]
+                                            :hyper/tab-id tab-id#
+                                            :hyper/app-state app-state*#}]
                           ~@body))
-           action-id# (actions/register-action! session-id# tab-id# action-fn#)]
+           action-id# (actions/register-action! app-state*# session-id# tab-id# action-fn#)]
        {:data-on-click (str "$$post('/hyper/actions?action-id=" action-id# "')")})))
+
+(defn navigate
+  "Create a navigation action using reitit named routes.
+   Returns a map with :data-on-click attribute for Datastar.
+
+   routes: Vector of reitit routes (or router instance)
+   route-name: Keyword name of the route
+   params: Optional map of path/query parameters
+
+   Example:
+     [:a (navigate routes :home) \"Go Home\"]
+     [:a (navigate routes :user-profile {:id \"123\"}) \"View User\"]"
+  ([routes route-name]
+   (navigate routes route-name {}))
+  ([routes route-name params]
+   (let [router (if (vector? routes)
+                  (ring/router routes)
+                  routes)]
+     (when-let [path (:path (reitit/match-by-name router route-name params))]
+       {:data-on-click (str "$$get('" path "'); window.history.pushState({}, '', '" path "')")}))))
+
+(defn navigate-url
+  "Create a navigation action to a URL.
+   Returns a map with :data-on-click attribute for Datastar.
+
+   Example:
+     [:a (navigate-url \"/about\") \"About\"]"
+  [url]
+  {:data-on-click (str "$$get('" url "'); window.history.pushState({}, '', '" url "')")})
+
+(defn create-handler
+  "Create a Ring handler for a hyper application.
+
+   routes: Vector of reitit routes (using route names for navigation)
+   app-state*: Optional atom for application state (creates new one if not provided)
+
+   Example:
+     (def routes
+       [[\"/\" {:name :home
+               :get (fn [req] [:div [:h1 \"Home\"]])}]
+        [\"/about\" {:name :about
+                    :get (fn [req] [:div [:h1 \"About\"]])}]])
+
+     (def handler (create-handler routes))
+     (def server (start! handler {:port 3000}))"
+  ([routes]
+   (create-handler routes (atom (state/init-state))))
+  ([routes app-state*]
+   (server/create-handler routes app-state* #'*request*)))
 
 (defn start!
   "Start the hyper application server.
 
-   Options:
-   - :render-fn - Function that takes request and returns hiccup (required)
+   handler: Ring handler created with create-handler
+   options:
    - :port - Port to run server on (default: 3000)
 
-   Example:
-     (start! {:render-fn my-view
-              :port 3000})"
-  [{:keys [render-fn port] :or {port 3000}}]
-  (when-not render-fn
-    (throw (ex-info "render-fn is required" {})))
+   Returns server instance. Call (stop! server) to stop.
 
-  (server/start-server! render-fn {:port port}))
+   Example:
+     (def router ...)
+     (def handler (create-handler router))
+     (def server (start! handler {:port 3000}))
+     ;; Later...
+     (stop! server)"
+  [handler {:keys [port] :or {port 3000}}]
+  (server/start! handler {:port port}))
 
 (defn stop!
-  "Stop the hyper application server."
-  []
-  (server/stop-server!))
+  "Stop the hyper application server.
+
+   server: Server instance returned from start!"
+  [server]
+  (server/stop! server))

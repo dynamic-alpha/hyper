@@ -1,58 +1,34 @@
 (ns hyper.actions
-  "Action system for handling user interactions.
+  "Action handling for hyper applications.
 
-   Actions are anonymous functions registered with unique IDs.
-   They are invoked via POST requests from the client.")
-
-;; Action registry: {session-id {action-id {:fn f :session-id sid :tab-id tid}}}
-(defonce actions (atom {}))
-
-(defn generate-action-id
-  "Generate a unique action ID."
-  []
-  (str (java.util.UUID/randomUUID)))
+   Actions are server-side functions triggered by client interactions.")
 
 (defn register-action!
-  "Register an action function with session and tab context.
-   Returns the action-id."
-  [session-id tab-id action-fn]
-  (let [action-id (generate-action-id)
-        action-data {:fn action-fn
-                     :session-id session-id
-                     :tab-id tab-id}]
-    (swap! actions assoc-in [session-id action-id] action-data)
+  "Register an action function and return its ID.
+   Stores in app-state under [:actions action-id]."
+  [app-state* session-id tab-id action-fn]
+  (let [action-id (str "action-" (java.util.UUID/randomUUID))]
+    (swap! app-state* assoc-in [:actions action-id]
+           {:fn action-fn
+            :session-id session-id
+            :tab-id tab-id})
     action-id))
 
-(defn get-action
-  "Get an action by session-id and action-id."
-  [session-id action-id]
-  (get-in @actions [session-id action-id]))
-
 (defn execute-action!
-  "Execute an action by looking it up and invoking it.
-   Returns the result of the action function."
-  [session-id action-id]
-  (if-let [action-data (get-action session-id action-id)]
+  "Execute an action by ID."
+  [app-state* action-id]
+  (if-let [action-data (get-in @app-state* [:actions action-id])]
     (let [{:keys [fn]} action-data]
-      ;; The action function will be invoked with *request* bound
-      ;; in the calling context
-      (fn))
-    (throw (ex-info "Action not found"
-                    {:session-id session-id
-                     :action-id action-id}))))
+      (fn)
+      true)
+    (throw (ex-info "Action not found" {:action-id action-id}))))
 
-(defn cleanup-session-actions!
-  "Remove all actions for a session."
-  [session-id]
-  (swap! actions dissoc session-id)
+(defn cleanup-tab-actions!
+  "Remove all actions for a tab."
+  [app-state* tab-id]
+  (swap! app-state* update :actions
+         (fn [actions]
+           (into {}
+                 (remove (fn [[_k v]] (= (:tab-id v) tab-id))
+                         actions))))
   nil)
-
-(defn get-session-actions
-  "Get all actions for a session (for debugging/inspection)."
-  [session-id]
-  (get @actions session-id))
-
-(defn action-count
-  "Get total number of registered actions (for debugging)."
-  []
-  (reduce + (map (comp count val) @actions)))

@@ -12,155 +12,175 @@
   (testing "handles single keyword"
     (is (= [:count] (state/normalize-path :count)))))
 
-(deftest session-state-test
-  (testing "creates new session state"
-    (let [session-id "test-session-1"
-          state-atom (state/get-or-create-session-state! session-id)]
-      (is (some? state-atom))
-      (is (= {} @state-atom))))
+(deftest init-state-test
+  (testing "creates initial state structure"
+    (let [state (state/init-state)]
+      (is (map? state))
+      (is (contains? state :sessions))
+      (is (contains? state :tabs))
+      (is (contains? state :actions))
+      (is (= {} (:sessions state)))
+      (is (= {} (:tabs state)))
+      (is (= {} (:actions state))))))
 
-  (testing "returns existing session state"
-    (let [session-id "test-session-2"
-          state-atom-1 (state/get-or-create-session-state! session-id)
-          _ (reset! state-atom-1 {:foo :bar})
-          state-atom-2 (state/get-or-create-session-state! session-id)]
-      (is (identical? state-atom-1 state-atom-2))
-      (is (= {:foo :bar} @state-atom-2)))))
+(deftest session-management-test
+  (testing "creates new session"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-1"]
+      (state/get-or-create-session! app-state* session-id)
+      (is (contains? (:sessions @app-state*) session-id))
+      (is (= {:data {} :tabs #{}}
+             (get-in @app-state* [:sessions session-id])))))
 
-(deftest tab-state-test
-  (testing "creates new tab state"
-    (let [tab-id "test-tab-1"
-          state-atom (state/get-or-create-tab-state! tab-id)]
-      (is (some? state-atom))
-      (is (= {} @state-atom))))
+  (testing "doesn't overwrite existing session"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-2"]
+      (state/get-or-create-session! app-state* session-id)
+      (swap! app-state* assoc-in [:sessions session-id :data :foo] :bar)
+      (state/get-or-create-session! app-state* session-id)
+      (is (= :bar (get-in @app-state* [:sessions session-id :data :foo]))))))
 
-  (testing "returns existing tab state"
-    (let [tab-id "test-tab-2"
-          state-atom-1 (state/get-or-create-tab-state! tab-id)
-          _ (reset! state-atom-1 {:count 5})
-          state-atom-2 (state/get-or-create-tab-state! tab-id)]
-      (is (identical? state-atom-1 state-atom-2))
-      (is (= {:count 5} @state-atom-2)))))
+(deftest tab-management-test
+  (testing "creates new tab and links to session"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-3"
+          tab-id "test-tab-1"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (is (contains? (:tabs @app-state*) tab-id))
+      (is (contains? (get-in @app-state* [:sessions session-id :tabs]) tab-id))
+      (is (= session-id (get-in @app-state* [:tabs tab-id :session-id])))))
+
+  (testing "doesn't overwrite existing tab data"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-4"
+          tab-id "test-tab-2"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (swap! app-state* assoc-in [:tabs tab-id :data :count] 42)
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (is (= 42 (get-in @app-state* [:tabs tab-id :data :count]))))))
 
 (deftest cursor-deref-test
   (testing "deref returns nil for missing path"
-    (let [cursor (state/session-cursor "test-session-3" :user)]
-      (is (nil? @cursor))))
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-5"]
+      (state/get-or-create-session! app-state* session-id)
+      (let [cursor (state/session-cursor app-state* session-id :user)]
+        (is (nil? @cursor)))))
 
   (testing "deref returns value at path"
-    (let [session-id "test-session-4"
-          cursor (state/session-cursor session-id :user)
-          _ (reset! cursor {:name "Alice"})]
-      (is (= {:name "Alice"} @cursor))))
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-6"]
+      (state/get-or-create-session! app-state* session-id)
+      (swap! app-state* assoc-in [:sessions session-id :data :user :name] "Alice")
+      (let [cursor (state/session-cursor app-state* session-id [:user :name])]
+        (is (= "Alice" @cursor)))))
 
-  (testing "deref works with nested paths"
-    (let [session-id "test-session-5"
-          user-cursor (state/session-cursor session-id :user)
-          name-cursor (state/session-cursor session-id [:user :name])
-          _ (reset! user-cursor {:name "Bob" :age 30})]
-      (is (= "Bob" @name-cursor)))))
+  (testing "deref with vector path"
+    (let [app-state* (atom (state/init-state))
+          tab-id "test-tab-3"
+          session-id "test-session-7"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (swap! app-state* assoc-in [:tabs tab-id :data :todos :list] [1 2 3])
+      (let [cursor (state/tab-cursor app-state* tab-id [:todos :list])]
+        (is (= [1 2 3] @cursor))))))
 
 (deftest cursor-reset-test
-  (testing "reset! updates cursor value"
-    (let [cursor (state/tab-cursor "test-tab-3" :count)]
-      (reset! cursor 10)
-      (is (= 10 @cursor))))
+  (testing "reset! sets value at cursor path"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-8"]
+      (state/get-or-create-session! app-state* session-id)
+      (let [cursor (state/session-cursor app-state* session-id :count)]
+        (reset! cursor 42)
+        (is (= 42 @cursor))
+        (is (= 42 (get-in @app-state* [:sessions session-id :data :count]))))))
 
-  (testing "reset! on nested path updates parent"
-    (let [session-id "test-session-6"
-          user-cursor (state/session-cursor session-id :user)
-          name-cursor (state/session-cursor session-id [:user :name])
-          _ (reset! user-cursor {:name "Alice" :email "alice@example.com"})]
-      (reset! name-cursor "Bob")
-      (is (= {:name "Bob" :email "alice@example.com"} @user-cursor)))))
+  (testing "reset! with nested path"
+    (let [app-state* (atom (state/init-state))
+          tab-id "test-tab-4"
+          session-id "test-session-9"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (let [cursor (state/tab-cursor app-state* tab-id [:user :email])]
+        (reset! cursor "test@example.com")
+        (is (= "test@example.com" @cursor))
+        (is (= "test@example.com" (get-in @app-state* [:tabs tab-id :data :user :email])))))))
 
 (deftest cursor-swap-test
-  (testing "swap! with 1-arity function"
-    (let [cursor (state/tab-cursor "test-tab-4" :count)]
-      (reset! cursor 0)
-      (swap! cursor inc)
-      (is (= 1 @cursor))))
+  (testing "swap! with single arg function"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-10"]
+      (state/get-or-create-session! app-state* session-id)
+      (let [cursor (state/session-cursor app-state* session-id :count)]
+        (reset! cursor 10)
+        (swap! cursor inc)
+        (is (= 11 @cursor))
+        (is (= 11 (get-in @app-state* [:sessions session-id :data :count]))))))
 
-  (testing "swap! with 2-arity function"
-    (let [cursor (state/tab-cursor "test-tab-5" :count)]
-      (reset! cursor 10)
-      (swap! cursor + 5)
-      (is (= 15 @cursor))))
+  (testing "swap! with function and args"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-11"]
+      (state/get-or-create-session! app-state* session-id)
+      (let [cursor (state/session-cursor app-state* session-id :count)]
+        (reset! cursor 5)
+        (swap! cursor + 10)
+        (is (= 15 @cursor))
+        (swap! cursor + 3 2)
+        (is (= 20 @cursor))))))
 
-  (testing "swap! with 3-arity function"
-    (let [cursor (state/tab-cursor "test-tab-6" :count)]
-      (reset! cursor 10)
-      (swap! cursor + 2 3)
-      (is (= 15 @cursor))))
+(deftest cursor-watch-test
+  (testing "cursor watchers fire on change"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-12"
+          watch-calls (atom [])]
+      (state/get-or-create-session! app-state* session-id)
+      (let [cursor (state/session-cursor app-state* session-id :count)]
+        (add-watch cursor :test-watch
+                   (fn [_k _r old-val new-val]
+                     (swap! watch-calls conj {:old old-val :new new-val})))
+        (reset! cursor 1)
+        (reset! cursor 2)
+        (Thread/sleep 10) ;; Give watch time to fire
+        (is (= 2 (count @watch-calls)))
+        (is (= nil (get-in @watch-calls [0 :old])))
+        (is (= 1 (get-in @watch-calls [0 :new])))
+        (is (= 1 (get-in @watch-calls [1 :old])))
+        (is (= 2 (get-in @watch-calls [1 :new]))))))
 
-  (testing "swap! with variadic function"
-    (let [cursor (state/tab-cursor "test-tab-7" :count)]
-      (reset! cursor 10)
-      (swap! cursor + 1 2 3 4)
-      (is (= 20 @cursor)))))
-
-(deftest cursor-watchers-test
-  (testing "watchers trigger on cursor changes"
-    (let [cursor (state/tab-cursor "test-tab-8" :count)
-          changes (atom [])]
-      (add-watch cursor :test-watch
-                 (fn [_k _ref old-val new-val]
-                   (swap! changes conj {:old old-val :new new-val})))
-      (reset! cursor 1)
-      (swap! cursor inc)
-      (is (= [{:old nil :new 1}
-              {:old 1 :new 2}]
-             @changes))))
-
-  (testing "watchers only trigger on specific path changes"
-    (let [session-id "test-session-7"
-          name-cursor (state/session-cursor session-id [:user :name])
-          age-cursor (state/session-cursor session-id [:user :age])
-          name-changes (atom [])
-          age-changes (atom [])]
-      (add-watch name-cursor :name-watch
-                 (fn [_k _ref old-val new-val]
-                   (swap! name-changes conj {:old old-val :new new-val})))
-      (add-watch age-cursor :age-watch
-                 (fn [_k _ref old-val new-val]
-                   (swap! age-changes conj {:old old-val :new new-val})))
-      ;; Change name - should only trigger name watcher
-      (reset! name-cursor "Alice")
-      ;; Change age - should only trigger age watcher
-      (reset! age-cursor 30)
-      (is (= [{:old nil :new "Alice"}] @name-changes))
-      (is (= [{:old nil :new 30}] @age-changes))))
-
-  (testing "remove-watch stops watcher notifications"
-    (let [cursor (state/tab-cursor "test-tab-9" :count)
-          changes (atom [])]
-      (add-watch cursor :test-watch
-                 (fn [_k _ref old-val new-val]
-                   (swap! changes conj {:old old-val :new new-val})))
-      (reset! cursor 1)
-      (remove-watch cursor :test-watch)
-      (reset! cursor 2)
-      ;; Only the first change should be recorded
-      (is (= [{:old nil :new 1}] @changes)))))
-
-(deftest cursor-iref-compliance-test
-  (testing "cursor implements IRef"
-    (let [cursor (state/tab-cursor "test-tab-10" :value)]
-      (is (instance? clojure.lang.IRef cursor))))
-
-  (testing "cursor implements IAtom"
-    (let [cursor (state/tab-cursor "test-tab-11" :value)]
-      (is (instance? clojure.lang.IAtom cursor)))))
+  (testing "cursor watchers can be removed"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-13"
+          watch-calls (atom 0)]
+      (state/get-or-create-session! app-state* session-id)
+      (let [cursor (state/session-cursor app-state* session-id :count)]
+        (add-watch cursor :test-watch
+                   (fn [_k _r _old _new] (swap! watch-calls inc)))
+        (reset! cursor 1)
+        (remove-watch cursor :test-watch)
+        (reset! cursor 2)
+        (Thread/sleep 10)
+        (is (= 1 @watch-calls)))))) ;; Only fired once
 
 (deftest cleanup-test
-  (testing "cleanup-session! removes session state"
-    (let [session-id "test-session-cleanup"
-          _ (state/get-or-create-session-state! session-id)
-          _ (state/cleanup-session! session-id)]
-      (is (nil? (state/get-session-atom session-id)))))
+  (testing "cleanup-tab! removes tab and unlinks from session"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-14"
+          tab-id "test-tab-5"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (is (contains? (:tabs @app-state*) tab-id))
+      (state/cleanup-tab! app-state* tab-id)
+      (is (not (contains? (:tabs @app-state*) tab-id)))
+      (is (not (contains? (get-in @app-state* [:sessions session-id :tabs]) tab-id)))))
 
-  (testing "cleanup-tab! removes tab state"
-    (let [tab-id "test-tab-cleanup"
-          _ (state/get-or-create-tab-state! tab-id)
-          _ (state/cleanup-tab! tab-id)]
-      (is (nil? (state/get-tab-atom tab-id))))))
+  (testing "cleanup-session! removes session and all tabs"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-15"
+          tab-id-1 "test-tab-6"
+          tab-id-2 "test-tab-7"]
+      (state/get-or-create-tab! app-state* session-id tab-id-1)
+      (state/get-or-create-tab! app-state* session-id tab-id-2)
+      (is (contains? (:sessions @app-state*) session-id))
+      (is (contains? (:tabs @app-state*) tab-id-1))
+      (is (contains? (:tabs @app-state*) tab-id-2))
+      (state/cleanup-session! app-state* session-id)
+      (is (not (contains? (:sessions @app-state*) session-id)))
+      (is (not (contains? (:tabs @app-state*) tab-id-1)))
+      (is (not (contains? (:tabs @app-state*) tab-id-2))))))

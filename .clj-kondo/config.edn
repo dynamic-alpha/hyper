@@ -1,0 +1,1 @@
+{:lint-as {hyper.core/defpage clojure.core/defn}}

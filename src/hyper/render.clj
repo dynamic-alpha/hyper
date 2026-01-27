@@ -4,52 +4,41 @@
    Handles rendering hiccup to HTML and sending updates via
    Server-Sent Events using Datastar fragment format."
   (:require [hiccup.core :as hiccup]
-            [hyper.state :as state]
             [org.httpkit.server :as http]))
-
-;; Forward declare to avoid circular dependency with hyper.core
-(declare ^:dynamic *request*)
-
-;; SSE channels: {tab-id channel}
-(defonce sse-channels (atom {}))
-
-;; Render function registry: {tab-id render-fn}
-(defonce render-fns (atom {}))
 
 (defn register-sse-channel!
   "Register an SSE channel for a tab."
-  [tab-id channel]
-  (swap! sse-channels assoc tab-id channel)
+  [app-state* tab-id channel]
+  (swap! app-state* assoc-in [:tabs tab-id :sse-channel] channel)
   nil)
 
 (defn unregister-sse-channel!
   "Unregister an SSE channel for a tab."
-  [tab-id]
-  (when-let [channel (get @sse-channels tab-id)]
-    ;; Close the channel if it has a close method
+  [app-state* tab-id]
+  (when-let [channel (get-in @app-state* [:tabs tab-id :sse-channel])]
     (when (and channel (instance? org.httpkit.server.AsyncChannel channel))
       (try
         (http/close channel)
         (catch Exception e
           (println "Error closing channel:" e)))))
-  (swap! sse-channels dissoc tab-id)
+  (swap! app-state* assoc-in [:tabs tab-id :sse-channel] nil)
   nil)
 
 (defn get-sse-channel
   "Get the SSE channel for a tab."
-  [tab-id]
-  (get @sse-channels tab-id))
+  [app-state* tab-id]
+  (get-in @app-state* [:tabs tab-id :sse-channel]))
 
 (defn register-render-fn!
   "Register a render function for a tab."
-  [tab-id render-fn]
-  (swap! render-fns assoc tab-id render-fn)
+  [app-state* tab-id render-fn]
+  (swap! app-state* assoc-in [:tabs tab-id :render-fn] render-fn)
   nil)
 
 (defn get-render-fn
   "Get the render function for a tab."
-  [tab-id]
-  (get @render-fns tab-id))
+  [app-state* tab-id]
+  (get-in @app-state* [:tabs tab-id :render-fn]))
 
 (defn format-datastar-fragment
   "Format HTML as a Datastar fragment event.
@@ -57,19 +46,17 @@
    Datastar expects Server-Sent Events in the format:
    event: datastar-fragment
    data: <html content>
-   data: more content if needed
 
    (blank line to end event)"
   [html selector]
-  (let [;; Datastar fragment format with merge strategy
-        fragment (str "fragment " html " " selector)]
+  (let [fragment (str "fragment " html " " selector)]
     (str "event: datastar-fragment\n"
          "data: " fragment "\n\n")))
 
 (defn send-sse!
   "Send an SSE message to a tab's channel."
-  [tab-id message]
-  (when-let [channel (get-sse-channel tab-id)]
+  [app-state* tab-id message]
+  (when-let [channel (get-sse-channel app-state* tab-id)]
     (try
       (http/send! channel message false)
       true
@@ -78,30 +65,19 @@
         false))))
 
 (defn render-and-send!
-  "Render the view for a tab and send it via SSE.
-
-   Constructs a request map with session and tab context,
-   calls the render function, converts to HTML, and sends
-   as a Datastar fragment."
-  [session-id tab-id]
-  (when-let [render-fn (get-render-fn tab-id)]
+  "Render the view for a tab and send it via SSE."
+  [app-state* session-id tab-id request-var]
+  (when-let [render-fn (get-render-fn app-state* tab-id)]
     (try
-      ;; Build request context
       (let [req {:hyper/session-id session-id
-                 :hyper/tab-id tab-id}
-            ;; Get the actual *request* var from hyper.core at runtime
-            request-var (requiring-resolve 'hyper.core/*request*)]
-        ;; Use push-thread-bindings to set dynamic var at runtime
+                 :hyper/tab-id tab-id
+                 :hyper/app-state app-state*}]
         (push-thread-bindings {request-var req})
         (try
-          ;; Call render function with request context
           (let [hiccup-result (render-fn req)
-                ;; Convert hiccup to HTML
                 html (hiccup/html hiccup-result)
-                ;; Format as Datastar fragment (replace entire body)
-                fragment (format-datastar-fragment html "body")]
-            ;; Send to client
-            (send-sse! tab-id fragment))
+                fragment (format-datastar-fragment html "body innerHTML")]
+            (send-sse! app-state* tab-id fragment))
           (finally
             (pop-thread-bindings))))
       (catch Exception e
@@ -109,54 +85,44 @@
         (.printStackTrace e)))))
 
 (defn setup-watchers!
-  "Setup watchers on session and tab state to trigger re-renders.
+  "Setup watchers on session and tab state to trigger re-renders."
+  [app-state* session-id tab-id request-var]
+  (let [watch-key (keyword (str "render-" tab-id))
+        session-path [:sessions session-id :data]
+        tab-path [:tabs tab-id :data]]
 
-   When state changes, re-render all connected tabs that use that state."
-  [session-id tab-id]
-  (let [watch-key (keyword (str "render-" tab-id))]
+    ;; Watch session data
+    (add-watch app-state* (keyword (str "session-" watch-key))
+               (fn [_k _r old-state new-state]
+                 (when (not= (get-in old-state session-path)
+                            (get-in new-state session-path))
+                   (future
+                     (render-and-send! app-state* session-id tab-id request-var)))))
 
-    ;; Watch session state
-    (when-let [session-atom (state/get-session-atom session-id)]
-      (add-watch session-atom watch-key
-                 (fn [_k _r old-state new-state]
-                   (when (not= old-state new-state)
-                     (future
-                       (render-and-send! session-id tab-id))))))
-
-    ;; Watch tab state
-    (when-let [tab-atom (state/get-tab-atom tab-id)]
-      (add-watch tab-atom watch-key
-                 (fn [_k _r old-state new-state]
-                   (when (not= old-state new-state)
-                     (future
-                       (render-and-send! session-id tab-id)))))))
+    ;; Watch tab data
+    (add-watch app-state* (keyword (str "tab-" watch-key))
+               (fn [_k _r old-state new-state]
+                 (when (not= (get-in old-state tab-path)
+                            (get-in new-state tab-path))
+                   (future
+                     (render-and-send! app-state* session-id tab-id request-var))))))
   nil)
 
 (defn remove-watchers!
   "Remove watchers for a tab."
-  [session-id tab-id]
+  [app-state* tab-id]
   (let [watch-key (keyword (str "render-" tab-id))]
-    (when-let [session-atom (state/get-session-atom session-id)]
-      (remove-watch session-atom watch-key))
-    (when-let [tab-atom (state/get-tab-atom tab-id)]
-      (remove-watch tab-atom watch-key)))
+    (remove-watch app-state* (keyword (str "session-" watch-key)))
+    (remove-watch app-state* (keyword (str "tab-" watch-key))))
   nil)
 
 (defn cleanup-tab!
   "Clean up all resources for a tab."
-  [session-id tab-id]
-  (remove-watchers! session-id tab-id)
-  (unregister-sse-channel! tab-id)
-  (swap! render-fns dissoc tab-id)
-  (state/cleanup-tab! tab-id)
+  [app-state* tab-id]
+  (remove-watchers! app-state* tab-id)
+  (unregister-sse-channel! app-state* tab-id)
+  (let [actions (requiring-resolve 'hyper.actions/cleanup-tab-actions!)
+        state-cleanup (requiring-resolve 'hyper.state/cleanup-tab!)]
+    (actions app-state* tab-id)
+    (state-cleanup app-state* tab-id))
   nil)
-
-(defn get-connected-tabs
-  "Get all currently connected tab IDs."
-  []
-  (keys @sse-channels))
-
-(defn tab-count
-  "Get the number of connected tabs."
-  []
-  (count @sse-channels))
