@@ -1,0 +1,19 @@
+{:paths ["src" "resources"]
+ 
+ :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+        
+        ;; Web server
+        ring/ring-core {:mvn/version "1.12.1"}
+        ring/ring-jetty-adapter {:mvn/version "1.12.1"}
+        
+        ;; Routing
+        metosin/reitit-ring {:mvn/version "0.7.0"}
+        
+        ;; HTML generation
+        hiccup/hiccup {:mvn/version "1.0.5"}
+        
+        ;; Server-sent events support
+        http-kit/http-kit {:mvn/version "2.8.0"}
+        
+        ;; Utilities
+        ring/ring-defaults {:mvn/version "0.5.0"}}}
