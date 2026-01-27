@@ -1,14 +1,10 @@
 (ns hyper.server
   "HTTP server, routing, and middleware.
-   
+
    Provides Ring handlers for:
    - Initial page loads
    - SSE event streams
-   - Action POST endpoints"
-  (:require [reitit.ring :as ring]
-            [ring.middleware.params :as params]
-            [ring.middleware.keyword-params :as keyword-params]
-            [ring.adapter.jetty :as jetty]))
+   - Action POST endpoints")
 
 ;; TODO: Implement session/tab ID middleware
 ;; TODO: Implement GET / handler (initial page)

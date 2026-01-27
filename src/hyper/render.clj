@@ -1,9 +1,8 @@
 (ns hyper.render
   "Rendering pipeline and SSE management.
-   
+
    Handles rendering hiccup to HTML and sending updates via
-   Server-Sent Events using Datastar fragment format."
-  (:require [hiccup.core :as hiccup]))
+   Server-Sent Events using Datastar fragment format.")
 
 ;; SSE channels: {tab-id channel}
 
