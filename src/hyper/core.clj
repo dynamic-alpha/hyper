@@ -6,7 +6,8 @@
    - action macro for handling user interactions
    - start! and stop! for server lifecycle"
   (:require [hyper.state :as state]
-            [hyper.actions :as actions]))
+            [hyper.actions :as actions]
+            [hyper.server :as server]))
 
 ;; Dynamic var to hold current request context
 (def ^:dynamic *request* nil)
@@ -66,5 +67,23 @@
            action-id# (actions/register-action! session-id# tab-id# action-fn#)]
        {:data-on-click (str "$$post('/hyper/actions?action-id=" action-id# "')")})))
 
-;; TODO: Implement start!
-;; TODO: Implement stop!
+(defn start!
+  "Start the hyper application server.
+
+   Options:
+   - :render-fn - Function that takes request and returns hiccup (required)
+   - :port - Port to run server on (default: 3000)
+
+   Example:
+     (start! {:render-fn my-view
+              :port 3000})"
+  [{:keys [render-fn port] :or {port 3000}}]
+  (when-not render-fn
+    (throw (ex-info "render-fn is required" {})))
+
+  (server/start-server! render-fn {:port port}))
+
+(defn stop!
+  "Stop the hyper application server."
+  []
+  (server/stop-server!))
