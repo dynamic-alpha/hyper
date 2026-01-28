@@ -115,3 +115,60 @@
       (is (some? server))
       (is (fn? server))
       (hy/stop! server))))
+
+(deftest test-cursor-with-default-values
+  (testing "session-cursor with default value initializes nil path"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-4"]
+      (state/get-or-create-session! app-state* session-id)
+      (binding [hy/*request* {:hyper/session-id session-id
+                              :hyper/app-state app-state*}]
+        (let [cursor (hy/session-cursor :counter 0)]
+          (is (= 0 @cursor))
+          (is (= 0 (get-in @app-state* [:sessions session-id :data :counter])))))))
+
+  (testing "session-cursor with default doesn't overwrite existing value"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-5"]
+      (state/get-or-create-session! app-state* session-id)
+      (swap! app-state* assoc-in [:sessions session-id :data :counter] 99)
+      (binding [hy/*request* {:hyper/session-id session-id
+                              :hyper/app-state app-state*}]
+        (let [cursor (hy/session-cursor :counter 0)]
+          (is (= 99 @cursor))))))
+
+  (testing "tab-cursor with default value initializes nil path"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-6"
+          tab-id "test-tab-3"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (binding [hy/*request* {:hyper/session-id session-id
+                              :hyper/tab-id tab-id
+                              :hyper/app-state app-state*}]
+        (let [cursor (hy/tab-cursor :items [])]
+          (is (= [] @cursor))
+          (is (= [] (get-in @app-state* [:tabs tab-id :data :items])))))))
+
+  (testing "tab-cursor with default doesn't overwrite existing value"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-7"
+          tab-id "test-tab-4"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (swap! app-state* assoc-in [:tabs tab-id :data :items] [1 2 3])
+      (binding [hy/*request* {:hyper/session-id session-id
+                              :hyper/tab-id tab-id
+                              :hyper/app-state app-state*}]
+        (let [cursor (hy/tab-cursor :items [])]
+          (is (= [1 2 3] @cursor))))))
+
+  (testing "nested path with default value"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-8"
+          tab-id "test-tab-5"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (binding [hy/*request* {:hyper/session-id session-id
+                              :hyper/tab-id tab-id
+                              :hyper/app-state app-state*}]
+        (let [cursor (hy/tab-cursor [:config :theme] "light")]
+          (is (= "light" @cursor))
+          (is (= "light" (get-in @app-state* [:tabs tab-id :data :config :theme]))))))))

@@ -19,38 +19,62 @@
 (defn session-cursor
   "Create a cursor to session state at the given path.
    Path can be a keyword or vector.
+   If default-value is provided and the path is nil, initializes with default-value.
 
    Example:
      (session-cursor :user)
-     (session-cursor [:user :name])"
-  [path]
-  (when-not *request*
-    (throw (ex-info "session-cursor called outside request context" {})))
-  (let [session-id (get *request* :hyper/session-id)
-        app-state* (get *request* :hyper/app-state)]
-    (when-not session-id
-      (throw (ex-info "No session-id in request" {:request *request*})))
-    (when-not app-state*
-      (throw (ex-info "No app-state in request" {:request *request*})))
-    (state/session-cursor app-state* session-id path)))
+     (session-cursor [:user :name])
+     (session-cursor :counter 0)"
+  ([path]
+   (when-not *request*
+     (throw (ex-info "session-cursor called outside request context" {})))
+   (let [session-id (get *request* :hyper/session-id)
+         app-state* (get *request* :hyper/app-state)]
+     (when-not session-id
+       (throw (ex-info "No session-id in request" {:request *request*})))
+     (when-not app-state*
+       (throw (ex-info "No app-state in request" {:request *request*})))
+     (state/session-cursor app-state* session-id path)))
+  ([path default-value]
+   (when-not *request*
+     (throw (ex-info "session-cursor called outside request context" {})))
+   (let [session-id (get *request* :hyper/session-id)
+         app-state* (get *request* :hyper/app-state)]
+     (when-not session-id
+       (throw (ex-info "No session-id in request" {:request *request*})))
+     (when-not app-state*
+       (throw (ex-info "No app-state in request" {:request *request*})))
+     (state/session-cursor app-state* session-id path default-value))))
 
 (defn tab-cursor
   "Create a cursor to tab state at the given path.
    Path can be a keyword or vector.
+   If default-value is provided and the path is nil, initializes with default-value.
 
    Example:
      (tab-cursor :count)
-     (tab-cursor [:todos :list])"
-  [path]
-  (when-not *request*
-    (throw (ex-info "tab-cursor called outside request context" {})))
-  (let [tab-id (get *request* :hyper/tab-id)
-        app-state* (get *request* :hyper/app-state)]
-    (when-not tab-id
-      (throw (ex-info "No tab-id in request" {:request *request*})))
-    (when-not app-state*
-      (throw (ex-info "No app-state in request" {:request *request*})))
-    (state/tab-cursor app-state* tab-id path)))
+     (tab-cursor [:todos :list])
+     (tab-cursor :count 0)"
+  ([path]
+   (when-not *request*
+     (throw (ex-info "tab-cursor called outside request context" {})))
+   (let [tab-id (get *request* :hyper/tab-id)
+         app-state* (get *request* :hyper/app-state)]
+     (when-not tab-id
+       (throw (ex-info "No tab-id in request" {:request *request*})))
+     (when-not app-state*
+       (throw (ex-info "No app-state in request" {:request *request*})))
+     (state/tab-cursor app-state* tab-id path)))
+  ([path default-value]
+   (when-not *request*
+     (throw (ex-info "tab-cursor called outside request context" {})))
+   (let [tab-id (get *request* :hyper/tab-id)
+         app-state* (get *request* :hyper/app-state)]
+     (when-not tab-id
+       (throw (ex-info "No tab-id in request" {:request *request*})))
+     (when-not app-state*
+       (throw (ex-info "No app-state in request" {:request *request*})))
+     (state/tab-cursor app-state* tab-id path default-value))))
 
 (defmacro action
   "Create an action that executes the given body when triggered.

@@ -184,3 +184,46 @@
       (is (not (contains? (:sessions @app-state*) session-id)))
       (is (not (contains? (:tabs @app-state*) tab-id-1)))
       (is (not (contains? (:tabs @app-state*) tab-id-2))))))
+
+(deftest cursor-default-value-test
+  (testing "session-cursor with default value initializes nil path"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-16"]
+      (state/get-or-create-session! app-state* session-id)
+      (let [cursor (state/session-cursor app-state* session-id :counter 0)]
+        (is (= 0 @cursor))
+        (is (= 0 (get-in @app-state* [:sessions session-id :data :counter]))))))
+
+  (testing "session-cursor with default value doesn't overwrite existing"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-17"]
+      (state/get-or-create-session! app-state* session-id)
+      (swap! app-state* assoc-in [:sessions session-id :data :counter] 42)
+      (let [cursor (state/session-cursor app-state* session-id :counter 0)]
+        (is (= 42 @cursor)))))
+
+  (testing "tab-cursor with default value initializes nil path"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-18"
+          tab-id "test-tab-8"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (let [cursor (state/tab-cursor app-state* tab-id :items [])]
+        (is (= [] @cursor))
+        (is (= [] (get-in @app-state* [:tabs tab-id :data :items]))))))
+
+  (testing "tab-cursor with default value doesn't overwrite existing"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-19"
+          tab-id "test-tab-9"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (swap! app-state* assoc-in [:tabs tab-id :data :items] [1 2 3])
+      (let [cursor (state/tab-cursor app-state* tab-id :items [])]
+        (is (= [1 2 3] @cursor)))))
+
+  (testing "cursor with nested path and default value"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-20"]
+      (state/get-or-create-session! app-state* session-id)
+      (let [cursor (state/session-cursor app-state* session-id [:user :preferences] {})]
+        (is (= {} @cursor))
+        (is (= {} (get-in @app-state* [:sessions session-id :data :user :preferences])))))))

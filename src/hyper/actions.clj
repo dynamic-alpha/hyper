@@ -1,7 +1,8 @@
 (ns hyper.actions
   "Action handling for hyper applications.
 
-   Actions are server-side functions triggered by client interactions.")
+   Actions are server-side functions triggered by client interactions."
+  (:require [taoensso.telemere :as t]))
 
 (defn register-action!
   "Register an action function and return its ID.
@@ -15,13 +16,19 @@
     action-id))
 
 (defn execute-action!
-  "Execute an action by ID."
+  "Execute an action by ID with error handling."
   [app-state* action-id]
   (if-let [action-data (get-in @app-state* [:actions action-id])]
     (let [{:keys [fn]} action-data]
-      (fn)
+      (t/catch->error! :hyper.error/execute-action
+        (fn))
       true)
-    (throw (ex-info "Action not found" {:action-id action-id}))))
+    (do
+      (t/log! {:level :warn
+               :id :hyper.error/action-not-found
+               :data {:hyper/action-id action-id}
+               :msg "Action not found"})
+      (throw (ex-info "Action not found" {:hyper/action-id action-id})))))
 
 (defn cleanup-tab-actions!
   "Remove all actions for a tab."

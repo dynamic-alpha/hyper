@@ -9,7 +9,8 @@
             [hiccup.core :as hiccup]
             [hyper.state :as state]
             [hyper.actions :as actions]
-            [hyper.render :as render]))
+            [hyper.render :as render]
+            [taoensso.telemere :as t]))
 
 (defn generate-session-id []
   (str "sess-" (java.util.UUID/randomUUID)))
@@ -31,17 +32,20 @@
             req (assoc req
                        :hyper/session-id session-id
                        :hyper/tab-id tab-id
-                       :hyper/app-state app-state*)
-            response (handler req)]
+                       :hyper/app-state app-state*)]
 
-        ;; Add session cookie to response if new session
-        (if (and response (not existing-session))
-          (assoc-in response [:cookies "hyper-session"]
-                    {:value session-id
-                     :path "/"
-                     :http-only true
-                     :max-age (* 60 60 24 7)}) ;; 7 days
-          response)))))
+        ;; Add hyper context to telemere for all downstream logging
+        (t/with-ctx+ {:hyper/session-id session-id
+                      :hyper/tab-id tab-id}
+          (let [response (handler req)]
+            ;; Add session cookie to response if new session
+            (if (and response (not existing-session))
+              (assoc-in response [:cookies "hyper-session"]
+                        {:value session-id
+                         :path "/"
+                         :http-only true
+                         :max-age (* 60 60 24 7)}) ;; 7 days
+              response)))))))
 
 (defn datastar-script
   "Returns the Datastar CDN script tag."
@@ -67,7 +71,10 @@
                                     false))
 
          :on-close (fn [_channel _status]
-                     (println "Tab disconnected:" tab-id)
+                     (t/log! {:level :info
+                              :id :hyper.event/tab-disconnect
+                              :data {:hyper/tab-id tab-id}
+                              :msg "Tab disconnected"})
                      (render/cleanup-tab! app-state* tab-id))}))))
 
 (defn action-handler
@@ -91,7 +98,9 @@
              :body "{\"success\": true}"}
 
             (catch Exception e
-              (println "Error executing action:" action-id e)
+              (t/error! e
+                        {:id :hyper.error/action-handler
+                         :data {:hyper/action-id action-id}})
               {:status 500
                :headers {"Content-Type" "application/json"}
                :body (str "{\"error\": \"" (.getMessage e) "\"}")})
@@ -167,7 +176,10 @@
    Returns server instance."
   [handler {:keys [port] :or {port 3000}}]
   (let [server (http-kit/run-server handler {:port port})]
-    (println "Hyper server started on port" port)
+    (t/log! {:level :info
+             :id :hyper.event/server-start
+             :data {:hyper/port port}
+             :msg "Hyper server started"})
     server))
 
 (defn stop!
@@ -175,4 +187,6 @@
   [server]
   (when server
     (server :timeout 100)
-    (println "Hyper server stopped")))
+    (t/log! {:level :info
+             :id :hyper.event/server-stop
+             :msg "Hyper server stopped"})))

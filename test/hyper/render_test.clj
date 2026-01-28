@@ -142,3 +142,79 @@
       
       (is (nil? (render/get-sse-channel app-state* tab-id)))
       (is (not (contains? (:tabs @app-state*) tab-id))))))
+
+(deftest test-error-boundary
+  (testing "safe-render catches errors and renders error fragment"
+    (let [failing-render-fn (fn [_req] (throw (ex-info "Test error" {})))
+          req {:hyper/session-id "test-session"
+               :hyper/tab-id "test-tab"}
+          result (render/safe-render failing-render-fn req)]
+      ;; Should return HTML string or hiccup, not throw
+      (is (or (string? result) (vector? result)))
+      ;; Should contain error information
+      (is (re-find #"Render Error" (str result)))))
+
+  (testing "safe-render returns result when render succeeds"
+    (let [working-render-fn (fn [_req] [:div [:h1 "Success"]])
+          req {:hyper/session-id "test-session"
+               :hyper/tab-id "test-tab"}
+          result (render/safe-render working-render-fn req)]
+      (is (= [:div [:h1 "Success"]] result)))))
+
+(deftest test-render-throttling
+  (testing "should-render? respects throttle timing"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-6"
+          tab-id "test-tab-6"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      
+      ;; First render should succeed
+      (is (true? (render/should-render? app-state* tab-id)))
+      
+      ;; Immediate second render should be throttled (returns nil/falsey)
+      (is (not (render/should-render? app-state* tab-id)))
+      
+      ;; After waiting longer than throttle period, should render again
+      (Thread/sleep 20) ;; Default throttle is 16ms
+      (is (true? (render/should-render? app-state* tab-id)))))
+
+  (testing "throttled-render-and-send! respects throttling"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-7"
+          tab-id "test-tab-7"
+          render-count (atom 0)
+          render-fn (fn [_req]
+                      (swap! render-count inc)
+                      [:div "Render " @render-count])]
+      
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (render/register-render-fn! app-state* tab-id render-fn)
+      (render/register-sse-channel! app-state* tab-id {:mock true})
+      
+      (with-redefs [render/send-sse! (fn [_state* _tid _msg] true)]
+        ;; First render succeeds
+        (render/throttled-render-and-send! app-state* session-id tab-id #'hyper.core/*request*)
+        (is (= 1 @render-count))
+        
+        ;; Immediate second render is throttled
+        (render/throttled-render-and-send! app-state* session-id tab-id #'hyper.core/*request*)
+        (is (= 1 @render-count))
+        
+        ;; After throttle period, render succeeds
+        (Thread/sleep 20)
+        (render/throttled-render-and-send! app-state* session-id tab-id #'hyper.core/*request*)
+        (is (= 2 @render-count)))))
+
+  (testing "cleanup removes last-render-ms tracking"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-8"
+          tab-id "test-tab-8"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      
+      ;; Trigger render to set last-render-ms
+      (render/should-render? app-state* tab-id)
+      (is (some? (get-in @app-state* [:tabs tab-id :last-render-ms])))
+      
+      ;; Cleanup should remove entire tab including last-render-ms
+      (render/cleanup-tab! app-state* tab-id)
+      (is (nil? (get-in @app-state* [:tabs tab-id]))))))

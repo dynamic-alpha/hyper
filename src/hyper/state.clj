@@ -102,14 +102,26 @@
   (->Cursor parent-atom path-prefix path (atom {}) nil (atom {})))
 
 (defn session-cursor
-  "Create a cursor to session state at the given path."
-  [app-state* session-id path]
-  (create-cursor app-state* [:sessions session-id :data] path))
+  "Create a cursor to session state at the given path.
+   If default-value is provided and the path is nil, initializes with default-value."
+  ([app-state* session-id path]
+   (create-cursor app-state* [:sessions session-id :data] path))
+  ([app-state* session-id path default-value]
+   (let [cursor (create-cursor app-state* [:sessions session-id :data] path)]
+     (when (nil? @cursor)
+       (reset! cursor default-value))
+     cursor)))
 
 (defn tab-cursor
-  "Create a cursor to tab state at the given path."
-  [app-state* tab-id path]
-  (create-cursor app-state* [:tabs tab-id :data] path))
+  "Create a cursor to tab state at the given path.
+   If default-value is provided and the path is nil, initializes with default-value."
+  ([app-state* tab-id path]
+   (create-cursor app-state* [:tabs tab-id :data] path))
+  ([app-state* tab-id path default-value]
+   (let [cursor (create-cursor app-state* [:tabs tab-id :data] path)]
+     (when (nil? @cursor)
+       (reset! cursor default-value))
+     cursor)))
 
 (defn init-state
   "Create initial app state structure."
