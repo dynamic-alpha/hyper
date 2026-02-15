@@ -145,6 +145,43 @@
                (when (= route-name (:name data))
                  (:get data))))))
 
+(defn find-route-title
+  "Find the :title metadata for a named route.
+   Returns the title value (string or fn) or nil."
+  [routes route-name]
+  (->> routes
+       (some (fn [[_path data]]
+               (when (= route-name (:name data))
+                 (:title data))))))
+
+(defn resolve-title
+  "Resolve a title value. If it's a fn, call it with the request.
+   Returns the resolved string, or nil."
+  [title req]
+  (cond
+    (nil? title)  nil
+    (fn? title)   (title req)
+    (string? title) title
+    (instance? clojure.lang.IDeref title) (str @title)
+    :else         (str title)))
+
+(defn escape-js-string
+  "Escape a string for safe embedding in a single-quoted JavaScript string literal
+   inside a <script> block. Handles backslashes, quotes, newlines, line/paragraph
+   separators, and </script> injection."
+  [s]
+  (when s
+    (-> s
+        (clojure.string/replace "\\" "\\\\")
+        (clojure.string/replace "'" "\\'")
+        (clojure.string/replace "\"" "\\\"")
+        (clojure.string/replace "\n" "\\n")
+        (clojure.string/replace "\r" "\\r")
+        (clojure.string/replace "\u2028" "\\u2028")
+        (clojure.string/replace "\u2029" "\\u2029")
+        ;; Prevent </script> from closing the script block in HTML parser
+        (clojure.string/replace "</" "<\\/"))))
+
 (defn- extract-route-info
   "Extract route info from a reitit match and Ring request.
    Uses coerced parameters from reitit's coercion middleware when available,
@@ -168,28 +205,46 @@
 
 (defn- hyper-scripts
   "JavaScript for SPA navigation support:
-   - MutationObserver on #hyper-app watches data-hyper-url attribute changes
-     and calls replaceState to sync the browser URL bar.
-   - popstate listener handles browser back/forward by posting to /hyper/navigate."
+   - MutationObserver on #hyper-app watches data-hyper-url and data-hyper-title
+     attribute changes, syncs browser URL bar via replaceState with title in
+     history state, and updates document.title.
+   - popstate listener handles browser back/forward by posting to /hyper/navigate
+     and restoring document.title from history state."
   [tab-id]
   [:script
    (str "
 (function() {
   var appEl = document.getElementById('hyper-app');
   if (appEl) {
+    // Seed the initial history entry with the current title so back-navigation restores it
+    window.history.replaceState({title: document.title}, '', window.location.href);
     var observer = new MutationObserver(function(mutations) {
+      var urlChanged = false;
+      var titleChanged = false;
       for (var i = 0; i < mutations.length; i++) {
-        if (mutations[i].attributeName === 'data-hyper-url') {
-          var url = appEl.getAttribute('data-hyper-url');
-          if (url && url !== window.location.pathname + window.location.search) {
-            window.history.replaceState({}, '', url);
-          }
+        if (mutations[i].attributeName === 'data-hyper-url') urlChanged = true;
+        if (mutations[i].attributeName === 'data-hyper-title') titleChanged = true;
+      }
+      var title = appEl.getAttribute('data-hyper-title');
+      if (titleChanged && title) {
+        document.title = title;
+      }
+      if (urlChanged) {
+        var url = appEl.getAttribute('data-hyper-url');
+        if (url && url !== window.location.pathname + window.location.search) {
+          window.history.replaceState({title: title || document.title}, '', url);
         }
       }
+      if (titleChanged && !urlChanged) {
+        window.history.replaceState({title: title || document.title}, '', window.location.href);
+      }
     });
-    observer.observe(appEl, { attributes: true, attributeFilter: ['data-hyper-url'] });
+    observer.observe(appEl, { attributes: true, attributeFilter: ['data-hyper-url', 'data-hyper-title'] });
   }
   window.addEventListener('popstate', function(e) {
+    if (e.state && e.state.title) {
+      document.title = e.state.title;
+    }
     fetch('/hyper/navigate?tab-id=" tab-id "&path=' + encodeURIComponent(window.location.pathname + window.location.search), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'}
@@ -199,7 +254,10 @@
 ")])
 
 (defn page-handler
-  "Wrap a page render function to provide full HTML response."
+  "Wrap a page render function to provide full HTML response.
+   Resolves :title from route metadata — supports static strings, functions,
+   and deref-able values (cursors/atoms). Title is also stamped on #hyper-app
+   as data-hyper-title for client-side history state tracking."
   [app-state* request-var]
   (fn [render-fn]
     (fn [req]
@@ -217,16 +275,21 @@
           (push-thread-bindings {request-var req-with-state})
           (try
             (let [content (render-fn req-with-state)
+                  route-name (:name route-info)
+                  routes (get @app-state* :routes)
+                  title-spec (find-route-title routes route-name)
+                  title (or (resolve-title title-spec req-with-state) "Hyper App")
                   html    (hiccup/html
                             [:html
                              [:head
                               [:meta {:charset "UTF-8"}]
                               [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
-                              [:title "Hyper App"]
+                              [:title title]
                               (datastar-script)]
                              [:body
                               {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
-                              [:div {:id "hyper-app"}
+                              [:div {:id "hyper-app"
+                                     :data-hyper-title title}
                                content]
                               (hyper-scripts tab-id)]])]
               {:status  200

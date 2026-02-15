@@ -143,9 +143,11 @@
    1. Looks up the target route's handler
    2. Updates the tab's render fn and route state
    3. Triggers a re-render via SSE
-   4. Pushes the new URL via pushState
+   4. Pushes the new URL via pushState (with title in history state)
 
    The :href ensures right-click → open in new tab works.
+   The title from the target route's :title metadata is resolved eagerly and
+   included in the pushState call so browser history entries have meaningful titles.
 
    route-name: Keyword name of the route
    params: Optional map of path parameters
@@ -166,6 +168,10 @@
          tab-id (:hyper/tab-id *request*)]
      (when-let [path (:path (reitit/match-by-name router route-name params))]
        (let [href (state/build-url path query-params)
+             routes (get @app-state* :routes)
+             ;; Resolve title eagerly for the pushState call
+             title-spec (server/find-route-title routes route-name)
+             title (server/resolve-title title-spec *request*)
              ;; Register an action that performs the navigation server-side
              nav-fn (fn []
                       (let [routes (get @app-state* :routes)
@@ -179,11 +185,16 @@
                                                :path path
                                                :path-params (or params {})
                                                :query-params (or query-params {})})))
-             action-id (actions/register-action! app-state* session-id tab-id nav-fn)]
+             action-id (actions/register-action! app-state* session-id tab-id nav-fn)
+             escaped-title (or (server/escape-js-string title) "")
+             escaped-href (server/escape-js-string href)]
          {:href href
           :data-on:click__prevent
           (str "@post('/hyper/actions?action-id=" action-id "');"
-               " window.history.pushState({}, '', '" href "')")})))))
+               " window.history.pushState({title: '" escaped-title "'}, '', '" escaped-href "');"
+               (when title
+                 (str " document.title = '" escaped-title "'")))})))))
+
 
 (defn create-handler
   "Create a Ring handler for a hyper application.

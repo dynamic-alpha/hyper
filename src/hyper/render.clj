@@ -81,13 +81,19 @@
 
 (defn render-and-send!
   "Render the view for a tab and send it via SSE.
-   Stamps the current route URL as a data-hyper-url attribute on the
-   #hyper-app div so the client-side MutationObserver can sync the
-   browser URL bar via replaceState."
+   Stamps the current route URL as a data-hyper-url attribute and the resolved
+   page title as data-hyper-title on the #hyper-app div. The client-side
+   MutationObserver syncs the browser URL bar via replaceState and updates
+   document.title, keeping browser history entries accurate.
+
+   Title is resolved from route :title metadata via hyper.server/resolve-title,
+   supporting static strings, functions of the request, and deref-able values
+   (cursors/atoms) so that title updates reactively with state changes."
   [app-state* session-id tab-id request-var]
   (when-let [render-fn (get-render-fn app-state* tab-id)]
     (let [router (get @app-state* :router)
           route (get-in @app-state* [:tabs tab-id :route])
+          routes (get @app-state* :routes)
           current-url (when route
                         (state/build-url (:path route) (:query-params route)))
           req (cond-> {:hyper/session-id session-id
@@ -97,8 +103,15 @@
       (push-thread-bindings {request-var req})
       (try
         (let [hiccup-result (safe-render render-fn req)
+              ;; Resolve title — requiring-resolve to avoid circular dep
+              resolve-title-fn (requiring-resolve 'hyper.server/resolve-title)
+              find-route-title-fn (requiring-resolve 'hyper.server/find-route-title)
+              title-spec (when (and routes route)
+                           (find-route-title-fn routes (:name route)))
+              title (resolve-title-fn title-spec req)
               div-attrs (cond-> {:id "hyper-app"}
-                          current-url (assoc :data-hyper-url current-url))
+                          current-url (assoc :data-hyper-url current-url)
+                          title (assoc :data-hyper-title title))
               html (hiccup/html [:div div-attrs hiccup-result])
               fragment (format-datastar-fragment html)]
           (send-sse! app-state* tab-id fragment))
