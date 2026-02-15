@@ -40,27 +40,25 @@
       (is (= render-fn (render/get-render-fn app-state* tab-id))))))
 
 (deftest test-datastar-fragment-format
-  (testing "Datastar fragment formatting"
+  (testing "Datastar patch-elements formatting"
     (let [html "<div><h1>Hello, Datastar!</h1></div>"
-          selector "body"
-          fragment (render/format-datastar-fragment html selector)]
+          fragment (render/format-datastar-fragment html)]
       ;; Should start with event type
-      (is (.startsWith fragment "event: datastar-fragment\n"))
-      ;; Should include data line
-      (is (.contains fragment "data: fragment"))
+      (is (.startsWith fragment "event: datastar-patch-elements\n"))
+      ;; Should include data line with elements prefix
+      (is (.contains fragment "data: elements "))
       ;; Should include html content
       (is (.contains fragment html))
-      ;; Should include selector
-      (is (.contains fragment selector))
       ;; Should end with double newline
       (is (.endsWith fragment "\n\n"))))
 
-  (testing "Formats with different selectors"
+  (testing "Formats different HTML content"
     (let [html "<span>test</span>"
-          selector "#my-id"
-          fragment (render/format-datastar-fragment html selector)]
-      (is (.contains fragment selector))
-      (is (.contains fragment html)))))
+          fragment (render/format-datastar-fragment html)]
+      (is (.contains fragment html))
+      (is (.startsWith fragment "event: datastar-patch-elements\n"))))
+
+)
 
 (deftest test-render-and-send
   (testing "Renders and formats content for SSE"
@@ -80,8 +78,8 @@
       ;; Manually test formatting since we can't actually send with mock
       (let [hiccup-result (render-fn {})
             html-str (hiccup.core/html hiccup-result)
-            fragment (render/format-datastar-fragment html-str "body innerHTML")]
-        (is (.contains fragment "event: datastar-fragment"))
+            fragment (render/format-datastar-fragment html-str)]
+        (is (.contains fragment "event: datastar-patch-elements"))
         (is (.contains fragment "Hello World"))))))
 
 (deftest test-watchers

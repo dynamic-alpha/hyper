@@ -6,8 +6,12 @@
 
    State structure:
    {:sessions {session-id {:data {} :tabs #{tab-id}}}
-    :tabs {tab-id {:data {} :session-id session-id :render-fn fn :sse-channel ch}}
-    :actions {action-id {:fn fn :session-id sid :tab-id tid}}}")
+    :tabs {tab-id {:data {} :session-id session-id :render-fn fn :sse-channel ch
+                   :route {:name :home :path \"/\" :path-params {} :query-params {}}}}
+    :actions {action-id {:fn fn :session-id sid :tab-id tid}}
+    :router <reitit-router>
+    :routes <original-routes-vector>}"
+  (:require [clojure.string]))
 
 (defn normalize-path
   "Convert keyword or vector to vector path."
@@ -128,7 +132,9 @@
   []
   {:sessions {}
    :tabs {}
-   :actions {}})
+   :actions {}
+   :router nil
+   :routes nil})
 
 (defn get-or-create-session!
   "Ensure session exists in app-state."
@@ -169,3 +175,38 @@
       (cleanup-tab! app-state* tab-id))
     (swap! app-state* update :sessions dissoc session-id))
   nil)
+
+(defn set-tab-route!
+  "Set the current route for a tab."
+  [app-state* tab-id route-info]
+  (swap! app-state* assoc-in [:tabs tab-id :route] route-info)
+  nil)
+
+(defn get-tab-route
+  "Get the current route for a tab."
+  [app-state* tab-id]
+  (get-in @app-state* [:tabs tab-id :route]))
+
+(defn parse-query-string
+  "Parse a query string into a keyword-keyed map with URL-decoded values.
+   Returns nil if query-string is nil."
+  [query-string]
+  (when query-string
+    (into {}
+          (map (fn [pair]
+                 (let [[k v] (clojure.string/split pair #"=" 2)]
+                   [(keyword (java.net.URLDecoder/decode k "UTF-8"))
+                    (java.net.URLDecoder/decode (or v "") "UTF-8")])))
+          (clojure.string/split query-string #"&"))))
+
+(defn build-url
+  "Build a URL string from a path and query params map.
+   Returns path if no query params."
+  [path query-params]
+  (if (or (nil? query-params) (empty? query-params))
+    path
+    (let [query-string (->> query-params
+                            (map (fn [[k v]]
+                                   (str (name k) "=" (java.net.URLEncoder/encode (str v) "UTF-8"))))
+                            (clojure.string/join "&"))]
+      (str path "?" query-string))))

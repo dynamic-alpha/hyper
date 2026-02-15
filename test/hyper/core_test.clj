@@ -1,7 +1,8 @@
 (ns hyper.core-test
   (:require [clojure.test :refer [deftest is testing]]
             [hyper.core :as hy]
-            [hyper.state :as state]))
+            [hyper.state :as state]
+            [reitit.ring :as ring]))
 
 (deftest test-session-cursor
   (testing "session-cursor requires request context"
@@ -52,44 +53,88 @@
                               :hyper/app-state app-state*}]
         (let [action-attrs (hy/action (reset! executed true))]
           (is (map? action-attrs))
-          (is (contains? action-attrs :data-on-click))
-          (is (.contains (:data-on-click action-attrs) "$$post"))
-          (is (.contains (:data-on-click action-attrs) "/hyper/actions"))
-          (is (.contains (:data-on-click action-attrs) "action-id="))
+          (is (contains? action-attrs :data-on:click))
+          (is (.contains (str (:data-on:click action-attrs)) "@post"))
+          (is (.contains (str (:data-on:click action-attrs)) "/hyper/actions"))
+          (is (.contains (str (:data-on:click action-attrs)) "action-id="))
           
           ;; Extract action ID and execute it
-          (let [action-id (second (re-find #"action-id=([^']+)" (:data-on-click action-attrs)))]
+          (let [action-id (second (re-find #"action-id=([^']+)" (str (:data-on:click action-attrs))))]
             (is (some? action-id))
             ((get-in @app-state* [:actions action-id :fn]))
             (is @executed)))))))
 
-(deftest test-navigate
-  (testing "navigate generates click handler with pushState"
-    (let [routes [["/" {:name :home}]
-                  ["/about" {:name :about}]
-                  ["/users/:id" {:name :user-profile}]]]
-      
-      (testing "without params"
-        (let [nav-attrs (hy/navigate routes :home)]
-          (is (map? nav-attrs))
-          (is (contains? nav-attrs :data-on-click))
-          (is (.contains (:data-on-click nav-attrs) "$$get('/')"))
-          (is (.contains (:data-on-click nav-attrs) "pushState"))))
-      
-      (testing "with path params"
-        (let [nav-attrs (hy/navigate routes :user-profile {:id "123"})]
-          (is (.contains (:data-on-click nav-attrs) "/users/123"))))
-      
-      (testing "returns nil for unknown route"
-        (is (nil? (hy/navigate routes :nonexistent)))))))
+(defn- make-test-context
+  "Create a test request context with a router for navigate tests."
+  [routes]
+  (let [app-state* (atom (state/init-state))
+        session-id "test-session-nav"
+        tab-id "test-tab-nav"
+        router (ring/router (mapv (fn [[path data]] [path data]) routes)
+                            {:conflicts nil})]
+    (state/get-or-create-tab! app-state* session-id tab-id)
+    (swap! app-state* assoc :router router :routes routes)
+    {:hyper/session-id session-id
+     :hyper/tab-id tab-id
+     :hyper/app-state app-state*
+     :hyper/router router}))
 
-(deftest test-navigate-url
-  (testing "navigate-url generates click handler"
-    (let [nav-attrs (hy/navigate-url "/custom-path")]
-      (is (map? nav-attrs))
-      (is (contains? nav-attrs :data-on-click))
-      (is (.contains (:data-on-click nav-attrs) "$$get('/custom-path')"))
-      (is (.contains (:data-on-click nav-attrs) "pushState")))))
+(deftest test-navigate
+  (testing "navigate generates href and action-based click handler with pushState"
+    (let [routes [["/" {:name :home :get (fn [_] [:div "Home"])}]
+                  ["/about" {:name :about :get (fn [_] [:div "About"])}]
+                  ["/users/:id" {:name :user-profile :get (fn [_] [:div "User"])}]]
+          ctx (make-test-context routes)]
+
+      (testing "without params"
+        (binding [hy/*request* ctx]
+          (let [nav-attrs (hy/navigate :home)]
+            (is (map? nav-attrs))
+            (is (= "/" (:href nav-attrs)))
+            (is (contains? nav-attrs :data-on:click__prevent))
+            (is (.contains (str (:data-on:click__prevent nav-attrs)) "@post"))
+            (is (.contains (str (:data-on:click__prevent nav-attrs)) "/hyper/actions"))
+            (is (.contains (str (:data-on:click__prevent nav-attrs)) "pushState")))))
+
+      (testing "with path params"
+        (binding [hy/*request* ctx]
+          (let [nav-attrs (hy/navigate :user-profile {:id "123"})]
+            (is (= "/users/123" (:href nav-attrs)))
+            (is (.contains (str (:data-on:click__prevent nav-attrs)) "pushState"))
+            (is (.contains (str (:data-on:click__prevent nav-attrs)) "/users/123")))))
+
+      (testing "with query params"
+        (binding [hy/*request* ctx]
+          (let [nav-attrs (hy/navigate :home nil {:q "clojure"})]
+            (is (= "/?q=clojure" (:href nav-attrs)))
+            (is (.contains (str (:data-on:click__prevent nav-attrs)) "pushState")))))
+
+      (testing "returns nil for unknown route"
+        (binding [hy/*request* ctx]
+          (is (nil? (hy/navigate :nonexistent)))))))
+
+  (testing "navigate action updates render fn and route state"
+    (let [home-fn (fn [_] [:div "Home"])
+          about-fn (fn [_] [:div "About"])
+          routes [["/" {:name :home :get home-fn}]
+                  ["/about" {:name :about :get about-fn}]]
+          ctx (make-test-context routes)
+          app-state* (:hyper/app-state ctx)
+          tab-id (:hyper/tab-id ctx)]
+
+      (binding [hy/*request* ctx]
+        (let [nav-attrs (hy/navigate :about)]
+          ;; Extract and execute the action
+          (let [action-id (second (re-find #"action-id=([^']+)"
+                                           (str (:data-on:click__prevent nav-attrs))))]
+            (is (some? action-id))
+            ((get-in @app-state* [:actions action-id :fn]))
+            ;; Route state should be updated
+            (let [route (state/get-tab-route app-state* tab-id)]
+              (is (= :about (:name route)))
+              (is (= "/about" (:path route))))
+            ;; Render fn should be swapped
+            (is (= about-fn (get-in @app-state* [:tabs tab-id :render-fn])))))))))
 
 (deftest test-create-handler
   (testing "creates handler with default app-state"
@@ -172,3 +217,56 @@
         (let [cursor (hy/tab-cursor [:config :theme] "light")]
           (is (= "light" @cursor))
           (is (= "light" (get-in @app-state* [:tabs tab-id :data :config :theme]))))))))
+
+(deftest test-path-cursor
+  (testing "path-cursor requires request context"
+    (is (thrown? Exception
+                 (hy/path-cursor :count))))
+
+  (testing "path-cursor reads/writes to route query params"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-path-1"
+          tab-id "test-tab-path-1"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      ;; Seed route state
+      (state/set-tab-route! app-state* tab-id
+                            {:name :home :path "/" :path-params {} :query-params {}})
+      (binding [hy/*request* {:hyper/session-id session-id
+                              :hyper/tab-id tab-id
+                              :hyper/app-state app-state*}]
+        (let [cursor (hy/path-cursor :count 0)]
+          (is (= 0 @cursor))
+          ;; Write updates route query params
+          (reset! cursor 5)
+          (is (= 5 @cursor))
+          (is (= 5 (get-in @app-state* [:tabs tab-id :route :query-params :count])))))))
+
+  (testing "path-cursor with default doesn't overwrite existing"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-path-2"
+          tab-id "test-tab-path-2"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (state/set-tab-route! app-state* tab-id
+                            {:name :search :path "/search"
+                             :path-params {} :query-params {:q "clojure"}})
+      (binding [hy/*request* {:hyper/session-id session-id
+                              :hyper/tab-id tab-id
+                              :hyper/app-state app-state*}]
+        (let [cursor (hy/path-cursor :q "")]
+          (is (= "clojure" @cursor))))))
+
+  (testing "path-cursor swap! works"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-path-3"
+          tab-id "test-tab-path-3"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (state/set-tab-route! app-state* tab-id
+                            {:name :home :path "/" :path-params {} :query-params {}})
+      (binding [hy/*request* {:hyper/session-id session-id
+                              :hyper/tab-id tab-id
+                              :hyper/app-state app-state*}]
+        (let [cursor (hy/path-cursor :count 0)]
+          (swap! cursor inc)
+          (is (= 1 @cursor))
+          (swap! cursor + 10)
+          (is (= 11 @cursor)))))))
