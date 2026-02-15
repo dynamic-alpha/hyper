@@ -50,7 +50,8 @@
 (defn datastar-script
   "Returns the Datastar CDN script tag."
   []
-  [:script {:src "https://cdn.jsdelivr.net/npm/@sudodevnull/datastar"}])
+  [:script {:type "module"
+            :src "https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js"}])
 
 (defn sse-events-handler
   "Handler for SSE event stream."
@@ -64,11 +65,12 @@
                     (state/get-or-create-tab! app-state* session-id tab-id)
                     (render/register-sse-channel! app-state* tab-id channel)
                     (render/setup-watchers! app-state* session-id tab-id request-var)
-
-                    (http-kit/send! channel
-                                    (str "event: connected\n"
-                                         "data: {\"tab-id\":\"" tab-id "\"}\n\n")
-                                    false))
+                    (http-kit/send!
+                      channel
+                      {:headers {"Content-Type" "text/event-stream"}
+                       :body    (str "event: connected\n"
+                                     "data: {\"tab-id\":\"" tab-id "\"}\n\n")}
+                      false))
 
          :on-close (fn [_channel _status]
                      (t/log! {:level :info
@@ -120,18 +122,20 @@
           (push-thread-bindings {request-var req-with-state})
           (try
             (let [content (render-fn req-with-state)
-                  html (hiccup/html
-                        [:html
-                         [:head
-                          [:meta {:charset "UTF-8"}]
-                          [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
-                          [:title "Hyper App"]
-                          (datastar-script)]
-                         [:body {:data-on-load (str "$$get('/hyper/events?tab-id=" tab-id "')")}
-                          content]])]
-              {:status 200
+                  html    (hiccup/html
+                            [:html
+                             [:head
+                              [:meta {:charset "UTF-8"}]
+                              [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
+                              [:title "Hyper App"]
+                              (datastar-script)]
+                             [:body
+                              {:data-init (str "@get('/hyper/events?tab-id=" tab-id "')")}
+                              [:div {:id "hyper-app"}
+                               content]]])]
+              {:status  200
                :headers {"Content-Type" "text/html; charset=utf-8"}
-               :body html})
+               :body    html})
             (finally
               (pop-thread-bindings))))))))
 

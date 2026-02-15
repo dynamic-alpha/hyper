@@ -44,13 +44,13 @@
 
    Datastar expects Server-Sent Events in the format:
    event: datastar-fragment
+   data: selector <selector>
    data: <html content>
 
    (blank line to end event)"
-  [html selector]
-  (let [fragment (str "fragment " html " " selector)]
-    (str "event: datastar-fragment\n"
-         "data: " fragment "\n\n")))
+  [html]
+  (str "event: datastar-patch-elements\n"
+       "data: elements " html "\n\n"))
 
 (defn send-sse!
   "Send an SSE message to a tab's channel."
@@ -89,8 +89,8 @@
       (push-thread-bindings {request-var req})
       (try
         (let [hiccup-result (safe-render render-fn req)
-              html (hiccup/html hiccup-result)
-              fragment (format-datastar-fragment html "body innerHTML")]
+              html (hiccup/html [:div {:id "hyper-app"} hiccup-result])
+              fragment (format-datastar-fragment html)]
           (send-sse! app-state* tab-id fragment))
         (finally
           (pop-thread-bindings))))))

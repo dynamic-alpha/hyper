@@ -103,7 +103,7 @@
                                             :hyper/app-state app-state*#}]
                           ~@body))
            action-id# (actions/register-action! app-state*# session-id# tab-id# action-fn#)]
-       {:data-on-click (str "$$post('/hyper/actions?action-id=" action-id# "')")})))
+       {:data-on:click (str "@post('/hyper/actions?action-id=" action-id# "')")})))
 
 (defn navigate
   "Create a navigation action using reitit named routes.
