@@ -5,7 +5,8 @@
    Cursors implement IRef for familiar Clojure semantics.
 
    State structure:
-   {:sessions {session-id {:data {} :tabs #{tab-id}}}
+   {:global {}
+    :sessions {session-id {:data {} :tabs #{tab-id}}}
     :tabs {tab-id {:data {} :session-id session-id :render-fn fn :sse-channel ch
                    :route {:name :home :path \"/\" :path-params {} :query-params {}}}}
     :actions {action-id {:fn fn :session-id sid :tab-id tid}}
@@ -127,10 +128,23 @@
        (reset! cursor default-value))
      cursor)))
 
+(defn global-cursor
+  "Create a cursor to global state at the given path.
+   Global state is shared across all sessions and tabs.
+   If default-value is provided and the path is nil, initializes with default-value."
+  ([app-state* path]
+   (create-cursor app-state* [:global] path))
+  ([app-state* path default-value]
+   (let [cursor (create-cursor app-state* [:global] path)]
+     (when (nil? @cursor)
+       (reset! cursor default-value))
+     cursor)))
+
 (defn init-state
   "Create initial app state structure."
   []
-  {:sessions {}
+  {:global {}
+   :sessions {}
    :tabs {}
    :actions {}
    :router nil

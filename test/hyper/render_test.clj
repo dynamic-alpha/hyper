@@ -114,6 +114,12 @@
         (Thread/sleep 50)
         
         (is (>= (count @sent-messages) 2))
+
+        ;; Change global state
+        (swap! app-state* assoc-in [:global :theme] "dark")
+        (Thread/sleep 50)
+
+        (is (>= (count @sent-messages) 3))
         
         ;; Clean up watchers
         (render/remove-watchers! app-state* tab-id)))))

@@ -227,3 +227,58 @@
       (let [cursor (state/session-cursor app-state* session-id [:user :preferences] {})]
         (is (= {} @cursor))
         (is (= {} (get-in @app-state* [:sessions session-id :data :user :preferences])))))))
+
+(deftest global-cursor-test
+  (testing "global-cursor reads/writes to global state"
+    (let [app-state* (atom (state/init-state))
+          cursor (state/global-cursor app-state* :theme)]
+      (is (nil? @cursor))
+      (reset! cursor "dark")
+      (is (= "dark" @cursor))
+      (is (= "dark" (get-in @app-state* [:global :theme])))))
+
+  (testing "global-cursor with default value initializes nil path"
+    (let [app-state* (atom (state/init-state))
+          cursor (state/global-cursor app-state* :user-count 0)]
+      (is (= 0 @cursor))
+      (is (= 0 (get-in @app-state* [:global :user-count])))))
+
+  (testing "global-cursor with default value doesn't overwrite existing"
+    (let [app-state* (atom (state/init-state))]
+      (swap! app-state* assoc-in [:global :user-count] 42)
+      (let [cursor (state/global-cursor app-state* :user-count 0)]
+        (is (= 42 @cursor)))))
+
+  (testing "global-cursor swap! works"
+    (let [app-state* (atom (state/init-state))
+          cursor (state/global-cursor app-state* :counter 0)]
+      (swap! cursor inc)
+      (is (= 1 @cursor))
+      (swap! cursor + 10)
+      (is (= 11 @cursor))))
+
+  (testing "global-cursor with nested path"
+    (let [app-state* (atom (state/init-state))
+          cursor (state/global-cursor app-state* [:config :feature-flags] #{})]
+      (is (= #{} @cursor))
+      (swap! cursor conj :dark-mode)
+      (is (= #{:dark-mode} @cursor))
+      (is (= #{:dark-mode} (get-in @app-state* [:global :config :feature-flags])))))
+
+  (testing "global-cursor is shared across sessions and tabs"
+    (let [app-state* (atom (state/init-state))
+          session-id-1 "session-g1"
+          session-id-2 "session-g2"
+          tab-id-1 "tab-g1"
+          tab-id-2 "tab-g2"]
+      (state/get-or-create-tab! app-state* session-id-1 tab-id-1)
+      (state/get-or-create-tab! app-state* session-id-2 tab-id-2)
+      ;; Both cursors point to the same global state
+      (let [cursor-a (state/global-cursor app-state* :shared-count 0)
+            cursor-b (state/global-cursor app-state* :shared-count 0)]
+        (swap! cursor-a inc)
+        (is (= 1 @cursor-a))
+        (is (= 1 @cursor-b))
+        (swap! cursor-b + 5)
+        (is (= 6 @cursor-a))
+        (is (= 6 @cursor-b))))))

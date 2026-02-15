@@ -2,7 +2,7 @@
   "Public API for the hyper web framework.
 
    Provides:
-   - session-cursor, tab-cursor, and path-cursor for state management
+   - global-cursor, session-cursor, tab-cursor, and path-cursor for state management
    - action macro for handling user interactions
    - navigate function for SPA navigation
    - create-handler for building ring handlers"
@@ -30,6 +30,25 @@
     {:session-id session-id
      :tab-id tab-id
      :app-state* app-state*}))
+
+(defn global-cursor
+  "Create a cursor to global state at the given path.
+   Global state is shared across all sessions and tabs — a change to global
+   state triggers a re-render for every connected tab.
+
+   Path can be a keyword or vector.
+   If default-value is provided and the path is nil, initializes with default-value.
+
+   Example:
+     (global-cursor :theme)
+     (global-cursor [:config :feature-flags])
+     (global-cursor :user-count 0)"
+  ([path]
+   (let [{:keys [app-state*]} (require-context! "global-cursor")]
+     (state/global-cursor app-state* path)))
+  ([path default-value]
+   (let [{:keys [app-state*]} (require-context! "global-cursor")]
+     (state/global-cursor app-state* path default-value))))
 
 (defn session-cursor
   "Create a cursor to session state at the given path.

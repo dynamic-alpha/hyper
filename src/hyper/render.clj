@@ -128,30 +128,34 @@
     (render-and-send! app-state* session-id tab-id request-var)))
 
 (defn setup-watchers!
-  "Setup watchers on session and tab state to trigger re-renders.
-   Also watches route changes to trigger re-renders (URL sync is
-   handled client-side via MutationObserver on data-hyper-url)."
+  "Setup watchers on global, session, tab, and route state to trigger re-renders.
+   Route URL sync is handled client-side via MutationObserver on data-hyper-url."
   [app-state* session-id tab-id request-var]
   (let [watch-key (keyword (str "render-" tab-id))
+        global-path [:global]
         session-path [:sessions session-id :data]
         tab-path [:tabs tab-id :data]
-        route-path [:tabs tab-id :route]]
+        route-path [:tabs tab-id :route]
+        trigger-render (fn [_k _r old-state new-state path]
+                         (when (not= (get-in old-state path)
+                                     (get-in new-state path))
+                           (future
+                             (throttled-render-and-send! app-state* session-id tab-id request-var))))]
+
+    ;; Watch global data (shared across all sessions/tabs)
+    (add-watch app-state* (keyword (str "global-" watch-key))
+               (fn [k r old-state new-state]
+                 (trigger-render k r old-state new-state global-path)))
 
     ;; Watch session data
     (add-watch app-state* (keyword (str "session-" watch-key))
-               (fn [_k _r old-state new-state]
-                 (when (not= (get-in old-state session-path)
-                            (get-in new-state session-path))
-                   (future
-                     (throttled-render-and-send! app-state* session-id tab-id request-var)))))
+               (fn [k r old-state new-state]
+                 (trigger-render k r old-state new-state session-path)))
 
     ;; Watch tab data
     (add-watch app-state* (keyword (str "tab-" watch-key))
-               (fn [_k _r old-state new-state]
-                 (when (not= (get-in old-state tab-path)
-                            (get-in new-state tab-path))
-                   (future
-                     (throttled-render-and-send! app-state* session-id tab-id request-var)))))
+               (fn [k r old-state new-state]
+                 (trigger-render k r old-state new-state tab-path)))
 
     ;; Watch route changes to trigger re-render.
     ;; The rendered fragment includes data-hyper-url on #hyper-app,
@@ -160,8 +164,7 @@
                (fn [_k _r old-state new-state]
                  (let [old-route (get-in old-state route-path)
                        new-route (get-in new-state route-path)]
-                   (when (and new-route
-                              (not= old-route new-route))
+                   (when (and new-route (not= old-route new-route))
                      (future
                        (throttled-render-and-send! app-state* session-id tab-id request-var)))))))
   nil)
@@ -170,6 +173,7 @@
   "Remove watchers for a tab."
   [app-state* tab-id]
   (let [watch-key (keyword (str "render-" tab-id))]
+    (remove-watch app-state* (keyword (str "global-" watch-key)))
     (remove-watch app-state* (keyword (str "session-" watch-key)))
     (remove-watch app-state* (keyword (str "tab-" watch-key)))
     (remove-watch app-state* (keyword (str "route-" watch-key))))

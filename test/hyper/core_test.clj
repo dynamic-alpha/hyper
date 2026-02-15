@@ -4,6 +4,44 @@
             [hyper.state :as state]
             [reitit.ring :as ring]))
 
+(deftest test-global-cursor
+  (testing "global-cursor requires request context"
+    (is (thrown? Exception
+                 (hy/global-cursor :theme))))
+
+  (testing "global-cursor creates cursor to global state"
+    (let [app-state* (atom (state/init-state))]
+      (binding [hy/*request* {:hyper/session-id "s1"
+                              :hyper/tab-id "t1"
+                              :hyper/app-state app-state*}]
+        (let [cursor (hy/global-cursor :theme)]
+          (reset! cursor "dark")
+          (is (= "dark" @cursor))
+          (is (= "dark" (get-in @app-state* [:global :theme])))))))
+
+  (testing "global-cursor with default value"
+    (let [app-state* (atom (state/init-state))]
+      (binding [hy/*request* {:hyper/session-id "s1"
+                              :hyper/tab-id "t1"
+                              :hyper/app-state app-state*}]
+        (let [cursor (hy/global-cursor :counter 0)]
+          (is (= 0 @cursor))
+          (swap! cursor inc)
+          (is (= 1 @cursor))))))
+
+  (testing "global-cursor is shared across different tab contexts"
+    (let [app-state* (atom (state/init-state))]
+      ;; Write from tab 1
+      (binding [hy/*request* {:hyper/session-id "s1"
+                              :hyper/tab-id "t1"
+                              :hyper/app-state app-state*}]
+        (reset! (hy/global-cursor :shared 0) 42))
+      ;; Read from tab 2 in a different session
+      (binding [hy/*request* {:hyper/session-id "s2"
+                              :hyper/tab-id "t2"
+                              :hyper/app-state app-state*}]
+        (is (= 42 @(hy/global-cursor :shared 0)))))))
+
 (deftest test-session-cursor
   (testing "session-cursor requires request context"
     (is (thrown? Exception
