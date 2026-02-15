@@ -109,30 +109,19 @@
   "Create a navigation action using reitit named routes.
    Returns a map with :data-on-click attribute for Datastar.
 
-   routes: Vector of reitit routes (or router instance)
    route-name: Keyword name of the route
    params: Optional map of path/query parameters
 
    Example:
-     [:a (navigate routes :home) \"Go Home\"]
-     [:a (navigate routes :user-profile {:id \"123\"}) \"View User\"]"
-  ([routes route-name]
-   (navigate routes route-name {}))
-  ([routes route-name params]
-   (let [router (if (vector? routes)
-                  (ring/router routes)
-                  routes)]
+     [:a (navigate :home) \"Go Home\"]
+     [:a (navigate :user-profile {:id \"123\"}) \"View User\"]"
+  ([route-name]
+   (navigate route-name nil))
+  ([route-name params]
+   (let [router (:hyper/router *request*)]
      (when-let [path (:path (reitit/match-by-name router route-name params))]
-       {:data-on-click (str "$$get('" path "'); window.history.pushState({}, '', '" path "')")}))))
-
-(defn navigate-url
-  "Create a navigation action to a URL.
-   Returns a map with :data-on-click attribute for Datastar.
-
-   Example:
-     [:a (navigate-url \"/about\") \"About\"]"
-  [url]
-  {:data-on-click (str "$$get('" url "'); window.history.pushState({}, '', '" url "')")})
+       {:href path
+        :data-on:click__prevent (str "@get('" path "'); window.history.pushState({}, '', '" path "')")}))))
 
 (defn create-handler
   "Create a Ring handler for a hyper application.

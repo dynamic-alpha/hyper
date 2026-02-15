@@ -10,7 +10,8 @@
             [hyper.state :as state]
             [hyper.actions :as actions]
             [hyper.render :as render]
-            [taoensso.telemere :as t]))
+            [taoensso.telemere :as t]
+            [clojure.set :as set]))
 
 (defn generate-session-id []
   (str "sess-" (java.util.UUID/randomUUID)))
@@ -118,7 +119,11 @@
 
         (render/register-render-fn! app-state* tab-id render-fn)
 
-        (let [req-with-state (assoc req :hyper/app-state app-state*)]
+        (let [req-with-state (-> req
+                                 (assoc :hyper/app-state app-state*)
+                                 (set/rename-keys
+                                   {:reitit.core/router :hyper/router
+                                    :reitit.core/match  :hyper/route-match}))]
           (push-thread-bindings {request-var req-with-state})
           (try
             (let [content (render-fn req-with-state)
