@@ -169,7 +169,9 @@
 (defn create-handler
   "Create a Ring handler for a hyper application.
 
-   routes: Vector of reitit routes (using route names for navigation)
+   routes: Vector of reitit routes, or a Var holding routes for live reloading.
+           When a Var is provided, route changes are picked up on the next request
+           without restarting the server — ideal for REPL-driven development.
    app-state*: Optional atom for application state (creates new one if not provided)
 
    Example:
@@ -179,7 +181,12 @@
         [\"/about\" {:name :about
                     :get (fn [req] [:div [:h1 \"About\"]])}]])
 
+     ;; Static routes
      (def handler (create-handler routes))
+
+     ;; Live-reloading routes (pass the Var)
+     (def handler (create-handler #'routes))
+
      (def server (start! handler {:port 3000}))"
   ([routes]
    (create-handler routes (atom (state/init-state))))

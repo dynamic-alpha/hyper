@@ -262,10 +262,35 @@
                :headers {"Content-Type" "application/json"}
                :body "{\"success\": true}"})))))))
 
+(defn- build-ring-handler
+  "Build the Ring handler for the given user routes.
+   Wraps user :get handlers with page-handler, combines with hyper system routes,
+   compiles the reitit router, and updates app-state with the current routes and router.
+   Returns the compiled Ring handler (without outer middleware)."
+  [user-routes app-state* page-wrapper system-routes]
+  (let [wrapped-routes (mapv (fn [[path route-data]]
+                               [path (update route-data :get
+                                             (fn [handler]
+                                               (when handler
+                                                 (page-wrapper handler))))])
+                             user-routes)
+        all-routes (concat system-routes wrapped-routes)
+        router (ring/router all-routes
+                            {:conflicts nil
+                             :data {:coercion malli/coercion
+                                    :middleware [ring-coercion/coerce-request-middleware]}})]
+    ;; Store routes and router in app-state for access during actions/renders/navigation
+    (swap! app-state* assoc
+           :router router
+           :routes user-routes)
+    (ring/ring-handler router (ring/create-default-handler))))
+
 (defn create-handler
   "Create a Ring handler for the hyper application.
 
-   routes: Vector of reitit routes (not a router instance)
+   routes: Vector of reitit routes, or a Var holding routes for live reloading.
+           When a Var is provided, route changes are picked up on the next request
+           without restarting the server — ideal for REPL-driven development.
    app-state*: Atom containing application state
    request-var: Dynamic var to bind request context (e.g., hyper.core/*request*)
 
@@ -273,32 +298,30 @@
    Hyper will wrap them to provide full HTML responses and SSE connections."
   [routes app-state* request-var]
   (let [page-wrapper (page-handler app-state* request-var)
-        ;; Transform user routes to wrap GET handlers with page-handler
-        wrapped-routes (mapv (fn [[path route-data]]
-                               [path (update route-data :get
-                                             (fn [handler]
-                                               (when handler
-                                                 (page-wrapper handler))))])
-                             routes)
-        ;; Combine with hyper system routes
-        all-routes (concat
-                    [["/hyper/events" {:get (sse-events-handler app-state* request-var)}]
-                     ["/hyper/actions" {:post (action-handler app-state* request-var)}]
-                     ["/hyper/navigate" {:post (navigate-handler app-state* request-var)}]]
-                    wrapped-routes)
-        router (ring/router all-routes
-                            {:conflicts nil
-                             :data {:coercion malli/coercion
-                                    :middleware [ring-coercion/coerce-request-middleware]}})]
-
-    ;; Store routes and router in app-state for access during actions/renders
-    (swap! app-state* assoc
-           :router router
-           :routes routes)
-
-    (-> (ring/ring-handler
-         router
-         (ring/create-default-handler))
+        system-routes [["/hyper/events" {:get (sse-events-handler app-state* request-var)}]
+                       ["/hyper/actions" {:post (action-handler app-state* request-var)}]
+                       ["/hyper/navigate" {:post (navigate-handler app-state* request-var)}]]
+        initial-routes (if (var? routes) @routes routes)
+        initial-handler (build-ring-handler initial-routes app-state* page-wrapper system-routes)
+        handler (if (var? routes)
+                  ;; Dynamic: rebuild router when the routes Var is redefined.
+                  ;; Uses identical? since a re-def always creates a new object,
+                  ;; avoiding deep equality checks on every request.
+                  (let [cached (atom {:routes initial-routes
+                                      :handler initial-handler})]
+                    (fn [req]
+                      (let [current-routes @routes]
+                        (when-not (identical? current-routes (:routes @cached))
+                          (t/log! {:level :info
+                                   :id :hyper.event/routes-reload
+                                   :msg "Routes changed, rebuilding router"})
+                          (let [h (build-ring-handler current-routes app-state*
+                                                     page-wrapper system-routes)]
+                            (reset! cached {:routes current-routes :handler h})))
+                        ((:handler @cached) req))))
+                  ;; Static: use the compiled handler directly
+                  initial-handler)]
+    (-> handler
         ((wrap-hyper-context app-state*))
         (keyword-params/wrap-keyword-params)
         (params/wrap-params))))
