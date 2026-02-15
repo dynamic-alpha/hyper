@@ -9,19 +9,39 @@
             [reitit.ring.coercion :as ring-coercion]
             [ring.middleware.params :as params]
             [ring.middleware.keyword-params :as keyword-params]
+            [ring.middleware.cookies :as cookies]
             [org.httpkit.server :as http-kit]
             [hiccup.core :as hiccup]
             [hyper.state :as state]
             [hyper.actions :as actions]
             [hyper.render :as render]
             [taoensso.telemere :as t]
-            [clojure.string]))
+            [clojure.string]
+            [clojure.edn :as edn]))
 
 (defn generate-session-id []
   (str "sess-" (java.util.UUID/randomUUID)))
 
 (defn generate-tab-id []
   (str "tab-" (java.util.UUID/randomUUID)))
+
+(defn serialize-session-data
+  "Serialize session data to a string for cookie storage."
+  [session-data]
+  (when session-data
+    (try
+      (pr-str session-data)
+      (catch Exception _
+        nil))))
+
+(defn deserialize-session-data
+  "Deserialize session data from a cookie string."
+  [cookie-value]
+  (when (and cookie-value (not (empty? cookie-value)))
+    (try
+      (edn/read-string cookie-value)
+      (catch Exception _
+        {}))))
 
 (defn wrap-hyper-context
   "Middleware that adds session-id and tab-id to the request."
@@ -205,7 +225,7 @@
                               [:title "Hyper App"]
                               (datastar-script)]
                              [:body
-                              {:data-init (str "@get('/hyper/events?tab-id=" tab-id "')")}
+                              {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
                               [:div {:id "hyper-app"}
                                content]
                               (hyper-scripts tab-id)]])]
@@ -324,7 +344,8 @@
     (-> handler
         ((wrap-hyper-context app-state*))
         (keyword-params/wrap-keyword-params)
-        (params/wrap-params))))
+        (params/wrap-params)
+        (cookies/wrap-cookies))))
 
 (defn start!
   "Start the HTTP server with the given handler.
