@@ -15,6 +15,7 @@
             [hyper.state :as state]
             [hyper.actions :as actions]
             [hyper.render :as render]
+            [hyper.brotli :as br]
             [taoensso.telemere :as t]
             [clojure.string]
             [clojure.edn :as edn]))
@@ -78,17 +79,24 @@
   [:script {:type "module"
             :src "https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js"}])
 
+(defn- accepts-br?
+  "Check if the request's Accept-Encoding header includes brotli."
+  [req]
+  (when-let [accept (get-in req [:headers "accept-encoding"])]
+    (some? (re-find #"\bbr\b" accept))))
+
 (defn sse-events-handler
   "Handler for SSE event stream."
   [app-state* request-var]
   (fn [req]
     (let [session-id (:hyper/session-id req)
-          tab-id (:hyper/tab-id req)]
+          tab-id (:hyper/tab-id req)
+          compress? (accepts-br? req)]
 
       (http-kit/as-channel req
         {:on-open (fn [channel]
                     (state/get-or-create-tab! app-state* session-id tab-id)
-                    (render/register-sse-channel! app-state* tab-id channel)
+                    (render/register-sse-channel! app-state* tab-id channel compress?)
                     (render/setup-watchers! app-state* session-id tab-id request-var)
                     ;; Auto-watch the routes Var so title/route changes
                     ;; trigger re-renders for all connected tabs
@@ -97,12 +105,29 @@
                         (render/watch-source! app-state* session-id tab-id request-var routes-source)))
                     ;; Set up route-level watches (:watches + Var :get handlers)
                     (render/setup-route-watches! app-state* session-id tab-id request-var)
-                    (http-kit/send!
-                      channel
-                      {:headers {"Content-Type" "text/event-stream"}
-                       :body    (str "event: connected\n"
-                                     "data: {\"tab-id\":\"" tab-id "\"}\n\n")}
-                      false))
+                    (let [connected-msg (str "event: connected\n"
+                                            "data: {\"tab-id\":\"" tab-id "\"}\n\n")]
+                      (if compress?
+                        ;; Brotli: send headers with the first chunk compressed
+                        ;; through the tab's streaming compressor so all bytes
+                        ;; on this connection form one contiguous brotli stream.
+                        (let [tab-data (get-in @app-state* [:tabs tab-id])
+                              compressed (br/compress-stream
+                                           (:br-out tab-data)
+                                           (:br-stream tab-data)
+                                           connected-msg)]
+                          (http-kit/send!
+                            channel
+                            {:headers {"Content-Type"     "text/event-stream"
+                                       "Content-Encoding" "br"}
+                             :body    compressed}
+                            false))
+                        ;; No compression: plain text
+                        (http-kit/send!
+                          channel
+                          {:headers {"Content-Type" "text/event-stream"}
+                           :body    connected-msg}
+                          false))))
 
          :on-close (fn [_channel _status]
                      (t/log! {:level :info
@@ -301,13 +326,14 @@
 
         (render/register-render-fn! app-state* tab-id render-fn)
         (state/set-tab-route! app-state* tab-id route-info)
-
         (let [req-with-state (-> req
                                  (assoc :hyper/app-state app-state*
                                         :hyper/router (get @app-state* :router)
                                         :hyper/route-match (:reitit.core/match req))
-                                 (dissoc :reitit.core/match))]
-          (push-thread-bindings {request-var req-with-state})
+                                 (dissoc :reitit.core/match))
+              action-idx-var (requiring-resolve 'hyper.core/*action-idx*)]
+          (push-thread-bindings {request-var req-with-state
+                                 action-idx-var (atom 0)})
           (try
             (let [content (render-fn req-with-state)
                   route-name (:name route-info)
@@ -450,6 +476,7 @@
                   initial-handler)]
     (-> handler
         ((wrap-hyper-context app-state*))
+        (br/wrap-brotli)
         (keyword-params/wrap-keyword-params)
         (params/wrap-params)
         (cookies/wrap-cookies))))

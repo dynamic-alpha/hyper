@@ -6,24 +6,35 @@
   (:require [dev.onionpancakes.chassis.core :as c]
             [org.httpkit.server :as http]
             [hyper.state :as state]
+            [hyper.brotli :as br]
             [hyper.protocols :as proto]
             [taoensso.telemere :as t])
   (:import [java.util.concurrent Executors ExecutorService]))
 
 (defn register-sse-channel!
-  "Register an SSE channel for a tab."
-  [app-state* tab-id channel]
-  (swap! app-state* assoc-in [:tabs tab-id :sse-channel] channel)
+  "Register an SSE channel for a tab, optionally with a streaming brotli
+   compressor. When compress? is true, creates a compressor pair
+   (ByteArrayOutputStream + BrotliOutputStream) kept for the lifetime
+   of the SSE connection so the LZ77 window is shared across fragments."
+  [app-state* tab-id channel compress?]
+  (let [tab-updates (cond-> {:sse-channel channel}
+                      compress? (merge (let [out (br/byte-array-out-stream)]
+                                         {:br-out out
+                                          :br-stream (br/compress-out-stream out :window-size 18)})))]
+    (swap! app-state* update-in [:tabs tab-id] merge tab-updates))
   nil)
 
 (defn unregister-sse-channel!
-  "Unregister an SSE channel for a tab."
+  "Unregister an SSE channel and close the brotli stream for a tab."
   [app-state* tab-id]
-  (when-let [channel (get-in @app-state* [:tabs tab-id :sse-channel])]
+  (let [tab-data (get-in @app-state* [:tabs tab-id])
+        channel (:sse-channel tab-data)]
+    (br/close-stream (:br-stream tab-data))
     (when (and channel (instance? org.httpkit.server.AsyncChannel channel))
       (t/catch->error! :hyper.error/close-sse-channel
         (http/close channel))))
-  (swap! app-state* assoc-in [:tabs tab-id :sse-channel] nil)
+  (swap! app-state* update-in [:tabs tab-id]
+         assoc :sse-channel nil :br-out nil :br-stream nil)
   nil)
 
 (defn get-sse-channel
@@ -55,12 +66,23 @@
        "data: elements " html "\n\n"))
 
 (defn send-sse!
-  "Send an SSE message to a tab's channel."
+  "Send an SSE message to a tab's channel.
+   If the tab has a streaming brotli compressor (client supports br),
+   compresses through it and sends raw bytes. The Content-Encoding: br
+   header is set once on the initial response — subsequent sends on the
+   async channel are just data frames in the same compressed stream."
   [app-state* tab-id message]
-  (when-let [channel (get-sse-channel app-state* tab-id)]
-    (or (t/catch->error! :hyper.error/send-sse
-          (http/send! channel message false))
-        false)))
+  (let [tab-data (get-in @app-state* [:tabs tab-id])
+        channel  (:sse-channel tab-data)
+        br-out   (:br-out tab-data)
+        br-stream (:br-stream tab-data)]
+    (when channel
+      (or (t/catch->error! :hyper.error/send-sse
+            (if (and br-out br-stream)
+              (let [compressed (br/compress-stream br-out br-stream message)]
+                (http/send! channel compressed false))
+              (http/send! channel message false)))
+          false))))
 
 (defn render-error-fragment
   "Render an error message as a fragment."
@@ -122,23 +144,25 @@
                        :hyper/tab-id tab-id
                        :hyper/app-state app-state*}
                 router (assoc :hyper/router router))]
-      (push-thread-bindings {request-var req})
-      (try
-        (let [hiccup-result (safe-render render-fn req)
-              ;; Resolve title — requiring-resolve to avoid circular dep
-              resolve-title-fn (requiring-resolve 'hyper.server/resolve-title)
-              find-route-title-fn (requiring-resolve 'hyper.server/find-route-title)
-              title-spec (when (and current-routes route)
-                           (find-route-title-fn current-routes (:name route)))
-              title (resolve-title-fn title-spec req)
-              div-attrs (cond-> {:id "hyper-app"}
-                          current-url (assoc :data-hyper-url current-url)
-                          title (assoc :data-hyper-title title))
-              html (c/html [:div div-attrs hiccup-result])
-              fragment (format-datastar-fragment html)]
-          (send-sse! app-state* tab-id fragment))
-        (finally
-          (pop-thread-bindings))))))
+      (let [action-idx-var (requiring-resolve 'hyper.core/*action-idx*)]
+        (push-thread-bindings {request-var req
+                               action-idx-var (atom 0)})
+        (try
+          (let [hiccup-result (safe-render render-fn req)
+                ;; Resolve title — requiring-resolve to avoid circular dep
+                resolve-title-fn (requiring-resolve 'hyper.server/resolve-title)
+                find-route-title-fn (requiring-resolve 'hyper.server/find-route-title)
+                title-spec (when (and current-routes route)
+                             (find-route-title-fn current-routes (:name route)))
+                title (resolve-title-fn title-spec req)
+                div-attrs (cond-> {:id "hyper-app"}
+                            current-url (assoc :data-hyper-url current-url)
+                            title (assoc :data-hyper-title title))
+                html (c/html [:div div-attrs hiccup-result])
+                fragment (format-datastar-fragment html)]
+            (send-sse! app-state* tab-id fragment))
+          (finally
+            (pop-thread-bindings)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Render dispatch

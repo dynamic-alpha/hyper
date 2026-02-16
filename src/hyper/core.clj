@@ -16,6 +16,11 @@
 ;; Dynamic var to hold current request context
 (def ^:dynamic *request* nil)
 
+;; Per-render action counter. Bound to (atom 0) before each render so that
+;; deterministic render functions produce the same action IDs every time,
+;; enabling effective brotli streaming compression.
+(def ^:dynamic *action-idx* nil)
+
 (defn- require-context!
   "Extract and validate the request context from *request*.
    Throws if called outside a request context or if required keys are missing.
@@ -131,7 +136,9 @@
    Returns a map with :data-on-click attribute for Datastar.
 
    The action is registered with the current session/tab context
-   and can access state via cursors.
+   and can access state via cursors. Action IDs are deterministic
+   (derived from a per-render counter + tab-id) so that re-renders
+   produce identical HTML, enabling effective brotli streaming compression.
 
    Example:
      [:button (action (swap! (tab-cursor :count) inc))
@@ -154,7 +161,9 @@
                                             :hyper/app-state app-state*#
                                             :hyper/router router#}]
                           ~@body))
-           action-id# (actions/register-action! app-state*# session-id# tab-id# action-fn#)]
+           idx# (if *action-idx* (swap! *action-idx* inc) (hash action-fn#))
+           action-id# (str "a-" tab-id# "-" idx#)
+           _# (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#)]
        {:data-on:click (str "@post('/hyper/actions?action-id=" action-id# "')")})))
 
 (defn navigate
@@ -208,7 +217,9 @@
                                                :path path
                                                :path-params (or params {})
                                                :query-params (or query-params {})})))
-             action-id (actions/register-action! app-state* session-id tab-id nav-fn)
+             nav-idx (if *action-idx* (swap! *action-idx* inc) (hash nav-fn))
+             action-id (actions/register-action! app-state* session-id tab-id nav-fn
+                                                (str "a-" tab-id "-" nav-idx))
              escaped-title (or (server/escape-js-string title) "")
              escaped-href (server/escape-js-string href)]
          {:href href

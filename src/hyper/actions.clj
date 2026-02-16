@@ -6,14 +6,19 @@
 
 (defn register-action!
   "Register an action function and return its ID.
-   Stores in app-state under [:actions action-id]."
-  [app-state* session-id tab-id action-fn]
-  (let [action-id (str "action-" (java.util.UUID/randomUUID))]
-    (swap! app-state* assoc-in [:actions action-id]
-           {:fn action-fn
-            :session-id session-id
-            :tab-id tab-id})
-    action-id))
+   Stores in app-state under [:actions action-id].
+
+   When action-id is provided it is used as-is (deterministic actions).
+   When omitted a random UUID is generated (legacy / dynamic actions)."
+  ([app-state* session-id tab-id action-fn]
+   (register-action! app-state* session-id tab-id action-fn
+                     (str "action-" (java.util.UUID/randomUUID))))
+  ([app-state* session-id tab-id action-fn action-id]
+   (swap! app-state* assoc-in [:actions action-id]
+          {:fn action-fn
+           :session-id session-id
+           :tab-id tab-id})
+   action-id))
 
 (defn execute-action!
   "Execute an action by ID with error handling."

@@ -14,7 +14,7 @@
       (state/get-or-create-tab! app-state* session-id tab-id)
       
       ;; Register channel
-      (render/register-sse-channel! app-state* tab-id channel)
+      (render/register-sse-channel! app-state* tab-id channel false)
 
       ;; Retrieve channel
       (is (= channel (render/get-sse-channel app-state* tab-id)))
@@ -98,7 +98,7 @@
       
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
-      (render/register-sse-channel! app-state* tab-id {:mock true})
+      (render/register-sse-channel! app-state* tab-id {:mock true} false)
       
       ;; Temporarily override send-sse! for testing
       (with-redefs [render/send-sse! mock-send!]
@@ -136,7 +136,7 @@
       
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
-      (render/register-sse-channel! app-state* tab-id mock-channel)
+      (render/register-sse-channel! app-state* tab-id mock-channel false)
       (render/setup-watchers! app-state* session-id tab-id #'hyper.core/*request*)
       
       (is (some? (render/get-render-fn app-state* tab-id)))
@@ -195,7 +195,7 @@
       
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
-      (render/register-sse-channel! app-state* tab-id {:mock true})
+      (render/register-sse-channel! app-state* tab-id {:mock true} false)
       
       (with-redefs [render/send-sse! (fn [_state* _tid _msg] true)]
         ;; First render succeeds
