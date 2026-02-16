@@ -6,7 +6,9 @@
   (:require [hiccup.core :as hiccup]
             [org.httpkit.server :as http]
             [hyper.state :as state]
-            [taoensso.telemere :as t]))
+            [hyper.protocols :as proto]
+            [taoensso.telemere :as t])
+  (:import [java.util.concurrent Executors ExecutorService]))
 
 (defn register-sse-channel!
   "Register an SSE channel for a tab."
@@ -93,7 +95,6 @@
   (when-let [render-fn (get-render-fn app-state* tab-id)]
     (let [router (get @app-state* :router)
           route (get-in @app-state* [:tabs tab-id :route])
-          routes (get @app-state* :routes)
           current-url (when route
                         (state/build-url (:path route) (:query-params route)))
           req (cond-> {:hyper/session-id session-id
@@ -106,8 +107,10 @@
               ;; Resolve title — requiring-resolve to avoid circular dep
               resolve-title-fn (requiring-resolve 'hyper.server/resolve-title)
               find-route-title-fn (requiring-resolve 'hyper.server/find-route-title)
-              title-spec (when (and routes route)
-                           (find-route-title-fn routes (:name route)))
+              live-routes-fn (requiring-resolve 'hyper.server/live-routes)
+              current-routes (live-routes-fn app-state*)
+              title-spec (when (and current-routes route)
+                           (find-route-title-fn current-routes (:name route)))
               title (resolve-title-fn title-spec req)
               div-attrs (cond-> {:id "hyper-app"}
                           current-url (assoc :data-hyper-url current-url)
@@ -118,8 +121,23 @@
         (finally
           (pop-thread-bindings))))))
 
-;; Render throttling to prevent excessive re-renders
-;; Default to 16ms (~60fps)
+;; ---------------------------------------------------------------------------
+;; Render dispatch
+;; ---------------------------------------------------------------------------
+
+(defn submit-render!
+  "Submit a render task to the app's executor. Returns immediately so that
+   watch callbacks (which may fire synchronously, e.g. atom add-watch)
+   never block the caller's thread."
+  [app-state* f]
+  (when-let [^java.util.concurrent.ExecutorService executor (get @app-state* :executor)]
+    (.submit executor ^Runnable f))
+  nil)
+
+;; ---------------------------------------------------------------------------
+;; Render throttling — default 16ms (~60fps)
+;; ---------------------------------------------------------------------------
+
 (def ^:dynamic *render-throttle-ms* 16)
 
 (defn should-render?
@@ -140,6 +158,41 @@
   (when (should-render? app-state* tab-id)
     (render-and-send! app-state* session-id tab-id request-var)))
 
+;; ---------------------------------------------------------------------------
+;; External source watching
+;; ---------------------------------------------------------------------------
+
+(defn watch-source!
+  "Watch an external Watchable source for a specific tab. When the source
+   changes, submits a throttled re-render to the executor. The watch key
+   is unique per tab-id so that multiple tabs each get their own re-render.
+   Idempotent — calling with the same source and tab is safe."
+  [app-state* session-id tab-id request-var source]
+  (let [watch-key (keyword (str "hyper-ext-" tab-id "-" (System/identityHashCode source)))]
+    (proto/-add-watch source watch-key
+                      (fn [_old _new]
+                        (submit-render! app-state*
+                                        #(throttled-render-and-send! app-state* session-id tab-id request-var))))
+    ;; Track for cleanup
+    (swap! app-state* update-in [:tabs tab-id :watches]
+           (fnil assoc {}) watch-key source)
+    nil))
+
+(defn unwatch-source!
+  "Remove a single external watch by key for a tab."
+  [_app-state* source watch-key]
+  (proto/-remove-watch source watch-key)
+  nil)
+
+(defn remove-external-watches!
+  "Remove all external watches for a tab."
+  [app-state* tab-id]
+  (let [watches (get-in @app-state* [:tabs tab-id :watches])]
+    (doseq [[watch-key source] watches]
+      (unwatch-source! app-state* source watch-key))
+    (swap! app-state* update-in [:tabs tab-id] dissoc :watches))
+  nil)
+
 (defn setup-watchers!
   "Setup watchers on global, session, tab, and route state to trigger re-renders.
    Route URL sync is handled client-side via MutationObserver on data-hyper-url."
@@ -152,8 +205,8 @@
         trigger-render (fn [_k _r old-state new-state path]
                          (when (not= (get-in old-state path)
                                      (get-in new-state path))
-                           (future
-                             (throttled-render-and-send! app-state* session-id tab-id request-var))))]
+                           (submit-render! app-state*
+                                           #(throttled-render-and-send! app-state* session-id tab-id request-var))))]
 
     ;; Watch global data (shared across all sessions/tabs)
     (add-watch app-state* (keyword (str "global-" watch-key))
@@ -178,8 +231,8 @@
                  (let [old-route (get-in old-state route-path)
                        new-route (get-in new-state route-path)]
                    (when (and new-route (not= old-route new-route))
-                     (future
-                       (throttled-render-and-send! app-state* session-id tab-id request-var)))))))
+                     (submit-render! app-state*
+                                     #(throttled-render-and-send! app-state* session-id tab-id request-var)))))))
   nil)
 
 (defn remove-watchers!
@@ -196,6 +249,7 @@
   "Clean up all resources for a tab."
   [app-state* tab-id]
   (remove-watchers! app-state* tab-id)
+  (remove-external-watches! app-state* tab-id)
   (unregister-sse-channel! app-state* tab-id)
   ;; Use requiring-resolve for hyper.actions to avoid circular dependency
   ;; (actions requires nothing from render, but render is loaded first)

@@ -5,6 +5,7 @@
    - global-cursor, session-cursor, tab-cursor, and path-cursor for state management
    - action macro for handling user interactions
    - navigate function for SPA navigation
+   - watch! for observing external state sources
    - create-handler for building ring handlers"
   (:require [hyper.state :as state]
             [hyper.actions :as actions]
@@ -104,6 +105,27 @@
          (reset! cursor default-value))
        cursor))))
 
+(defn watch!
+  "Watch an external source for changes, triggering a re-render of the current
+   tab when it changes. Source must satisfy the hyper.protocols/Watchable protocol
+   (extended by default for atoms, refs, vars, and any IRef).
+
+   Idempotent — safe to call on every render with the same source.
+   Watches are automatically cleaned up when the tab disconnects.
+
+   Example:
+     ;; Watch a database query result atom
+     (defn my-page [req]
+       (watch! db-results)
+       [:div [:p \"Count: \" (count @db-results)]])
+
+     ;; Watch any Watchable source
+     (watch! my-event-stream)"
+  [source]
+  (let [{:keys [session-id tab-id app-state*]} (require-context! "watch!")
+        request-var (get @app-state* :request-var)]
+    (render/watch-source! app-state* session-id tab-id request-var source)))
+
 (defmacro action
   "Create an action that executes the given body when triggered.
    Returns a map with :data-on-click attribute for Datastar.
@@ -168,13 +190,14 @@
          tab-id (:hyper/tab-id *request*)]
      (when-let [path (:path (reitit/match-by-name router route-name params))]
        (let [href (state/build-url path query-params)
-             routes (get @app-state* :routes)
+             ;; Use live-routes to always get the latest route metadata
+             routes (server/live-routes app-state*)
              ;; Resolve title eagerly for the pushState call
              title-spec (server/find-route-title routes route-name)
              title (server/resolve-title title-spec *request*)
              ;; Register an action that performs the navigation server-side
              nav-fn (fn []
-                      (let [routes (get @app-state* :routes)
+                      (let [routes (server/live-routes app-state*)
                             render-fn (server/find-render-fn routes route-name)]
                         (when render-fn
                           (render/register-render-fn! app-state* tab-id render-fn))
@@ -202,7 +225,11 @@
    routes: Vector of reitit routes, or a Var holding routes for live reloading.
            When a Var is provided, route changes are picked up on the next request
            without restarting the server — ideal for REPL-driven development.
-   app-state*: Optional atom for application state (creates new one if not provided)
+
+   Options (keyword arguments):
+   - :app-state  — Atom for application state (default: fresh atom)
+   - :executor   — java.util.concurrent.ExecutorService for render dispatch
+                   (default: virtual-thread-per-task executor)
 
    Example:
      (def routes
@@ -217,11 +244,14 @@
      ;; Live-reloading routes (pass the Var)
      (def handler (create-handler #'routes))
 
+     ;; Custom executor
+     (def handler (create-handler routes :executor my-executor))
+
      (def server (start! handler {:port 3000}))"
-  ([routes]
-   (create-handler routes (atom (state/init-state))))
-  ([routes app-state*]
-   (server/create-handler routes app-state* #'*request*)))
+  [routes & {:keys [app-state executor]
+             :or   {app-state (atom (state/init-state))
+                    executor  (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)}}]
+  (server/create-handler routes app-state executor #'*request*))
 
 (defn start!
   "Start the hyper application server.

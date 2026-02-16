@@ -84,7 +84,8 @@
 
 (deftest test-watchers
   (testing "Watchers trigger re-renders on state change"
-    (let [app-state* (atom (state/init-state))
+    (let [app-state* (atom (assoc (state/init-state)
+                                  :executor (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)))
           session-id "test-session-4"
           tab-id "test-tab-4"
           sent-messages (atom [])
@@ -126,7 +127,8 @@
 
 (deftest test-cleanup
   (testing "Cleanup removes all tab resources"
-    (let [app-state* (atom (state/init-state))
+    (let [app-state* (atom (assoc (state/init-state)
+                                  :executor (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)))
           session-id "test-session-5"
           tab-id "test-tab-5"
           mock-channel {:mock true}

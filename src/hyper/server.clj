@@ -90,6 +90,11 @@
                     (state/get-or-create-tab! app-state* session-id tab-id)
                     (render/register-sse-channel! app-state* tab-id channel)
                     (render/setup-watchers! app-state* session-id tab-id request-var)
+                    ;; Auto-watch the routes Var so title/route changes
+                    ;; trigger re-renders for all connected tabs
+                    (when-let [routes-source (get @app-state* :routes-source)]
+                      (when (var? routes-source)
+                        (render/watch-source! app-state* session-id tab-id request-var routes-source)))
                     (http-kit/send!
                       channel
                       {:headers {"Content-Type" "text/event-stream"}
@@ -153,6 +158,16 @@
        (some (fn [[_path data]]
                (when (= route-name (:name data))
                  (:title data))))))
+
+(defn live-routes
+  "Get the current routes, resolving through :routes-source if it's a Var.
+   This ensures we always read the latest route metadata (including :title)
+   when a render is triggered."
+  [app-state*]
+  (let [source (get @app-state* :routes-source)]
+    (if (var? source)
+      @source
+      (get @app-state* :routes))))
 
 (defn resolve-title
   "Resolve a title value. If it's a fn, call it with the request.
@@ -276,7 +291,7 @@
           (try
             (let [content (render-fn req-with-state)
                   route-name (:name route-info)
-                  routes (get @app-state* :routes)
+                  routes (live-routes app-state*)
                   title-spec (find-route-title routes route-name)
                   title (or (resolve-title title-spec req-with-state) "Hyper App")
                   html    (hiccup/html
@@ -307,7 +322,7 @@
           tab-id (:hyper/tab-id req)
           session-id (:hyper/session-id req)
           router (get @app-state* :router)
-          routes (get @app-state* :routes)]
+          routes (live-routes app-state*)]
       (if-not (and path tab-id router)
         {:status 400
          :headers {"Content-Type" "application/json"}
@@ -375,15 +390,23 @@
            When a Var is provided, route changes are picked up on the next request
            without restarting the server — ideal for REPL-driven development.
    app-state*: Atom containing application state
+   executor: ExecutorService for dispatching render tasks
    request-var: Dynamic var to bind request context (e.g., hyper.core/*request*)
 
    Routes should use :get handlers that return hiccup.
    Hyper will wrap them to provide full HTML responses and SSE connections."
-  [routes app-state* request-var]
+  [routes app-state* executor request-var]
   (let [page-wrapper (page-handler app-state* request-var)
         system-routes [["/hyper/events" {:get (sse-events-handler app-state* request-var)}]
                        ["/hyper/actions" {:post (action-handler app-state* request-var)}]
                        ["/hyper/navigate" {:post (navigate-handler app-state* request-var)}]]
+        ;; Store the routes source (Var or value) so title resolution can
+        ;; always read the latest route metadata, even between router rebuilds.
+        ;; Store executor and request-var so render watches can access them.
+        _ (swap! app-state* assoc
+                 :routes-source routes
+                 :executor executor
+                 :request-var request-var)
         initial-routes (if (var? routes) @routes routes)
         initial-handler (build-ring-handler initial-routes app-state* page-wrapper system-routes)
         handler (if (var? routes)

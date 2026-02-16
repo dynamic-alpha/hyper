@@ -185,7 +185,7 @@
     (let [app-state* (atom (state/init-state))
           routes [["/" {:name :home
                         :get (fn [_req] [:div "Home"])}]]
-          handler (hy/create-handler routes app-state*)]
+          handler (hy/create-handler routes :app-state app-state*)]
       (is (fn? handler))
       (is (= app-state* app-state*)))))
 

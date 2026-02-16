@@ -11,7 +11,8 @@
                    :route {:name :home :path \"/\" :path-params {} :query-params {}}}}
     :actions {action-id {:fn fn :session-id sid :tab-id tid}}
     :router <reitit-router>
-    :routes <original-routes-vector>}"
+    :routes <original-routes-vector>
+    :routes-source <var-or-routes-vector>}"
   (:require [clojure.string]))
 
 (defn normalize-path

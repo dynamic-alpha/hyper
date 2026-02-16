@@ -81,7 +81,8 @@
           routes [["/" {:name :home
                         :get (fn [_req] [:div "Home"])}]]
           request-var #'hyper.core/*request*
-          handler (server/create-handler routes app-state* request-var)]
+          executor (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          handler (server/create-handler routes app-state* executor request-var)]
       (is (fn? handler))
       
       ;; Test that it handles a request
@@ -95,7 +96,8 @@
           routes [["/" {:name :home
                         :get (fn [_req] [:div "Hello"])}]]
           request-var #'hyper.core/*request*
-          handler (server/create-handler routes app-state* request-var)
+          executor (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          handler (server/create-handler routes app-state* executor request-var)
           server (server/start! handler {:port 13000})]
 
       (is (some? server))
@@ -112,7 +114,9 @@
                                    :get (fn [_req] [:div "Home V1"])}]])]
       ;; Create a real Var to pass as routes
       (let [routes-var (intern *ns* (gensym "test-routes-") @routes-atom)
-            handler (server/create-handler routes-var app-state* #'hyper.core/*request*)
+            handler (server/create-handler routes-var app-state*
+                                           (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+                                           #'hyper.core/*request*)
             response (handler {:uri "/" :request-method :get})]
         (is (= 200 (:status response)))
         (is (.contains (:body response) "Home V1")))))
@@ -126,7 +130,9 @@
                      ["/new" {:name :new-page
                               :get (fn [_req] [:div "New Page"])}]]
           routes-var (intern *ns* (gensym "test-routes-") v1-routes)
-          handler (server/create-handler routes-var app-state* #'hyper.core/*request*)]
+          handler (server/create-handler routes-var app-state*
+                                         (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+                                         #'hyper.core/*request*)]
 
       ;; Initial request serves v1
       (let [response (handler {:uri "/" :request-method :get})]
@@ -154,7 +160,9 @@
                         :get (fn [_req] [:div "Stable"])}]]
           routes-var (intern *ns* (gensym "test-routes-") routes)
           build-count (atom 0)
-          handler (server/create-handler routes-var app-state* #'hyper.core/*request*)]
+          handler (server/create-handler routes-var app-state*
+                                         (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+                                         #'hyper.core/*request*)]
 
       ;; build-ring-handler was called once during create-handler
       ;; Subsequent requests with the same routes should not rebuild
@@ -179,7 +187,9 @@
     (let [app-state* (atom (state/init-state))
           routes [["/" {:name :home
                         :get (fn [_req] [:div "Static"])}]]
-          handler (server/create-handler routes app-state* #'hyper.core/*request*)
+          handler (server/create-handler routes app-state*
+                                         (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+                                         #'hyper.core/*request*)
           response (handler {:uri "/" :request-method :get})]
       (is (= 200 (:status response)))
       (is (.contains (:body response) "Static")))))
