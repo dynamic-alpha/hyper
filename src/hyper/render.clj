@@ -88,13 +88,34 @@
    MutationObserver syncs the browser URL bar via replaceState and updates
    document.title, keeping browser history entries accurate.
 
+   On each render, re-resolves the render-fn from live routes so that:
+   - Redefining the routes Var with new inline fns picks up the new function
+   - Var-based :get handlers (e.g. #'my-page) automatically deref to the latest
+
    Title is resolved from route :title metadata via hyper.server/resolve-title,
    supporting static strings, functions of the request, and deref-able values
    (cursors/atoms) so that title updates reactively with state changes."
   [app-state* session-id tab-id request-var]
-  (when-let [render-fn (get-render-fn app-state* tab-id)]
+  (when-let [stored-render-fn (get-render-fn app-state* tab-id)]
     (let [router (get @app-state* :router)
           route (get-in @app-state* [:tabs tab-id :route])
+          ;; Re-resolve render-fn from live routes so route Var redefs
+          ;; and Var-based handlers always use the latest function.
+          live-routes-fn (requiring-resolve 'hyper.server/live-routes)
+          find-render-fn (requiring-resolve 'hyper.server/find-render-fn)
+          current-routes (live-routes-fn app-state*)
+          render-fn (if-let [route-name (:name route)]
+                      (let [fresh-fn (when current-routes
+                                       (find-render-fn current-routes route-name))]
+                        (if fresh-fn
+                          (do
+                            ;; Update stored render-fn so navigate/actions
+                            ;; also use the latest
+                            (when (not= fresh-fn stored-render-fn)
+                              (register-render-fn! app-state* tab-id fresh-fn))
+                            fresh-fn)
+                          stored-render-fn))
+                      stored-render-fn)
           current-url (when route
                         (state/build-url (:path route) (:query-params route)))
           req (cond-> {:hyper/session-id session-id
@@ -107,8 +128,6 @@
               ;; Resolve title — requiring-resolve to avoid circular dep
               resolve-title-fn (requiring-resolve 'hyper.server/resolve-title)
               find-route-title-fn (requiring-resolve 'hyper.server/find-route-title)
-              live-routes-fn (requiring-resolve 'hyper.server/live-routes)
-              current-routes (live-routes-fn app-state*)
               title-spec (when (and current-routes route)
                            (find-route-title-fn current-routes (:name route)))
               title (resolve-title-fn title-spec req)
