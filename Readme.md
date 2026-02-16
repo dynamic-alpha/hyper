@@ -4,7 +4,8 @@ A reactive server-rendered web framework for Clojure built on
 [Datastar](https://data-star.dev/) and
 [Reitit](https://github.com/metosin/reitit).
 
-Hyper renders your pages as plain hiccup on the server, then keeps them alive
+Hyper renders your pages as hiccup on the server using
+[Chassis](https://github.com/onionpancakes/chassis), then keeps them alive
 over SSE — when state changes, the server re-renders and patches the DOM
 automatically. No client-side framework, no JSON APIs, no JavaScript to write.
 
@@ -136,7 +137,7 @@ the server and any connected tabs will automatically re-render.
 
 Under the hood, Hyper maintains a persistent SSE connection per tab. When state
 changes, the server re-renders your page function, diffs nothing — it sends the
-full hiccup as a [Datastar](https://data-star.dev/) fragment, and Datastar
+full HTML as a [Datastar](https://data-star.dev/) fragment, and Datastar
 morphs the DOM. Cursors changing state trigger this automatically, but for
 external sources you need to tell Hyper what to watch.
 

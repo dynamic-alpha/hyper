@@ -3,7 +3,7 @@
 
    Handles rendering hiccup to HTML and sending updates via
    Server-Sent Events using Datastar fragment format."
-  (:require [hiccup.core :as hiccup]
+  (:require [dev.onionpancakes.chassis.core :as c]
             [org.httpkit.server :as http]
             [hyper.state :as state]
             [hyper.protocols :as proto]
@@ -65,7 +65,7 @@
 (defn render-error-fragment
   "Render an error message as a fragment."
   [error]
-  (hiccup/html
+  (c/html
    [:div {:style "padding: 20px; font-family: sans-serif; background: #fee; border: 1px solid #fcc; border-radius: 4px; margin: 20px;"}
     [:h2 {:style "color: #c00; margin-top: 0;"} "Render Error"]
     [:p "An error occurred while rendering this view:"]
@@ -134,7 +134,7 @@
               div-attrs (cond-> {:id "hyper-app"}
                           current-url (assoc :data-hyper-url current-url)
                           title (assoc :data-hyper-title title))
-              html (hiccup/html [:div div-attrs hiccup-result])
+              html (c/html [:div div-attrs hiccup-result])
               fragment (format-datastar-fragment html)]
           (send-sse! app-state* tab-id fragment))
         (finally

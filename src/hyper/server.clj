@@ -11,7 +11,7 @@
             [ring.middleware.keyword-params :as keyword-params]
             [ring.middleware.cookies :as cookies]
             [org.httpkit.server :as http-kit]
-            [hiccup.core :as hiccup]
+            [dev.onionpancakes.chassis.core :as c]
             [hyper.state :as state]
             [hyper.actions :as actions]
             [hyper.render :as render]
@@ -314,19 +314,20 @@
                   routes (live-routes app-state*)
                   title-spec (find-route-title routes route-name)
                   title (or (resolve-title title-spec req-with-state) "Hyper App")
-                  html    (hiccup/html
-                            [:html
-                             [:head
-                              [:meta {:charset "UTF-8"}]
-                              [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
-                              [:title title]
-                              (datastar-script)]
-                             [:body
-                              {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
-                              [:div {:id "hyper-app"
-                                     :data-hyper-title title}
-                               content]
-                              (hyper-scripts tab-id)]])]
+                  html    (c/html
+                            [c/doctype-html5
+                             [:html
+                              [:head
+                               [:meta {:charset "UTF-8"}]
+                               [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
+                               [:title title]
+                               (datastar-script)]
+                              [:body
+                               {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
+                               [:div {:id "hyper-app"
+                                      :data-hyper-title title}
+                                content]
+                               (hyper-scripts tab-id)]]])]
               {:status  200
                :headers {"Content-Type" "text/html; charset=utf-8"}
                :body    html})
@@ -413,7 +414,7 @@
    executor: ExecutorService for dispatching render tasks
    request-var: Dynamic var to bind request context (e.g., hyper.core/*request*)
 
-   Routes should use :get handlers that return hiccup.
+   Routes should use :get handlers that return hiccup (Chassis vectors).
    Hyper will wrap them to provide full HTML responses and SSE connections."
   [routes app-state* executor request-var]
   (let [page-wrapper (page-handler app-state* request-var)

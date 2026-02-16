@@ -3,7 +3,7 @@
             [hyper.render :as render]
             [hyper.state :as state]
             [hyper.core]
-            [hiccup.core]))
+            [dev.onionpancakes.chassis.core :as c]))
 
 (deftest test-sse-channel-registration
   (testing "SSE channel registration and retrieval"
@@ -77,7 +77,7 @@
       
       ;; Manually test formatting since we can't actually send with mock
       (let [hiccup-result (render-fn {})
-            html-str (hiccup.core/html hiccup-result)
+            html-str (c/html hiccup-result)
             fragment (render/format-datastar-fragment html-str)]
         (is (.contains fragment "event: datastar-patch-elements"))
         (is (.contains fragment "Hello World"))))))

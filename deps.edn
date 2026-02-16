@@ -11,7 +11,7 @@
         metosin/reitit-malli {:mvn/version "0.7.0"}
 
         ;; HTML generation
-        hiccup/hiccup {:mvn/version "1.0.5"}
+        dev.onionpancakes/chassis {:mvn/version "1.0.365"}
 
         ;; Server-sent events support
         http-kit/http-kit {:mvn/version "2.8.0"}
