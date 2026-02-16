@@ -95,6 +95,8 @@
                     (when-let [routes-source (get @app-state* :routes-source)]
                       (when (var? routes-source)
                         (render/watch-source! app-state* session-id tab-id request-var routes-source)))
+                    ;; Set up route-level watches (:watches + Var :get handlers)
+                    (render/setup-route-watches! app-state* session-id tab-id request-var)
                     (http-kit/send!
                       channel
                       {:headers {"Content-Type" "text/event-stream"}
@@ -158,6 +160,24 @@
        (some (fn [[_path data]]
                (when (= route-name (:name data))
                  (:title data))))))
+
+(defn find-route-watches
+  "Collect all Watchable sources for a named route.
+   Returns a vector of sources built from:
+   - The route's :watches vector (explicit external sources)
+   - The route's :get value, if it's a Var (auto-watch for live reloading)
+   Returns nil if there are no watches."
+  [routes route-name]
+  (when-let [route-data (->> routes
+                              (some (fn [[_path data]]
+                                      (when (= route-name (:name data))
+                                        data))))]
+    (let [explicit (vec (or (:watches route-data) []))
+          get-handler (:get route-data)
+          watches (cond-> explicit
+                    (var? get-handler) (conj get-handler))]
+      (when (seq watches)
+        watches))))
 
 (defn live-routes
   "Get the current routes, resolving through :routes-source if it's a Var.

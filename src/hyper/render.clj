@@ -212,6 +212,50 @@
     (swap! app-state* update-in [:tabs tab-id] dissoc :watches))
   nil)
 
+;; ---------------------------------------------------------------------------
+;; Route-level watches
+;; ---------------------------------------------------------------------------
+;; Managed separately from user watch! calls so that navigation can
+;; tear down the old route's watches and set up the new route's watches
+;; without disturbing anything the user registered via watch!.
+
+(defn- watch-source-as-route!
+  "Like watch-source! but tracks under :route-watches instead of :watches."
+  [app-state* session-id tab-id request-var source]
+  (let [watch-key (keyword (str "hyper-route-" tab-id "-" (System/identityHashCode source)))]
+    (proto/-add-watch source watch-key
+                      (fn [_old _new]
+                        (submit-render! app-state*
+                                        #(throttled-render-and-send! app-state* session-id tab-id request-var))))
+    (swap! app-state* update-in [:tabs tab-id :route-watches]
+           (fnil assoc {}) watch-key source)
+    nil))
+
+(defn teardown-route-watches!
+  "Remove all route-level watches for a tab."
+  [app-state* tab-id]
+  (let [watches (get-in @app-state* [:tabs tab-id :route-watches])]
+    (doseq [[watch-key source] watches]
+      (unwatch-source! app-state* source watch-key))
+    (swap! app-state* update-in [:tabs tab-id] dissoc :route-watches))
+  nil)
+
+(defn setup-route-watches!
+  "Set up watches declared on the current route's :watches metadata and
+   auto-watch the :get handler if it's a Var. Tears down any previous
+   route-level watches first so that navigation swaps cleanly."
+  [app-state* session-id tab-id request-var]
+  (teardown-route-watches! app-state* tab-id)
+  (let [find-route-watches-fn (requiring-resolve 'hyper.server/find-route-watches)
+        live-routes-fn (requiring-resolve 'hyper.server/live-routes)
+        routes (live-routes-fn app-state*)
+        route-name (get-in @app-state* [:tabs tab-id :route :name])]
+    (when (and routes route-name)
+      (when-let [watches (find-route-watches-fn routes route-name)]
+        (doseq [source watches]
+          (watch-source-as-route! app-state* session-id tab-id request-var source)))))
+  nil)
+
 (defn setup-watchers!
   "Setup watchers on global, session, tab, and route state to trigger re-renders.
    Route URL sync is handled client-side via MutationObserver on data-hyper-url."
@@ -242,7 +286,7 @@
                (fn [k r old-state new-state]
                  (trigger-render k r old-state new-state tab-path)))
 
-    ;; Watch route changes to trigger re-render.
+    ;; Watch route changes to trigger re-render and swap route-level watches.
     ;; The rendered fragment includes data-hyper-url on #hyper-app,
     ;; and the client-side MutationObserver handles replaceState.
     (add-watch app-state* (keyword (str "route-" watch-key))
@@ -250,6 +294,9 @@
                  (let [old-route (get-in old-state route-path)
                        new-route (get-in new-state route-path)]
                    (when (and new-route (not= old-route new-route))
+                     ;; Swap route-level watches when navigating to a new route
+                     (when (not= (:name old-route) (:name new-route))
+                       (setup-route-watches! app-state* session-id tab-id request-var))
                      (submit-render! app-state*
                                      #(throttled-render-and-send! app-state* session-id tab-id request-var)))))))
   nil)
@@ -269,6 +316,7 @@
   [app-state* tab-id]
   (remove-watchers! app-state* tab-id)
   (remove-external-watches! app-state* tab-id)
+  (teardown-route-watches! app-state* tab-id)
   (unregister-sse-channel! app-state* tab-id)
   ;; Use requiring-resolve for hyper.actions to avoid circular dependency
   ;; (actions requires nothing from render, but render is loaded first)
