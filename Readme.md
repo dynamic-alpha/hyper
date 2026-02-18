@@ -30,6 +30,8 @@ automatically. No client-side framework, no JSON APIs, no JavaScript to write.
 
 ## Cursors
 
+FIXME: IAtom isn't a thing
+
 Cursors are the primary way to read and write state in Hyper. They implement
 `IAtom` — use `deref`, `reset!`, `swap!`, and `add-watch` as you would with a
 normal atom.
