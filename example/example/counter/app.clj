@@ -14,10 +14,6 @@
    " "
    [:button (h/action (reset! cursor* 0)) "Reset"]])
 
-;; BUG: Title isn't updated on route var definition update
-;; BUG: URL isn't updated anymore
-
-
 (def routes
   [["/" {:name :home
          :title "Examples"

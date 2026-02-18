@@ -269,10 +269,14 @@
      attribute changes, syncs browser URL bar via replaceState with title in
      history state, and updates document.title.
    - popstate listener handles browser back/forward by posting to /hyper/navigate
-     and restoring document.title from history state."
+     and restoring document.title from history state.
+
+   Uses c/raw to prevent Chassis from HTML-escaping the JavaScript content
+   (e.g., && would become &amp;&amp; which breaks JS syntax)."
   [tab-id]
   [:script
-   (str "
+   (c/raw
+    (str "
 (function() {
   var appEl = document.getElementById('hyper-app');
   if (appEl) {
@@ -311,7 +315,7 @@
     });
   });
 })();
-")])
+"))])
 
 (defn page-handler
   "Wrap a page render function to provide full HTML response.
