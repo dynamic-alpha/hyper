@@ -27,13 +27,14 @@
         com.taoensso/telemere {:mvn/version "1.1.0"}}
 
  :aliases
- {:test {:extra-paths ["test"]
-         :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}
-                      lambdaisland/kaocha {:mvn/version "1.91.1392"}
-                      com.aayushatharva.brotli4j/native-osx-aarch64 {:mvn/version "1.18.0"}
-                      com.aayushatharva.brotli4j/native-osx-x86_64 {:mvn/version "1.18.0"}
-                      com.aayushatharva.brotli4j/native-linux-x86_64 {:mvn/version "1.18.0"}
-                      com.aayushatharva.brotli4j/native-linux-aarch64 {:mvn/version "1.18.0"}}
+   {:test {:extra-paths ["test"]
+          :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}
+                       lambdaisland/kaocha {:mvn/version "1.91.1392"}
+                       io.github.pfeodrippe/wally {:mvn/version "0.0.4"}
+                       com.aayushatharva.brotli4j/native-osx-aarch64 {:mvn/version "1.18.0"}
+                       com.aayushatharva.brotli4j/native-osx-x86_64 {:mvn/version "1.18.0"}
+                       com.aayushatharva.brotli4j/native-linux-x86_64 {:mvn/version "1.18.0"}
+                       com.aayushatharva.brotli4j/native-linux-aarch64 {:mvn/version "1.18.0"}}
          :main-opts ["-m" "kaocha.runner"]
          :exec-fn kaocha.runner/exec-fn
          :exec-args {:randomize? false

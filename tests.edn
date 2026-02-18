@@ -1,7 +1,13 @@
 #kaocha/v1
 {:tests [{:id :unit
           :test-paths ["test"]
-          :source-paths ["src"]}]
+          :source-paths ["src"]
+          :skip-meta [:e2e]}
+
+         {:id :e2e
+          :test-paths ["test"]
+          :source-paths ["src" "example"]
+          :focus-meta [:e2e]}]
  
  :color? true
  :randomize? false
