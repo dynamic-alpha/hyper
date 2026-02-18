@@ -133,7 +133,7 @@
 
 (defmacro action
   "Create an action that executes the given body when triggered.
-   Returns a map with :data-on-click attribute for Datastar.
+   Returns a map with :data-on:click attribute for Datastar.
 
    The action is registered with the current session/tab context
    and can access state via cursors. Action IDs are deterministic

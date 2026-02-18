@@ -30,10 +30,8 @@ automatically. No client-side framework, no JSON APIs, no JavaScript to write.
 
 ## Cursors
 
-FIXME: IAtom isn't a thing
-
-Cursors are the primary way to read and write state in Hyper. They implement
-`IAtom` — use `deref`, `reset!`, `swap!`, and `add-watch` as you would with a
+Cursors are the primary way to read and write state in Hyper. They behave just
+like atoms — use `deref`, `reset!`, `swap!`, and `add-watch` as you would with a
 normal atom.
 
 Each cursor type scopes state differently:
@@ -201,4 +199,44 @@ them down when it navigates away:
 When the `:get` handler is a Var (e.g. `#'dashboard-page`), it's automatically
 added to the route's watches. This means redefining the function at the REPL
 triggers an instant live reload for all connected tabs — no page refresh needed.
+
+## Testing
+
+Tests are run with [Kaocha](https://github.com/lambdaisland/kaocha) via the
+`:test` alias. There are two test suites: `:unit` for fast in-process tests and
+`:e2e` for browser-based end-to-end tests.
+
+```bash
+# Run unit tests only
+clojure -M:test --focus :unit
+
+# Run E2E browser tests only
+clojure -M:test --focus :e2e
+
+# Run all tests
+clojure -M:test
+```
+
+### Unit tests
+
+Unit tests live in `test/hyper/` and cover cursors, actions, navigation, routing,
+rendering, state management, and brotli compression. They run in-process with no
+server or browser — just bind `*request*` and exercise the API directly.
+
+### E2E tests
+
+End-to-end tests use [Playwright](https://playwright.dev/) via the
+[wally](https://github.com/pfeodrippe/wally) library to drive a real headless
+Chromium browser against a running Hyper server. They're tagged with `^:e2e`
+metadata so Kaocha can filter them.
+
+The E2E suite covers:
+
+- **Cursor isolation** — multiple browser contexts (separate sessions) and
+  multiple tabs within a session verify that global, session, tab, and URL
+  cursors propagate to exactly the right scope
+- **Title live reload** — redefining the routes Var updates `document.title`
+  via SSE without a page refresh
+- **Content live reload** — redefining the routes Var with new inline handler
+  functions hot-swaps the page content via SSE
 
