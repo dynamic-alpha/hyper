@@ -200,6 +200,63 @@ When the `:get` handler is a Var (e.g. `#'dashboard-page`), it's automatically
 added to the route's watches. This means redefining the function at the REPL
 triggers an instant live reload for all connected tabs — no page refresh needed.
 
+## Assets and `<head>` injection
+
+Hyper doesn’t ship with an asset pipeline (Tailwind, Vite, etc.), but it *does*
+provide a couple small hooks so apps can easily:
+
+- serve precompiled static assets (CSS/JS/images)
+- inject tags into the HTML `<head>` (stylesheets, scripts, meta tags)
+
+### Static assets
+
+Enable static serving when you create your handler:
+
+```clojure
+(def handler
+  (h/create-handler
+    #'routes
+    :static-resources "public"))
+```
+
+Put files under `resources/public/` and they’ll be available by URL:
+
+- `resources/public/app.css` → `GET /app.css`
+- `resources/public/favicon.ico` → `GET /favicon.ico`
+
+For filesystem-based serving (useful in dev):
+
+```clojure
+(def handler
+  (h/create-handler
+    #'routes
+    :static-dir "public"))
+```
+
+You can also pass multiple directories (first match wins):
+
+```clojure
+(def handler
+  (h/create-handler
+    #'routes
+    :static-dir ["public" "target/public"]))
+```
+
+### Injecting into `<head>`
+
+Pass `:head` as either hiccup, or a function `(fn [req] ...)` that returns hiccup:
+
+```clojure
+(def handler
+  (h/create-handler
+    #'routes
+    :static-resources "public"
+    :head [[:link {:rel "stylesheet" :href "/app.css"}]
+           [:script {:defer true :src "/app.js"}] ]))
+```
+
+This is typically how you’d include your compiled Tailwind stylesheet.
+
 ## Testing
 
 Tests are run with [Kaocha](https://github.com/lambdaisland/kaocha) via the

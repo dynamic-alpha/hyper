@@ -238,9 +238,12 @@
            without restarting the server — ideal for REPL-driven development.
 
    Options (keyword arguments):
-   - :app-state  — Atom for application state (default: fresh atom)
-   - :executor   — java.util.concurrent.ExecutorService for render dispatch
-                   (default: virtual-thread-per-task executor)
+   - :app-state         — Atom for application state (default: fresh atom)
+   - :executor          — java.util.concurrent.ExecutorService for render dispatch
+                          (default: virtual-thread-per-task executor)
+   - :head              — Hiccup nodes appended to the HTML <head>, or (fn [req] ...) -> hiccup
+   - :static-resources  — Classpath resource root(s) to serve as static assets
+   - :static-dir        — Filesystem directory (or directories) to serve as static assets
 
    Example:
      (def routes
@@ -255,14 +258,23 @@
      ;; Live-reloading routes (pass the Var)
      (def handler (create-handler #'routes))
 
+     ;; Inject a stylesheet (e.g. Tailwind output)
+     (def handler
+       (create-handler routes
+                       :static-resources \"public\"
+                       :head [[:link {:rel \"stylesheet\" :href \"/app.css\"}]]))
+
      ;; Custom executor
      (def handler (create-handler routes :executor my-executor))
 
      (def server (start! handler {:port 3000}))"
-  [routes & {:keys [app-state executor]
+  [routes & {:keys [app-state executor head static-resources static-dir]
              :or   {app-state (atom (state/init-state))
                     executor  (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)}}]
-  (server/create-handler routes app-state executor #'*request*))
+  (server/create-handler routes app-state executor #'*request*
+                         {:head head
+                          :static-resources static-resources
+                          :static-dir static-dir}))
 
 (defn start!
   "Start the hyper application server.

@@ -10,6 +10,10 @@
             [ring.middleware.params :as params]
             [ring.middleware.keyword-params :as keyword-params]
             [ring.middleware.cookies :as cookies]
+            [ring.middleware.resource :as resource]
+            [ring.middleware.file :as file]
+            [ring.middleware.content-type :as content-type]
+            [ring.middleware.not-modified :as not-modified]
             [org.httpkit.server :as http-kit]
             [dev.onionpancakes.chassis.core :as c]
             [hyper.state :as state]
@@ -317,12 +321,30 @@
 })();
 "))])
 
+(defn- resolve-head
+  "Resolve extra <head> content.
+
+   - If :head is a function, it is called with the Ring request (already enriched
+     with Hyper context) and should return hiccup nodes.
+   - Otherwise, :head is treated as hiccup and used as-is.
+
+   Intended for injecting stylesheets/scripts (e.g. Tailwind output CSS) without
+   Hyper needing to know anything about build tooling."
+  [head req]
+  (cond
+    (fn? head)   (head req)
+    (some? head) head
+    :else        nil))
+
 (defn page-handler
   "Wrap a page render function to provide full HTML response.
    Resolves :title from route metadata — supports static strings, functions,
    and deref-able values (cursors/atoms). Title is also stamped on #hyper-app
-   as data-hyper-title for client-side history state tracking."
-  [app-state* request-var]
+   as data-hyper-title for client-side history state tracking.
+
+   Options:
+   - :head Hiccup nodes to append into the <head>, or (fn [req] ...) -> hiccup"
+  [app-state* request-var {:keys [head]}]
   (fn [render-fn]
     (fn [req]
       (let [tab-id (:hyper/tab-id req)
@@ -344,6 +366,7 @@
                   routes (live-routes app-state*)
                   title-spec (find-route-title routes route-name)
                   title (or (resolve-title title-spec req-with-state) "Hyper App")
+                  extra-head (resolve-head head req-with-state)
                   html    (c/html
                             [c/doctype-html5
                              [:html
@@ -351,7 +374,8 @@
                                [:meta {:charset "UTF-8"}]
                                [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
                                [:title title]
-                               (datastar-script)]
+                               (datastar-script)
+                               extra-head]
                               [:body
                                {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
                                [:div {:id "hyper-app"
@@ -434,6 +458,44 @@
            :routes user-routes)
     (ring/ring-handler router (ring/create-default-handler))))
 
+(defn- wrap-static
+  "Optionally serve static assets.
+
+   This is intentionally lightweight: it makes it easy for Hyper consumers to
+   serve precompiled assets (e.g. Tailwind CSS output) without Hyper needing to
+   know about the asset pipeline.
+
+   Options:
+   - :static-resources  Classpath resource root(s) (e.g. \"public\"), served by URI
+   - :static-dir        Filesystem directory (or directories) to serve (useful in dev)
+
+   When enabled, adds content-type + not-modified support." 
+  [handler {:keys [static-resources static-dir]}]
+  (let [resource-roots (cond
+                         (nil? static-resources) nil
+                         (sequential? static-resources) static-resources
+                         :else [static-resources])
+        static-dirs (cond
+                      (nil? static-dir) nil
+                      (sequential? static-dir) static-dir
+                      :else [static-dir])
+        handler' (cond-> handler
+                   (seq resource-roots) (as-> h
+                                          (reduce (fn [acc root]
+                                                    (resource/wrap-resource acc root))
+                                                  h
+                                                  resource-roots))
+                   (seq static-dirs) (as-> h
+                                       (reduce (fn [acc dir]
+                                                 (file/wrap-file acc dir))
+                                               h
+                                               static-dirs)))]
+    (if (or (seq resource-roots) (seq static-dirs))
+      (-> handler'
+          (content-type/wrap-content-type)
+          (not-modified/wrap-not-modified))
+      handler)))
+
 (defn create-handler
   "Create a Ring handler for the hyper application.
 
@@ -444,46 +506,58 @@
    executor: ExecutorService for dispatching render tasks
    request-var: Dynamic var to bind request context (e.g., hyper.core/*request*)
 
+   Options:
+   - :head              Hiccup nodes appended to the <head> (e.g. stylesheet <link>),
+                        or (fn [req] ...) -> hiccup nodes appended to the <head>
+   - :static-resources  Classpath resource root(s) to serve as static assets
+   - :static-dir        Filesystem directory (or directories) to serve as static assets
+
    Routes should use :get handlers that return hiccup (Chassis vectors).
    Hyper will wrap them to provide full HTML responses and SSE connections."
-  [routes app-state* executor request-var]
-  (let [page-wrapper (page-handler app-state* request-var)
-        system-routes [["/hyper/events" {:get (sse-events-handler app-state* request-var)}]
-                       ["/hyper/actions" {:post (action-handler app-state* request-var)}]
-                       ["/hyper/navigate" {:post (navigate-handler app-state* request-var)}]]
-        ;; Store the routes source (Var or value) so title resolution can
-        ;; always read the latest route metadata, even between router rebuilds.
-        ;; Store executor and request-var so render watches can access them.
-        _ (swap! app-state* assoc
-                 :routes-source routes
-                 :executor executor
-                 :request-var request-var)
-        initial-routes (if (var? routes) @routes routes)
-        initial-handler (build-ring-handler initial-routes app-state* page-wrapper system-routes)
-        handler (if (var? routes)
-                  ;; Dynamic: rebuild router when the routes Var is redefined.
-                  ;; Uses identical? since a re-def always creates a new object,
-                  ;; avoiding deep equality checks on every request.
-                  (let [cached (atom {:routes initial-routes
-                                      :handler initial-handler})]
-                    (fn [req]
-                      (let [current-routes @routes]
-                        (when-not (identical? current-routes (:routes @cached))
-                          (t/log! {:level :info
-                                   :id :hyper.event/routes-reload
-                                   :msg "Routes changed, rebuilding router"})
-                          (let [h (build-ring-handler current-routes app-state*
-                                                     page-wrapper system-routes)]
-                            (reset! cached {:routes current-routes :handler h})))
-                        ((:handler @cached) req))))
-                  ;; Static: use the compiled handler directly
-                  initial-handler)]
-    (-> handler
-        ((wrap-hyper-context app-state*))
-        (br/wrap-brotli)
-        (keyword-params/wrap-keyword-params)
-        (params/wrap-params)
-        (cookies/wrap-cookies))))
+  ([routes app-state* executor request-var]
+   (create-handler routes app-state* executor request-var {}))
+  ([routes app-state* executor request-var {:as opts}]
+   (let [page-wrapper (page-handler app-state* request-var opts)
+         system-routes [["/hyper/events" {:get (sse-events-handler app-state* request-var)}]
+                        ["/hyper/actions" {:post (action-handler app-state* request-var)}]
+                        ["/hyper/navigate" {:post (navigate-handler app-state* request-var)}]]
+         ;; Store the routes source (Var or value) so title resolution can
+         ;; always read the latest route metadata, even between router rebuilds.
+         ;; Store executor and request-var so render watches can access them.
+         _ (swap! app-state* assoc
+                  :routes-source routes
+                  :executor executor
+                  :request-var request-var)
+         initial-routes (if (var? routes) @routes routes)
+         initial-handler (build-ring-handler initial-routes app-state* page-wrapper system-routes)
+         handler (if (var? routes)
+                   ;; Dynamic: rebuild router when the routes Var is redefined.
+                   ;; Uses identical? since a re-def always creates a new object,
+                   ;; avoiding deep equality checks on every request.
+                   (let [cached (atom {:routes initial-routes
+                                       :handler initial-handler})]
+                     (fn [req]
+                       (let [current-routes @routes]
+
+                         (when-not (identical? current-routes (:routes @cached))
+                           (t/log! {:level :info
+                                    :id :hyper.event/routes-reload
+                                    :msg "Routes changed, rebuilding router"})
+                           (let [h (build-ring-handler current-routes app-state*
+                                                      page-wrapper system-routes)]
+                             (reset! cached {:routes current-routes :handler h})))
+                         ((:handler @cached) req))))
+                   ;; Static: use the compiled handler directly
+                   initial-handler)
+         handler-with-mw
+         (-> handler
+             ((wrap-hyper-context app-state*))
+             (br/wrap-brotli)
+             (keyword-params/wrap-keyword-params)
+             (params/wrap-params)
+             (cookies/wrap-cookies))]
+     ;; Static middleware should be outermost so static requests avoid params/cookies.
+     (wrap-static handler-with-mw opts))))
 
 (defn start!
   "Start the HTTP server with the given handler.
