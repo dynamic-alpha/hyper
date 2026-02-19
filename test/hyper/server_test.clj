@@ -1,5 +1,6 @@
 (ns hyper.server-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.java.io :as io]
             [hyper.server :as server]
             [hyper.state :as state]
             [hyper.core]))
@@ -84,11 +85,98 @@
           executor (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           handler (server/create-handler routes app-state* executor request-var)]
       (is (fn? handler))
-      
+
       ;; Test that it handles a request
       (let [response (handler {:uri "/" :request-method :get})]
         (is (= 200 (:status response)))
-        (is (.contains (:body response) "Home"))))))
+        (is (.contains (:body response) "Home")))))
+
+  (testing "Allows injecting tags into <head>"
+    (let [app-state* (atom (state/init-state))
+          routes [["/" {:name :home
+                        :get (fn [_req] [:div "Home"])}]]
+          request-var #'hyper.core/*request*
+          executor (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          handler (server/create-handler routes app-state* executor request-var
+                                         {:head [[:link {:rel "stylesheet" :href "/app.css"}]]})
+          response (handler {:uri "/" :request-method :get})]
+      (is (= 200 (:status response)))
+      (is (.contains (:body response) "rel=\"stylesheet\""))
+      (is (.contains (:body response) "href=\"/app.css\""))))
+
+  (testing "Allows :head to be a function"
+    (let [app-state* (atom (state/init-state))
+          routes [["/" {:name :home
+                        :get (fn [_req] [:div "Home"])}]]
+          request-var #'hyper.core/*request*
+          executor (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          handler (server/create-handler routes app-state* executor request-var
+                                         {:head (fn [_req]
+                                                 [[:meta {:name "test" :content "ok"}]])})
+          response (handler {:uri "/" :request-method :get})]
+      (is (= 200 (:status response)))
+      (is (.contains (:body response) "name=\"test\""))
+      (is (.contains (:body response) "content=\"ok\""))))
+
+  (testing "Serves static assets from :static-dir"
+    (let [tmp-path (java.nio.file.Files/createTempDirectory
+                     "hyper-static-"
+                     (make-array java.nio.file.attribute.FileAttribute 0))
+          tmp-dir (.toFile tmp-path)
+          css-file (io/file tmp-dir "styles.css")
+          _ (spit css-file "body { background: red; }")
+          app-state* (atom (state/init-state))
+          routes [["/" {:name :home
+                        :get (fn [_req] [:div "Home"])}]]
+          request-var #'hyper.core/*request*
+          executor (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          handler (server/create-handler routes app-state* executor request-var
+                                         {:static-dir (.getAbsolutePath tmp-dir)})
+          response (handler {:uri "/styles.css" :request-method :get})]
+      (is (= 200 (:status response)))
+      (is (some? (get-in response [:headers "Content-Type"])))
+      (is (.contains (get-in response [:headers "Content-Type"]) "text/css"))
+      (is (.contains (slurp (:body response)) "background: red"))))
+
+  (testing "Serves static assets from multiple :static-dir roots"
+    (let [tmp1-path (java.nio.file.Files/createTempDirectory
+                      "hyper-static-1-"
+                      (make-array java.nio.file.attribute.FileAttribute 0))
+          tmp2-path (java.nio.file.Files/createTempDirectory
+                      "hyper-static-2-"
+                      (make-array java.nio.file.attribute.FileAttribute 0))
+          tmp1-dir (.toFile tmp1-path)
+          tmp2-dir (.toFile tmp2-path)
+          a-file (io/file tmp1-dir "a.css")
+          b-file (io/file tmp2-dir "b.css")
+          _ (spit a-file "/* a */")
+          _ (spit b-file "/* b */")
+          app-state* (atom (state/init-state))
+          routes [["/" {:name :home
+                        :get (fn [_req] [:div "Home"])}]]
+          request-var #'hyper.core/*request*
+          executor (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          handler (server/create-handler routes app-state* executor request-var
+                                         {:static-dir [(.getAbsolutePath tmp1-dir)
+                                                      (.getAbsolutePath tmp2-dir)]})
+          response-a (handler {:uri "/a.css" :request-method :get})
+          response-b (handler {:uri "/b.css" :request-method :get})]
+      (is (= 200 (:status response-a)))
+      (is (.contains (slurp (:body response-a)) "a"))
+      (is (= 200 (:status response-b)))
+      (is (.contains (slurp (:body response-b)) "b"))))
+
+  (testing "Serves static assets from :static-resources"
+    (let [app-state* (atom (state/init-state))
+          routes [["/" {:name :home
+                        :get (fn [_req] [:div "Home"])}]]
+          request-var #'hyper.core/*request*
+          executor (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          handler (server/create-handler routes app-state* executor request-var
+                                         {:static-resources "public"})
+          response (handler {:uri "/hyper-test-static.txt" :request-method :get})]
+      (is (= 200 (:status response)))
+      (is (= "static-ok\n" (slurp (:body response)))))))
 
 (deftest test-server-lifecycle
   (testing "Server start and stop"
