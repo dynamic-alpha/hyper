@@ -1,0 +1,37 @@
+{   "defaultModel": "${env:ECA_DEFAULT_MODEL:anthropic/claude-opus-4-6}",
+    "behavior": {
+      "linear": {
+	"prompts": {
+	  "chat": "${file:./agents/linear.md}"
+	}
+      },
+      "architect": {
+	"prompts": {
+	  "chat": "${file:./agents/architect.md}"
+	}
+      }
+    },
+    "mcpServers": {
+      "linear": {
+	"url": "https://mcp.linear.app/mcp"
+      },
+      "clj-doc-mcp": {
+	"url": "http://localhost:3456/sse"
+      }
+    },
+    "hooks": {
+      "clj-parinfer": {
+	"type": "postToolCall",
+	"matcher": "eca__write_file|eca__edit_file",
+	"visible": false,
+	"runOnError": false,
+	"timeout": 30000,
+	"actions": [
+          {
+            "type": "shell",
+            "shell": "bb .eca/hooks/clj_parinfer_hook.clj"
+          }
+	]
+      }
+    }
+}
