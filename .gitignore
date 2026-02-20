@@ -2,3 +2,4 @@
 /.cpcache/
 /.clj-kondo/.cache/
 /.nrepl-port
+.envrc
