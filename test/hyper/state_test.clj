@@ -44,7 +44,7 @@
   (testing "creates new tab and links to session"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-3"
-          tab-id "test-tab-1"]
+          tab-id     "test-tab-1"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (is (contains? (:tabs @app-state*) tab-id))
       (is (contains? (get-in @app-state* [:sessions session-id :tabs]) tab-id))
@@ -53,7 +53,7 @@
   (testing "doesn't overwrite existing tab data"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-4"
-          tab-id "test-tab-2"]
+          tab-id     "test-tab-2"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (swap! app-state* assoc-in [:tabs tab-id :data :count] 42)
       (state/get-or-create-tab! app-state* session-id tab-id)
@@ -77,7 +77,7 @@
 
   (testing "deref with vector path"
     (let [app-state* (atom (state/init-state))
-          tab-id "test-tab-3"
+          tab-id     "test-tab-3"
           session-id "test-session-7"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (swap! app-state* assoc-in [:tabs tab-id :data :todos :list] [1 2 3])
@@ -96,7 +96,7 @@
 
   (testing "reset! with nested path"
     (let [app-state* (atom (state/init-state))
-          tab-id "test-tab-4"
+          tab-id     "test-tab-4"
           session-id "test-session-9"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (let [cursor (state/tab-cursor app-state* tab-id [:user :email])]
@@ -128,8 +128,8 @@
 
 (deftest cursor-watch-test
   (testing "cursor watchers fire on change"
-    (let [app-state* (atom (state/init-state))
-          session-id "test-session-12"
+    (let [app-state*  (atom (state/init-state))
+          session-id  "test-session-12"
           watch-calls (atom [])]
       (state/get-or-create-session! app-state* session-id)
       (let [cursor (state/session-cursor app-state* session-id :count)]
@@ -146,8 +146,8 @@
         (is (= 2 (get-in @watch-calls [1 :new]))))))
 
   (testing "cursor watchers can be removed"
-    (let [app-state* (atom (state/init-state))
-          session-id "test-session-13"
+    (let [app-state*  (atom (state/init-state))
+          session-id  "test-session-13"
           watch-calls (atom 0)]
       (state/get-or-create-session! app-state* session-id)
       (let [cursor (state/session-cursor app-state* session-id :count)]
@@ -163,7 +163,7 @@
   (testing "cleanup-tab! removes tab and unlinks from session"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-14"
-          tab-id "test-tab-5"]
+          tab-id     "test-tab-5"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (is (contains? (:tabs @app-state*) tab-id))
       (state/cleanup-tab! app-state* tab-id)
@@ -173,8 +173,8 @@
   (testing "cleanup-session! removes session and all tabs"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-15"
-          tab-id-1 "test-tab-6"
-          tab-id-2 "test-tab-7"]
+          tab-id-1   "test-tab-6"
+          tab-id-2   "test-tab-7"]
       (state/get-or-create-tab! app-state* session-id tab-id-1)
       (state/get-or-create-tab! app-state* session-id tab-id-2)
       (is (contains? (:sessions @app-state*) session-id))
@@ -205,7 +205,7 @@
   (testing "tab-cursor with default value initializes nil path"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-18"
-          tab-id "test-tab-8"]
+          tab-id     "test-tab-8"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (let [cursor (state/tab-cursor app-state* tab-id :items [])]
         (is (= [] @cursor))
@@ -214,7 +214,7 @@
   (testing "tab-cursor with default value doesn't overwrite existing"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-19"
-          tab-id "test-tab-9"]
+          tab-id     "test-tab-9"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (swap! app-state* assoc-in [:tabs tab-id :data :items] [1 2 3])
       (let [cursor (state/tab-cursor app-state* tab-id :items [])]
@@ -231,7 +231,7 @@
 (deftest global-cursor-test
   (testing "global-cursor reads/writes to global state"
     (let [app-state* (atom (state/init-state))
-          cursor (state/global-cursor app-state* :theme)]
+          cursor     (state/global-cursor app-state* :theme)]
       (is (nil? @cursor))
       (reset! cursor "dark")
       (is (= "dark" @cursor))
@@ -239,7 +239,7 @@
 
   (testing "global-cursor with default value initializes nil path"
     (let [app-state* (atom (state/init-state))
-          cursor (state/global-cursor app-state* :user-count 0)]
+          cursor     (state/global-cursor app-state* :user-count 0)]
       (is (= 0 @cursor))
       (is (= 0 (get-in @app-state* [:global :user-count])))))
 
@@ -251,7 +251,7 @@
 
   (testing "global-cursor swap! works"
     (let [app-state* (atom (state/init-state))
-          cursor (state/global-cursor app-state* :counter 0)]
+          cursor     (state/global-cursor app-state* :counter 0)]
       (swap! cursor inc)
       (is (= 1 @cursor))
       (swap! cursor + 10)
@@ -259,18 +259,18 @@
 
   (testing "global-cursor with nested path"
     (let [app-state* (atom (state/init-state))
-          cursor (state/global-cursor app-state* [:config :feature-flags] #{})]
+          cursor     (state/global-cursor app-state* [:config :feature-flags] #{})]
       (is (= #{} @cursor))
       (swap! cursor conj :dark-mode)
       (is (= #{:dark-mode} @cursor))
       (is (= #{:dark-mode} (get-in @app-state* [:global :config :feature-flags])))))
 
   (testing "global-cursor is shared across sessions and tabs"
-    (let [app-state* (atom (state/init-state))
+    (let [app-state*   (atom (state/init-state))
           session-id-1 "session-g1"
           session-id-2 "session-g2"
-          tab-id-1 "tab-g1"
-          tab-id-2 "tab-g2"]
+          tab-id-1     "tab-g1"
+          tab-id-2     "tab-g2"]
       (state/get-or-create-tab! app-state* session-id-1 tab-id-1)
       (state/get-or-create-tab! app-state* session-id-2 tab-id-2)
       ;; Both cursors point to the same global state

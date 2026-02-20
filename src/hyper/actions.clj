@@ -15,9 +15,9 @@
                      (str "action-" (java.util.UUID/randomUUID))))
   ([app-state* session-id tab-id action-fn action-id]
    (swap! app-state* assoc-in [:actions action-id]
-          {:fn action-fn
+          {:fn         action-fn
            :session-id session-id
-           :tab-id tab-id})
+           :tab-id     tab-id})
    action-id))
 
 (defn execute-action!
@@ -26,13 +26,13 @@
   (if-let [action-data (get-in @app-state* [:actions action-id])]
     (let [{:keys [fn]} action-data]
       (t/catch->error! :hyper.error/execute-action
-        (fn))
+                       (fn))
       true)
     (do
       (t/log! {:level :warn
-               :id :hyper.error/action-not-found
-               :data {:hyper/action-id action-id}
-               :msg "Action not found"})
+               :id    :hyper.error/action-not-found
+               :data  {:hyper/action-id action-id}
+               :msg   "Action not found"})
       (throw (ex-info "Action not found" {:hyper/action-id action-id})))))
 
 (defn cleanup-tab-actions!
