@@ -57,8 +57,8 @@
             existing-session (get-in cookies ["hyper-session" :value])
             session-id (or existing-session (generate-session-id))
             tab-id (or (get-in req [:query-params "tab-id"])
-                      (get-in req [:params :tab-id])
-                      (generate-tab-id))
+                       (get-in req [:params :tab-id])
+                       (generate-tab-id))
             req (assoc req
                        :hyper/session-id session-id
                        :hyper/tab-id tab-id
@@ -98,47 +98,47 @@
           compress? (accepts-br? req)]
 
       (http-kit/as-channel req
-        {:on-open (fn [channel]
-                    (state/get-or-create-tab! app-state* session-id tab-id)
-                    (render/register-sse-channel! app-state* tab-id channel compress?)
-                    (render/setup-watchers! app-state* session-id tab-id request-var)
+                           {:on-open (fn [channel]
+                                       (state/get-or-create-tab! app-state* session-id tab-id)
+                                       (render/register-sse-channel! app-state* tab-id channel compress?)
+                                       (render/setup-watchers! app-state* session-id tab-id request-var)
                     ;; Auto-watch the routes Var so title/route changes
                     ;; trigger re-renders for all connected tabs
-                    (when-let [routes-source (get @app-state* :routes-source)]
-                      (when (var? routes-source)
-                        (render/watch-source! app-state* session-id tab-id request-var routes-source)))
+                                       (when-let [routes-source (get @app-state* :routes-source)]
+                                         (when (var? routes-source)
+                                           (render/watch-source! app-state* session-id tab-id request-var routes-source)))
                     ;; Set up route-level watches (:watches + Var :get handlers)
-                    (render/setup-route-watches! app-state* session-id tab-id request-var)
-                    (let [connected-msg (str "event: connected\n"
-                                            "data: {\"tab-id\":\"" tab-id "\"}\n\n")]
-                      (if compress?
+                                       (render/setup-route-watches! app-state* session-id tab-id request-var)
+                                       (let [connected-msg (str "event: connected\n"
+                                                                "data: {\"tab-id\":\"" tab-id "\"}\n\n")]
+                                         (if compress?
                         ;; Brotli: send headers with the first chunk compressed
                         ;; through the tab's streaming compressor so all bytes
                         ;; on this connection form one contiguous brotli stream.
-                        (let [tab-data (get-in @app-state* [:tabs tab-id])
-                              compressed (br/compress-stream
-                                           (:br-out tab-data)
-                                           (:br-stream tab-data)
-                                           connected-msg)]
-                          (http-kit/send!
-                            channel
-                            {:headers {"Content-Type"     "text/event-stream"
-                                       "Content-Encoding" "br"}
-                             :body    compressed}
-                            false))
+                                           (let [tab-data (get-in @app-state* [:tabs tab-id])
+                                                 compressed (br/compress-stream
+                                                             (:br-out tab-data)
+                                                             (:br-stream tab-data)
+                                                             connected-msg)]
+                                             (http-kit/send!
+                                              channel
+                                              {:headers {"Content-Type"     "text/event-stream"
+                                                         "Content-Encoding" "br"}
+                                               :body    compressed}
+                                              false))
                         ;; No compression: plain text
-                        (http-kit/send!
-                          channel
-                          {:headers {"Content-Type" "text/event-stream"}
-                           :body    connected-msg}
-                          false))))
+                                           (http-kit/send!
+                                            channel
+                                            {:headers {"Content-Type" "text/event-stream"}
+                                             :body    connected-msg}
+                                            false))))
 
-         :on-close (fn [_channel _status]
-                     (t/log! {:level :info
-                              :id :hyper.event/tab-disconnect
-                              :data {:hyper/tab-id tab-id}
-                              :msg "Tab disconnected"})
-                     (render/cleanup-tab! app-state* tab-id))}))))
+                            :on-close (fn [_channel _status]
+                                        (t/log! {:level :info
+                                                 :id :hyper.event/tab-disconnect
+                                                 :data {:hyper/tab-id tab-id}
+                                                 :msg "Tab disconnected"})
+                                        (render/cleanup-tab! app-state* tab-id))}))))
 
 (defn action-handler
   "Handler for action POST requests."
@@ -198,9 +198,9 @@
    Returns nil if there are no watches."
   [routes route-name]
   (when-let [route-data (->> routes
-                              (some (fn [[_path data]]
-                                      (when (= route-name (:name data))
-                                        data))))]
+                             (some (fn [[_path data]]
+                                     (when (= route-name (:name data))
+                                       data))))]
     (let [explicit (vec (or (:watches route-data) []))
           get-handler (:get route-data)
           watches (cond-> explicit
@@ -368,20 +368,20 @@
                   title (or (resolve-title title-spec req-with-state) "Hyper App")
                   extra-head (resolve-head head req-with-state)
                   html    (c/html
-                            [c/doctype-html5
-                             [:html
-                              [:head
-                               [:meta {:charset "UTF-8"}]
-                               [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
-                               [:title title]
-                               (datastar-script)
-                               extra-head]
-                              [:body
-                               {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
-                               [:div {:id "hyper-app"
-                                      :data-hyper-title title}
-                                content]
-                               (hyper-scripts tab-id)]]])]
+                           [c/doctype-html5
+                            [:html
+                             [:head
+                              [:meta {:charset "UTF-8"}]
+                              [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
+                              [:title title]
+                              (datastar-script)
+                              extra-head]
+                             [:body
+                              {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
+                              [:div {:id "hyper-app"
+                                     :data-hyper-title title}
+                               content]
+                              (hyper-scripts tab-id)]]])]
               {:status  200
                :headers {"Content-Type" "text/html; charset=utf-8"}
                :body    html})
@@ -391,49 +391,49 @@
 (defn- navigate-handler
   "Handler for popstate/navigation POST requests.
    Looks up the route for the given path and updates the tab's route + render fn."
-  [app-state* request-var]
+  [app-state* _request-var]
   (fn [req]
-    (let [path (get-in req [:query-params "path"])
-          tab-id (:hyper/tab-id req)
-          session-id (:hyper/session-id req)
-          router (get @app-state* :router)
-          routes (live-routes app-state*)]
+    (let [path        (get-in req [:query-params "path"])
+          tab-id      (:hyper/tab-id req)
+          _session-id (:hyper/session-id req)
+          router      (get @app-state* :router)
+          routes      (live-routes app-state*)]
       (if-not (and path tab-id router)
-        {:status 400
+        {:status  400
          :headers {"Content-Type" "application/json"}
-         :body "{\"error\": \"Missing path or tab-id\"}"}
+         :body    "{\"error\": \"Missing path or tab-id\"}"}
 
         ;; Parse path and query string
         (let [[path-part query-string] (clojure.string/split path #"\?" 2)
-              raw-query-params (state/parse-query-string query-string)
+              raw-query-params         (state/parse-query-string query-string)
               ;; Match the path using the reitit router
-              match (reitit/match-by-path router path-part)]
+              match                    (reitit/match-by-path router path-part)]
           (if-not match
-            {:status 404
+            {:status  404
              :headers {"Content-Type" "application/json"}
-             :body "{\"error\": \"Route not found\"}"}
+             :body    "{\"error\": \"Route not found\"}"}
 
-            (let [route-name (get-in match [:data :name])
+            (let [route-name   (get-in match [:data :name])
                   ;; Coerce parameters using reitit's coercion if the route has specs
-                  coerced (try
-                            (coercion/coerce!
-                              (assoc match :query-params raw-query-params))
-                            (catch Exception _e nil))
+                  coerced      (try
+                                 (coercion/coerce!
+                                  (assoc match :query-params raw-query-params))
+                                 (catch Exception _e nil))
                   query-params (or (:query coerced) raw-query-params {})
-                  path-params (or (:path coerced) (:path-params match) {})
-                  render-fn (find-render-fn routes route-name)]
+                  path-params  (or (:path coerced) (:path-params match) {})
+                  render-fn    (find-render-fn routes route-name)]
               (when render-fn
                 (render/register-render-fn! app-state* tab-id render-fn))
               ;; Setting the route triggers the route watcher,
               ;; which handles re-rendering and URL updates via SSE
               (state/set-tab-route! app-state* tab-id
-                                    {:name route-name
-                                     :path path-part
-                                     :path-params path-params
+                                    {:name         route-name
+                                     :path         path-part
+                                     :path-params  path-params
                                      :query-params query-params})
-              {:status 200
+              {:status  200
                :headers {"Content-Type" "application/json"}
-               :body "{\"success\": true}"})))))))
+               :body    "{\"success\": true}"})))))))
 
 (defn- build-ring-handler
   "Build the Ring handler for the given user routes.
@@ -469,7 +469,7 @@
    - :static-resources  Classpath resource root(s) (e.g. \"public\"), served by URI
    - :static-dir        Filesystem directory (or directories) to serve (useful in dev)
 
-   When enabled, adds content-type + not-modified support." 
+   When enabled, adds content-type + not-modified support."
   [handler {:keys [static-resources static-dir]}]
   (let [resource-roots (cond
                          (nil? static-resources) nil
@@ -481,15 +481,15 @@
                       :else [static-dir])
         handler' (cond-> handler
                    (seq resource-roots) (as-> h
-                                          (reduce (fn [acc root]
-                                                    (resource/wrap-resource acc root))
-                                                  h
-                                                  resource-roots))
+                                              (reduce (fn [acc root]
+                                                        (resource/wrap-resource acc root))
+                                                      h
+                                                      resource-roots))
                    (seq static-dirs) (as-> h
-                                       (reduce (fn [acc dir]
-                                                 (file/wrap-file acc dir))
-                                               h
-                                               static-dirs)))]
+                                           (reduce (fn [acc dir]
+                                                     (file/wrap-file acc dir))
+                                                   h
+                                                   static-dirs)))]
     (if (or (seq resource-roots) (seq static-dirs))
       (-> handler'
           (content-type/wrap-content-type)
@@ -544,7 +544,7 @@
                                     :id :hyper.event/routes-reload
                                     :msg "Routes changed, rebuilding router"})
                            (let [h (build-ring-handler current-routes app-state*
-                                                      page-wrapper system-routes)]
+                                                       page-wrapper system-routes)]
                              (reset! cached {:routes current-routes :handler h})))
                          ((:handler @cached) req))))
                    ;; Static: use the compiled handler directly

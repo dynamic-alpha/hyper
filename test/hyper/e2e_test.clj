@@ -368,16 +368,16 @@
         ;; Redefine the routes Var with a different title fn
         (testing "Title updates after routes Var is redefined"
           (alter-var-root #'*test-routes*
-            (constantly
-              [["/" {:name :home
-                     :title "Home"
-                     :get (fn [_]
-                            [:div [:h1 "Test Home"]
-                             [:a (h/navigate :counters) "Go to counters"]])}]
-               ["/counters"
-                {:name :counters
-                 :title (fn [_] "Brand New Title")
-                 :get (default-counters-get)}]]))
+                          (constantly
+                           [["/" {:name :home
+                                  :title "Home"
+                                  :get (fn [_]
+                                         [:div [:h1 "Test Home"]
+                                          [:a (h/navigate :counters) "Go to counters"]])}]
+                            ["/counters"
+                             {:name :counters
+                              :title (fn [_] "Brand New Title")
+                              :get (default-counters-get)}]]))
 
           ;; Wait for SSE to re-render (Var watch triggers re-render)
           (let [deadline (+ (System/currentTimeMillis) 5000)]
@@ -412,19 +412,19 @@
         ;; Redefine routes with completely different inline content
         (testing "Content updates after routes Var is redefined with new inline fns"
           (alter-var-root #'*test-routes*
-            (constantly
-              [["/" {:name :home
-                     :title "Home"
-                     :get (fn [_]
-                            [:div [:h1 "Test Home"]
-                             [:a (h/navigate :counters) "Go to counters"]])}]
-               ["/counters"
-                {:name :counters
-                 :title "Reloaded Page"
-                 :get (fn [_]
-                        [:div
-                         [:h1 "Live Reloaded!"]
-                         [:p#reloaded-marker "This content was hot-swapped"]])}]]))
+                          (constantly
+                           [["/" {:name :home
+                                  :title "Home"
+                                  :get (fn [_]
+                                         [:div [:h1 "Test Home"]
+                                          [:a (h/navigate :counters) "Go to counters"]])}]
+                            ["/counters"
+                             {:name :counters
+                              :title "Reloaded Page"
+                              :get (fn [_]
+                                     [:div
+                                      [:h1 "Live Reloaded!"]
+                                      [:p#reloaded-marker "This content was hot-swapped"]])}]]))
 
           ;; Wait for the new content to appear via SSE re-render
           (let [deadline (+ (System/currentTimeMillis) 5000)]
@@ -437,7 +437,7 @@
 
           (is (= "Live Reloaded!" (w/text-content "h1")))
           (is (= "This content was hot-swapped"
-                  (w/text-content "#reloaded-marker")))))
+                 (w/text-content "#reloaded-marker")))))
 
       (finally
         (close-browser! browser-info)))))

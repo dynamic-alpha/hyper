@@ -167,9 +167,9 @@
                           (update-in [:sessions session-id :tabs] (fnil conj #{}) tab-id)
                           (update-in [:tabs tab-id]
                                      #(or % {:data {}
-                                            :session-id session-id
-                                            :render-fn nil
-                                            :sse-channel nil})))))
+                                             :session-id session-id
+                                             :render-fn nil
+                                             :sse-channel nil})))))
   nil)
 
 (defn cleanup-tab!

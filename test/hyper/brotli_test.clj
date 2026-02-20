@@ -100,8 +100,8 @@
                                 (range 10))
           oneshot-sizes (mapv (fn [i]
                                 (let [sse (str "event: datastar-patch-elements\ndata: elements "
-                                              (clojure.string/replace fragment "1" (str i))
-                                              "\n\n")]
+                                               (clojure.string/replace fragment "1" (str i))
+                                               "\n\n")]
                                   (alength (br/compress sse :quality 5))))
                               (range 10))]
       ;; Later streaming chunks should be smaller than one-shot because
@@ -128,10 +128,10 @@
 (deftest test-wrap-brotli-middleware
   (testing "compresses string body when client accepts br"
     (let [handler (br/wrap-brotli
-                    (fn [_req]
-                      {:status 200
-                       :headers {"Content-Type" "text/html; charset=utf-8"}
-                       :body "<html><body><h1>Hello</h1></body></html>"}))
+                   (fn [_req]
+                     {:status 200
+                      :headers {"Content-Type" "text/html; charset=utf-8"}
+                      :body "<html><body><h1>Hello</h1></body></html>"}))
           response (handler {:headers {"accept-encoding" "gzip, deflate, br"}})]
       (is (= "br" (get-in response [:headers "Content-Encoding"])))
       (is (bytes? (:body response)))
@@ -140,41 +140,41 @@
 
   (testing "does not compress when client does not accept br"
     (let [handler (br/wrap-brotli
-                    (fn [_req]
-                      {:status 200
-                       :headers {"Content-Type" "text/html"}
-                       :body "<html>hello</html>"}))
+                   (fn [_req]
+                     {:status 200
+                      :headers {"Content-Type" "text/html"}
+                      :body "<html>hello</html>"}))
           response (handler {:headers {"accept-encoding" "gzip, deflate"}})]
       (is (nil? (get-in response [:headers "Content-Encoding"])))
       (is (string? (:body response)))))
 
   (testing "does not compress when no Accept-Encoding header"
     (let [handler (br/wrap-brotli
-                    (fn [_req]
-                      {:status 200
-                       :headers {"Content-Type" "text/html"}
-                       :body "<html>hello</html>"}))
+                   (fn [_req]
+                     {:status 200
+                      :headers {"Content-Type" "text/html"}
+                      :body "<html>hello</html>"}))
           response (handler {:headers {}})]
       (is (nil? (get-in response [:headers "Content-Encoding"])))
       (is (string? (:body response)))))
 
   (testing "does not compress non-string bodies"
     (let [handler (br/wrap-brotli
-                    (fn [_req]
-                      {:status 200
-                       :headers {"Content-Type" "application/octet-stream"}
-                       :body (.getBytes "binary" "UTF-8")}))
+                   (fn [_req]
+                     {:status 200
+                      :headers {"Content-Type" "application/octet-stream"}
+                      :body (.getBytes "binary" "UTF-8")}))
           response (handler {:headers {"accept-encoding" "br"}})]
       (is (nil? (get-in response [:headers "Content-Encoding"])))
       (is (bytes? (:body response)))))
 
   (testing "does not double-compress already-encoded responses"
     (let [handler (br/wrap-brotli
-                    (fn [_req]
-                      {:status 200
-                       :headers {"Content-Type" "text/html"
-                                 "Content-Encoding" "gzip"}
-                       :body "already compressed"}))
+                   (fn [_req]
+                     {:status 200
+                      :headers {"Content-Type" "text/html"
+                                "Content-Encoding" "gzip"}
+                      :body "already compressed"}))
           response (handler {:headers {"accept-encoding" "br"}})]
       (is (= "gzip" (get-in response [:headers "Content-Encoding"])))
       (is (= "already compressed" (:body response)))))
@@ -230,28 +230,28 @@
       (is (nil? (get-in @app-state* [:tabs tab-id :br-stream]))))))
 
 (deftest test-send-sse-with-brotli
-      (testing "send-sse! compresses when brotli streams are present"
-        (let [app-state* (atom (state/init-state))
-              tab-id "test-br-send-1"
-              sent (atom [])]
-          (state/get-or-create-tab! app-state* "sess" tab-id)
-          (render/register-sse-channel! app-state* tab-id {:mock true} true)
-    
-          (with-redefs [org.httpkit.server/send! (fn [_ch data _close?]
-                                                   (swap! sent conj data)
-                                                   true)]
-            (let [message "event: datastar-patch-elements\ndata: elements <div>Hello</div>\n\n"]
-              (render/send-sse! app-state* tab-id message)
-    
-              (is (= 1 (count @sent)))
-              (let [payload (first @sent)]
+  (testing "send-sse! compresses when brotli streams are present"
+    (let [app-state* (atom (state/init-state))
+          tab-id "test-br-send-1"
+          sent (atom [])]
+      (state/get-or-create-tab! app-state* "sess" tab-id)
+      (render/register-sse-channel! app-state* tab-id {:mock true} true)
+
+      (with-redefs [org.httpkit.server/send! (fn [_ch data _close?]
+                                               (swap! sent conj data)
+                                               true)]
+        (let [message "event: datastar-patch-elements\ndata: elements <div>Hello</div>\n\n"]
+          (render/send-sse! app-state* tab-id message)
+
+          (is (= 1 (count @sent)))
+          (let [payload (first @sent)]
                 ;; Should be raw compressed bytes — the Content-Encoding header
                 ;; was set on the initial response, subsequent sends are just
                 ;; data frames in the same brotli stream.
-                (is (bytes? payload))
-                (is (pos? (alength ^bytes payload))))))
-    
-          (render/unregister-sse-channel! app-state* tab-id)))
+            (is (bytes? payload))
+            (is (pos? (alength ^bytes payload))))))
+
+      (render/unregister-sse-channel! app-state* tab-id)))
 
   (testing "send-sse! sends plain text when no brotli streams"
     (let [app-state* (atom (state/init-state))

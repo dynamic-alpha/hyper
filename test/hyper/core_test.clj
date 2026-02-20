@@ -95,7 +95,7 @@
           (is (.contains (str (:data-on:click action-attrs)) "@post"))
           (is (.contains (str (:data-on:click action-attrs)) "/hyper/actions"))
           (is (.contains (str (:data-on:click action-attrs)) "action-id="))
-          
+
           ;; Extract action ID and execute it
           (let [action-id (second (re-find #"action-id=([^']+)" (str (:data-on:click action-attrs))))]
             (is (some? action-id))

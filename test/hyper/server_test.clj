@@ -112,7 +112,7 @@
           executor (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           handler (server/create-handler routes app-state* executor request-var
                                          {:head (fn [_req]
-                                                 [[:meta {:name "test" :content "ok"}]])})
+                                                  [[:meta {:name "test" :content "ok"}]])})
           response (handler {:uri "/" :request-method :get})]
       (is (= 200 (:status response)))
       (is (.contains (:body response) "name=\"test\""))
@@ -120,8 +120,8 @@
 
   (testing "Serves static assets from :static-dir"
     (let [tmp-path (java.nio.file.Files/createTempDirectory
-                     "hyper-static-"
-                     (make-array java.nio.file.attribute.FileAttribute 0))
+                    "hyper-static-"
+                    (make-array java.nio.file.attribute.FileAttribute 0))
           tmp-dir (.toFile tmp-path)
           css-file (io/file tmp-dir "styles.css")
           _ (spit css-file "body { background: red; }")
@@ -140,11 +140,11 @@
 
   (testing "Serves static assets from multiple :static-dir roots"
     (let [tmp1-path (java.nio.file.Files/createTempDirectory
-                      "hyper-static-1-"
-                      (make-array java.nio.file.attribute.FileAttribute 0))
+                     "hyper-static-1-"
+                     (make-array java.nio.file.attribute.FileAttribute 0))
           tmp2-path (java.nio.file.Files/createTempDirectory
-                      "hyper-static-2-"
-                      (make-array java.nio.file.attribute.FileAttribute 0))
+                     "hyper-static-2-"
+                     (make-array java.nio.file.attribute.FileAttribute 0))
           tmp1-dir (.toFile tmp1-path)
           tmp2-dir (.toFile tmp2-path)
           a-file (io/file tmp1-dir "a.css")
@@ -158,7 +158,7 @@
           executor (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           handler (server/create-handler routes app-state* executor request-var
                                          {:static-dir [(.getAbsolutePath tmp1-dir)
-                                                      (.getAbsolutePath tmp2-dir)]})
+                                                       (.getAbsolutePath tmp2-dir)]})
           response-a (handler {:uri "/a.css" :request-method :get})
           response-b (handler {:uri "/b.css" :request-method :get})]
       (is (= 200 (:status response-a)))

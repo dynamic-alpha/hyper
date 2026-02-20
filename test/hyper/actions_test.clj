@@ -58,9 +58,9 @@
       (is (contains? (:actions @app-state*) action-id-1))
       (is (contains? (:actions @app-state*) action-id-2))
       (is (contains? (:actions @app-state*) action-id-3))
-      
+
       (actions/cleanup-tab-actions! app-state* tab-id)
-      
+
       (is (not (contains? (:actions @app-state*) action-id-1)))
       (is (not (contains? (:actions @app-state*) action-id-2)))
       (is (contains? (:actions @app-state*) action-id-3))))) ;; Other tab's action remains

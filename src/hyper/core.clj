@@ -104,11 +104,14 @@
    (let [{:keys [tab-id app-state*]} (require-context! "path-cursor")]
      (state/create-cursor app-state* [:tabs tab-id :route :query-params] path)))
   ([path default-value]
-   (let [{:keys [tab-id app-state*]} (require-context! "path-cursor")]
-     (let [cursor (state/create-cursor app-state* [:tabs tab-id :route :query-params] path)]
-       (when (nil? @cursor)
-         (reset! cursor default-value))
-       cursor))))
+   (let [{:keys [tab-id app-state*]} (require-context! "path-cursor")
+         cursor                      (state/create-cursor
+                                      app-state*
+                                      [:tabs tab-id :route :query-params]
+                                      path)]
+     (when (nil? @cursor)
+       (reset! cursor default-value))
+     cursor)))
 
 (defn watch!
   "Watch an external source for changes, triggering a re-render of the current
@@ -157,9 +160,9 @@
 
      (let [action-fn# (fn []
                         (binding [*request* {:hyper/session-id session-id#
-                                            :hyper/tab-id tab-id#
-                                            :hyper/app-state app-state*#
-                                            :hyper/router router#}]
+                                             :hyper/tab-id tab-id#
+                                             :hyper/app-state app-state*#
+                                             :hyper/router router#}]
                           ~@body))
            idx# (if *action-idx* (swap! *action-idx* inc) (hash action-fn#))
            action-id# (str "a-" tab-id# "-" idx#)
@@ -219,7 +222,7 @@
                                                :query-params (or query-params {})})))
              nav-idx (if *action-idx* (swap! *action-idx* inc) (hash nav-fn))
              action-id (actions/register-action! app-state* session-id tab-id nav-fn
-                                                (str "a-" tab-id "-" nav-idx))
+                                                 (str "a-" tab-id "-" nav-idx))
              escaped-title (or (server/escape-js-string title) "")
              escaped-href (server/escape-js-string href)]
          {:href href
@@ -228,7 +231,6 @@
                " window.history.pushState({title: '" escaped-title "'}, '', '" escaped-href "');"
                (when title
                  (str " document.title = '" escaped-title "'")))})))))
-
 
 (defn create-handler
   "Create a Ring handler for a hyper application.

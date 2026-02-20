@@ -26,7 +26,7 @@
   (if-let [action-data (get-in @app-state* [:actions action-id])]
     (let [{:keys [fn]} action-data]
       (t/catch->error! :hyper.error/execute-action
-        (fn))
+                       (fn))
       true)
     (do
       (t/log! {:level :warn

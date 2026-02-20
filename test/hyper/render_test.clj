@@ -12,7 +12,7 @@
           tab-id "test-tab-1"
           channel {:mock true}]
       (state/get-or-create-tab! app-state* session-id tab-id)
-      
+
       ;; Register channel
       (render/register-sse-channel! app-state* tab-id channel false)
 
@@ -32,7 +32,7 @@
           tab-id "test-tab-2"
           render-fn (fn [_req] [:div "test"])]
       (state/get-or-create-tab! app-state* session-id tab-id)
-      
+
       ;; Register render function
       (render/register-render-fn! app-state* tab-id render-fn)
 
@@ -56,9 +56,7 @@
     (let [html "<span>test</span>"
           fragment (render/format-datastar-fragment html)]
       (is (.contains fragment html))
-      (is (.startsWith fragment "event: datastar-patch-elements\n"))))
-
-)
+      (is (.startsWith fragment "event: datastar-patch-elements\n")))))
 
 (deftest test-render-and-send
   (testing "Renders and formats content for SSE"
@@ -71,10 +69,10 @@
                                  (swap! sent-messages conj data)
                                  true)}
           render-fn (fn [_req] [:div "Hello World"])]
-      
+
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
-      
+
       ;; Manually test formatting since we can't actually send with mock
       (let [hiccup-result (render-fn {})
             html-str (c/html hiccup-result)
@@ -95,25 +93,25 @@
                        true)
           render-fn (fn [_req]
                       [:div "Count: " (get-in @app-state* [:tabs tab-id :data :count])])]
-      
+
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
       (render/register-sse-channel! app-state* tab-id {:mock true} false)
-      
+
       ;; Temporarily override send-sse! for testing
       (with-redefs [render/send-sse! mock-send!]
         (render/setup-watchers! app-state* session-id tab-id #'hyper.core/*request*)
-        
+
         ;; Change tab state
         (swap! app-state* assoc-in [:tabs tab-id :data :count] 1)
         (Thread/sleep 50) ;; Wait for async render
-        
+
         (is (>= (count @sent-messages) 1))
-        
+
         ;; Change session state
         (swap! app-state* assoc-in [:sessions session-id :data :user] "Alice")
         (Thread/sleep 50)
-        
+
         (is (>= (count @sent-messages) 2))
 
         ;; Change global state
@@ -121,7 +119,7 @@
         (Thread/sleep 50)
 
         (is (>= (count @sent-messages) 3))
-        
+
         ;; Clean up watchers
         (render/remove-watchers! app-state* tab-id)))))
 
@@ -133,19 +131,19 @@
           tab-id "test-tab-5"
           mock-channel {:mock true}
           render-fn (fn [_req] [:div "test"])]
-      
+
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
       (render/register-sse-channel! app-state* tab-id mock-channel false)
       (render/setup-watchers! app-state* session-id tab-id #'hyper.core/*request*)
-      
+
       (is (some? (render/get-render-fn app-state* tab-id)))
       (is (some? (render/get-sse-channel app-state* tab-id)))
       (is (contains? (:tabs @app-state*) tab-id))
-      
+
       ;; Cleanup
       (render/cleanup-tab! app-state* tab-id)
-      
+
       (is (nil? (render/get-sse-channel app-state* tab-id)))
       (is (not (contains? (:tabs @app-state*) tab-id))))))
 
@@ -173,13 +171,13 @@
           session-id "test-session-6"
           tab-id "test-tab-6"]
       (state/get-or-create-tab! app-state* session-id tab-id)
-      
+
       ;; First render should succeed
       (is (true? (render/should-render? app-state* tab-id)))
-      
+
       ;; Immediate second render should be throttled (returns nil/falsey)
       (is (not (render/should-render? app-state* tab-id)))
-      
+
       ;; After waiting longer than throttle period, should render again
       (Thread/sleep 20) ;; Default throttle is 16ms
       (is (true? (render/should-render? app-state* tab-id)))))
@@ -192,20 +190,20 @@
           render-fn (fn [_req]
                       (swap! render-count inc)
                       [:div "Render " @render-count])]
-      
+
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
       (render/register-sse-channel! app-state* tab-id {:mock true} false)
-      
+
       (with-redefs [render/send-sse! (fn [_state* _tid _msg] true)]
         ;; First render succeeds
         (render/throttled-render-and-send! app-state* session-id tab-id #'hyper.core/*request*)
         (is (= 1 @render-count))
-        
+
         ;; Immediate second render is throttled
         (render/throttled-render-and-send! app-state* session-id tab-id #'hyper.core/*request*)
         (is (= 1 @render-count))
-        
+
         ;; After throttle period, render succeeds
         (Thread/sleep 20)
         (render/throttled-render-and-send! app-state* session-id tab-id #'hyper.core/*request*)
@@ -216,11 +214,11 @@
           session-id "test-session-8"
           tab-id "test-tab-8"]
       (state/get-or-create-tab! app-state* session-id tab-id)
-      
+
       ;; Trigger render to set last-render-ms
       (render/should-render? app-state* tab-id)
       (is (some? (get-in @app-state* [:tabs tab-id :last-render-ms])))
-      
+
       ;; Cleanup should remove entire tab including last-render-ms
       (render/cleanup-tab! app-state* tab-id)
       (is (nil? (get-in @app-state* [:tabs tab-id]))))))

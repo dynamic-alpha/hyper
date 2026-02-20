@@ -6,11 +6,10 @@
    maintained across chunks for better ratios)."
   (:import (com.aayushatharva.brotli4j Brotli4jLoader)
            (com.aayushatharva.brotli4j.encoder Encoder Encoder$Parameters
-             Encoder$Mode BrotliOutputStream)
+                                               Encoder$Mode BrotliOutputStream)
            (com.aayushatharva.brotli4j.decoder BrotliInputStream)
            (java.io ByteArrayInputStream ByteArrayOutputStream IOException)))
 
-#_:clj-kondo/ignore
 (defonce ensure-br
   (Brotli4jLoader/ensureAvailability))
 
