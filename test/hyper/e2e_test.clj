@@ -41,17 +41,17 @@
          (counter-widget "URL" url*)]))))
 
 (defn default-routes []
-  [["/" {:name :home
+  [["/" {:name  :home
          :title "Home"
-         :get (fn [_]
-                [:div
-                 [:h1 "Test Home"]
-                 [:a (h/navigate :counters) "Go to counters"]])}]
+         :get   (fn [_]
+                  [:div
+                   [:h1 "Test Home"]
+                   [:a (h/navigate :counters) "Go to counters"]])}]
    ["/counters"
-    {:name :counters
+    {:name  :counters
      :title (fn [_]
               (str "Counter: " @(h/session-cursor :count 0)))
-     :get (default-counters-get)}]])
+     :get   (default-counters-get)}]])
 
 (def ^:dynamic *test-routes* (default-routes))
 
@@ -86,7 +86,7 @@
 (defn launch-browser
   "Launch a headless Chromium browser. Returns {:playwright pw :browser browser}."
   []
-  (let [pw (Playwright/create)
+  (let [pw      (Playwright/create)
         browser (.. pw chromium (launch (doto (BrowserType$LaunchOptions.)
                                           (.setHeadless true))))]
     {:playwright pw :browser browser}))
@@ -195,12 +195,12 @@
 (deftest ^:e2e cursor-isolation-test
   (let [browser-info (launch-browser)
         ;; Session 1: browser context with its own cookies
-        ctx1 (new-context browser-info)
-        s1-tab1 (new-page ctx1)
-        s1-tab2 (new-page ctx1) ;; same context = same session cookie
+        ctx1         (new-context browser-info)
+        s1-tab1      (new-page ctx1)
+        s1-tab2      (new-page ctx1) ;; same context = same session cookie
         ;; Session 2: separate browser context (different session)
-        ctx2 (new-context browser-info)
-        s2-tab1 (new-page ctx2)]
+        ctx2         (new-context browser-info)
+        s2-tab1      (new-page ctx2)]
     (try
       ;; --- Navigate all pages to /counters ---
       (w/with-page s1-tab1
@@ -353,8 +353,8 @@
 
 (deftest ^:e2e title-redef-test
   (let [browser-info (launch-browser)
-        ctx (new-context browser-info)
-        page (new-page ctx)]
+        ctx          (new-context browser-info)
+        page         (new-page ctx)]
     (try
       (w/with-page page
         (w/navigate (str base-url "/counters"))
@@ -368,16 +368,16 @@
         ;; Redefine the routes Var with a different title fn
         (testing "Title updates after routes Var is redefined"
           (alter-var-root #'*test-routes*
-            (constantly
-              [["/" {:name :home
-                     :title "Home"
-                     :get (fn [_]
-                            [:div [:h1 "Test Home"]
-                             [:a (h/navigate :counters) "Go to counters"]])}]
-               ["/counters"
-                {:name :counters
-                 :title (fn [_] "Brand New Title")
-                 :get (default-counters-get)}]]))
+                          (constantly
+                            [["/" {:name  :home
+                                   :title "Home"
+                                   :get   (fn [_]
+                                            [:div [:h1 "Test Home"]
+                                             [:a (h/navigate :counters) "Go to counters"]])}]
+                             ["/counters"
+                              {:name  :counters
+                               :title (fn [_] "Brand New Title")
+                               :get   (default-counters-get)}]]))
 
           ;; Wait for SSE to re-render (Var watch triggers re-render)
           (let [deadline (+ (System/currentTimeMillis) 5000)]
@@ -398,8 +398,8 @@
 
 (deftest ^:e2e content-redef-test
   (let [browser-info (launch-browser)
-        ctx (new-context browser-info)
-        page (new-page ctx)]
+        ctx          (new-context browser-info)
+        page         (new-page ctx)]
     (try
       (w/with-page page
         (w/navigate (str base-url "/counters"))
@@ -412,19 +412,19 @@
         ;; Redefine routes with completely different inline content
         (testing "Content updates after routes Var is redefined with new inline fns"
           (alter-var-root #'*test-routes*
-            (constantly
-              [["/" {:name :home
-                     :title "Home"
-                     :get (fn [_]
-                            [:div [:h1 "Test Home"]
-                             [:a (h/navigate :counters) "Go to counters"]])}]
-               ["/counters"
-                {:name :counters
-                 :title "Reloaded Page"
-                 :get (fn [_]
-                        [:div
-                         [:h1 "Live Reloaded!"]
-                         [:p#reloaded-marker "This content was hot-swapped"]])}]]))
+                          (constantly
+                            [["/" {:name  :home
+                                   :title "Home"
+                                   :get   (fn [_]
+                                            [:div [:h1 "Test Home"]
+                                             [:a (h/navigate :counters) "Go to counters"]])}]
+                             ["/counters"
+                              {:name  :counters
+                               :title "Reloaded Page"
+                               :get   (fn [_]
+                                        [:div
+                                         [:h1 "Live Reloaded!"]
+                                         [:p#reloaded-marker "This content was hot-swapped"]])}]]))
 
           ;; Wait for the new content to appear via SSE re-render
           (let [deadline (+ (System/currentTimeMillis) 5000)]
@@ -437,7 +437,7 @@
 
           (is (= "Live Reloaded!" (w/text-content "h1")))
           (is (= "This content was hot-swapped"
-                  (w/text-content "#reloaded-marker")))))
+                 (w/text-content "#reloaded-marker")))))
 
       (finally
         (close-browser! browser-info)))))

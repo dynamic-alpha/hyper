@@ -77,7 +77,7 @@
     (let [full-path (concat path-prefix (normalize-path path))]
       (loop []
         (let [current-state @parent-atom
-              current-val (get-in current-state full-path)]
+              current-val   (get-in current-state full-path)]
           (if (= current-val oldv)
             (if (compare-and-set! parent-atom
                                   current-state
@@ -144,12 +144,12 @@
 (defn init-state
   "Create initial app state structure."
   []
-  {:global {}
+  {:global   {}
    :sessions {}
-   :tabs {}
-   :actions {}
-   :router nil
-   :routes nil})
+   :tabs     {}
+   :actions  {}
+   :router   nil
+   :routes   nil})
 
 (defn get-or-create-session!
   "Ensure session exists in app-state."
@@ -166,10 +166,10 @@
                       (-> state
                           (update-in [:sessions session-id :tabs] (fnil conj #{}) tab-id)
                           (update-in [:tabs tab-id]
-                                     #(or % {:data {}
-                                            :session-id session-id
-                                            :render-fn nil
-                                            :sse-channel nil})))))
+                                     #(or % {:data        {}
+                                             :session-id  session-id
+                                             :render-fn   nil
+                                             :sse-channel nil})))))
   nil)
 
 (defn cleanup-tab!

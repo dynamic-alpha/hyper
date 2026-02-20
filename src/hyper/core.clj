@@ -7,10 +7,10 @@
    - navigate function for SPA navigation
    - watch! for observing external state sources
    - create-handler for building ring handlers"
-  (:require [hyper.state :as state]
-            [hyper.actions :as actions]
-            [hyper.server :as server]
+  (:require [hyper.actions :as actions]
             [hyper.render :as render]
+            [hyper.server :as server]
+            [hyper.state :as state]
             [reitit.core :as reitit]))
 
 ;; Dynamic var to hold current request context
@@ -29,12 +29,12 @@
   (when-not *request*
     (throw (ex-info (str caller-name " called outside request context") {})))
   (let [session-id (:hyper/session-id *request*)
-        tab-id (:hyper/tab-id *request*)
+        tab-id     (:hyper/tab-id *request*)
         app-state* (:hyper/app-state *request*)]
     (when-not app-state*
       (throw (ex-info "No app-state in request" {:request *request*})))
     {:session-id session-id
-     :tab-id tab-id
+     :tab-id     tab-id
      :app-state* app-state*}))
 
 (defn global-cursor
@@ -104,11 +104,14 @@
    (let [{:keys [tab-id app-state*]} (require-context! "path-cursor")]
      (state/create-cursor app-state* [:tabs tab-id :route :query-params] path)))
   ([path default-value]
-   (let [{:keys [tab-id app-state*]} (require-context! "path-cursor")]
-     (let [cursor (state/create-cursor app-state* [:tabs tab-id :route :query-params] path)]
-       (when (nil? @cursor)
-         (reset! cursor default-value))
-       cursor))))
+   (let [{:keys [tab-id app-state*]} (require-context! "path-cursor")
+         cursor                      (state/create-cursor
+                                       app-state*
+                                       [:tabs tab-id :route :query-params]
+                                       path)]
+     (when (nil? @cursor)
+       (reset! cursor default-value))
+     cursor)))
 
 (defn watch!
   "Watch an external source for changes, triggering a re-render of the current
@@ -128,7 +131,7 @@
      (watch! my-event-stream)"
   [source]
   (let [{:keys [session-id tab-id app-state*]} (require-context! "watch!")
-        request-var (get @app-state* :request-var)]
+        request-var                            (get @app-state* :request-var)]
     (render/watch-source! app-state* session-id tab-id request-var source)))
 
 (defmacro action
@@ -145,9 +148,9 @@
       \"Increment\"]"
   [& body]
   `(let [session-id# (get *request* :hyper/session-id)
-         tab-id# (get *request* :hyper/tab-id)
+         tab-id#     (get *request* :hyper/tab-id)
          app-state*# (get *request* :hyper/app-state)
-         router# (get *request* :hyper/router)]
+         router#     (get *request* :hyper/router)]
      (when-not session-id#
        (throw (ex-info "action macro called outside request context" {})))
      (when-not tab-id#
@@ -157,13 +160,13 @@
 
      (let [action-fn# (fn []
                         (binding [*request* {:hyper/session-id session-id#
-                                            :hyper/tab-id tab-id#
-                                            :hyper/app-state app-state*#
-                                            :hyper/router router#}]
+                                             :hyper/tab-id     tab-id#
+                                             :hyper/app-state  app-state*#
+                                             :hyper/router     router#}]
                           ~@body))
-           idx# (if *action-idx* (swap! *action-idx* inc) (hash action-fn#))
+           idx#       (if *action-idx* (swap! *action-idx* inc) (hash action-fn#))
            action-id# (str "a-" tab-id# "-" idx#)
-           _# (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#)]
+           _#         (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#)]
        {:data-on:click (str "@post('/hyper/actions?action-id=" action-id# "')")})))
 
 (defn navigate
@@ -193,42 +196,41 @@
   ([route-name params]
    (navigate route-name params nil))
   ([route-name params query-params]
-   (let [router (:hyper/router *request*)
+   (let [router     (:hyper/router *request*)
          app-state* (:hyper/app-state *request*)
          session-id (:hyper/session-id *request*)
-         tab-id (:hyper/tab-id *request*)]
+         tab-id     (:hyper/tab-id *request*)]
      (when-let [path (:path (reitit/match-by-name router route-name params))]
-       (let [href (state/build-url path query-params)
+       (let [href          (state/build-url path query-params)
              ;; Use live-routes to always get the latest route metadata
-             routes (server/live-routes app-state*)
+             routes        (server/live-routes app-state*)
              ;; Resolve title eagerly for the pushState call
-             title-spec (server/find-route-title routes route-name)
-             title (server/resolve-title title-spec *request*)
+             title-spec    (server/find-route-title routes route-name)
+             title         (server/resolve-title title-spec *request*)
              ;; Register an action that performs the navigation server-side
-             nav-fn (fn []
-                      (let [routes (server/live-routes app-state*)
-                            render-fn (server/find-render-fn routes route-name)]
-                        (when render-fn
-                          (render/register-render-fn! app-state* tab-id render-fn))
+             nav-fn        (fn []
+                             (let [routes    (server/live-routes app-state*)
+                                   render-fn (server/find-render-fn routes route-name)]
+                               (when render-fn
+                                 (render/register-render-fn! app-state* tab-id render-fn))
                         ;; Setting the route triggers the route watcher,
                         ;; which handles re-rendering via SSE
-                        (state/set-tab-route! app-state* tab-id
-                                              {:name route-name
-                                               :path path
-                                               :path-params (or params {})
-                                               :query-params (or query-params {})})))
-             nav-idx (if *action-idx* (swap! *action-idx* inc) (hash nav-fn))
-             action-id (actions/register-action! app-state* session-id tab-id nav-fn
-                                                (str "a-" tab-id "-" nav-idx))
+                               (state/set-tab-route! app-state* tab-id
+                                                     {:name         route-name
+                                                      :path         path
+                                                      :path-params  (or params {})
+                                                      :query-params (or query-params {})})))
+             nav-idx       (if *action-idx* (swap! *action-idx* inc) (hash nav-fn))
+             action-id     (actions/register-action! app-state* session-id tab-id nav-fn
+                                                     (str "a-" tab-id "-" nav-idx))
              escaped-title (or (server/escape-js-string title) "")
-             escaped-href (server/escape-js-string href)]
-         {:href href
+             escaped-href  (server/escape-js-string href)]
+         {:href                                                                                   href
           :data-on:click__prevent
           (str "@post('/hyper/actions?action-id=" action-id "');"
                " window.history.pushState({title: '" escaped-title "'}, '', '" escaped-href "');"
                (when title
                  (str " document.title = '" escaped-title "'")))})))))
-
 
 (defn create-handler
   "Create a Ring handler for a hyper application.
@@ -272,9 +274,9 @@
              :or   {app-state (atom (state/init-state))
                     executor  (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)}}]
   (server/create-handler routes app-state executor #'*request*
-                         {:head head
+                         {:head             head
                           :static-resources static-resources
-                          :static-dir static-dir}))
+                          :static-dir       static-dir}))
 
 (defn start!
   "Start the hyper application server.
