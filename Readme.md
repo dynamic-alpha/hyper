@@ -200,6 +200,24 @@ When the `:get` handler is a Var (e.g. `#'dashboard-page`), it's automatically
 added to the route's watches. This means redefining the function at the REPL
 triggers an instant live reload for all connected tabs — no page refresh needed.
 
+### Global `:watches`
+
+For sources that should trigger a re-render on **every** page, pass `:watches`
+to `create-handler`. These are added to all page routes automatically — useful
+for things like a top-level config atom or feature-flags that affect every view:
+
+```clojure
+(def feature-flags* (atom {:new-ui? false}))
+
+(def handler
+  (h/create-handler
+    #'routes
+    :watches [feature-flags*]))
+```
+
+Global watches are combined with any per-route `:watches` — global sources come
+first, then route-specific ones.
+
 ## Assets and `<head>` injection
 
 Hyper doesn’t ship with an asset pipeline (Tailwind, Vite, etc.), but it *does*

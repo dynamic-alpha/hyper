@@ -246,6 +246,9 @@
    - :head              — Hiccup nodes appended to the HTML <head>, or (fn [req] ...) -> hiccup
    - :static-resources  — Classpath resource root(s) to serve as static assets
    - :static-dir        — Filesystem directory (or directories) to serve as static assets
+   - :watches           — Vector of Watchable sources added to every page route.
+                          Useful for top-level atoms that should trigger a re-render
+                          on any page (e.g. a global config or feature-flags atom).
 
    Example:
      (def routes
@@ -270,13 +273,14 @@
      (def handler (create-handler routes :executor my-executor))
 
      (def server (start! handler {:port 3000}))"
-  [routes & {:keys [app-state executor head static-resources static-dir]
+  [routes & {:keys [app-state executor head static-resources static-dir watches]
              :or   {app-state (atom (state/init-state))
                     executor  (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)}}]
   (server/create-handler routes app-state executor #'*request*
                          {:head             head
                           :static-resources static-resources
-                          :static-dir       static-dir}))
+                          :static-dir       static-dir
+                          :watches          watches}))
 
 (defn start!
   "Start the hyper application server.
