@@ -178,6 +178,52 @@
       (is (= 200 (:status response)))
       (is (= "static-ok\n" (slurp (:body response)))))))
 
+(deftest test-create-handler-with-global-watches
+  (testing "Global :watches are included for every page route"
+    (let [app-state*  (atom (state/init-state))
+          global-src  (atom 0)
+          routes      [["/" {:name :home
+                             :get  (fn [_req] [:div "Home"])}]
+                       ["/about" {:name :about
+                                  :get  (fn [_req] [:div "About"])}]]
+          request-var #'hyper.core/*request*
+          executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          _handler    (server/create-handler routes app-state* executor request-var
+                                             {:watches [global-src]})]
+      ;; Global watch is stored in app-state
+      (is (= [global-src] (:global-watches @app-state*)))
+
+      ;; find-route-watches returns the global source for every route
+      (let [app-state (assoc @app-state* :routes routes)]
+        (is (= [global-src] (server/find-route-watches app-state :home)))
+        (is (= [global-src] (server/find-route-watches app-state :about))))))
+
+  (testing "Global :watches are combined with per-route :watches"
+    (let [app-state*  (atom (state/init-state))
+          global-src  (atom :global)
+          route-src   (atom :route)
+          routes      [["/" {:name    :home
+                             :get     (fn [_req] [:div "Home"])
+                             :watches [route-src]}]]
+          request-var #'hyper.core/*request*
+          executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          _handler    (server/create-handler routes app-state* executor request-var
+                                             {:watches [global-src]})]
+      (let [app-state (assoc @app-state* :routes routes)]
+        ;; Global watches come first, then per-route watches
+        (is (= [global-src route-src] (server/find-route-watches app-state :home))))))
+
+  (testing "No :watches option leaves global-watches empty"
+    (let [app-state*  (atom (state/init-state))
+          routes      [["/" {:name :home
+                             :get  (fn [_req] [:div "Home"])}]]
+          request-var #'hyper.core/*request*
+          executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          _handler    (server/create-handler routes app-state* executor request-var {})]
+      (is (= [] (:global-watches @app-state*)))
+      (let [app-state (assoc @app-state* :routes routes)]
+        (is (nil? (server/find-route-watches app-state :home)))))))
+
 (deftest test-server-lifecycle
   (testing "Server start and stop"
     (let [app-state*  (atom (state/init-state))

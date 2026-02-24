@@ -270,11 +270,10 @@
   [app-state* session-id tab-id request-var]
   (teardown-route-watches! app-state* tab-id)
   (let [find-route-watches-fn (requiring-resolve 'hyper.server/find-route-watches)
-        live-routes-fn        (requiring-resolve 'hyper.server/live-routes)
-        routes                (live-routes-fn app-state*)
-        route-name            (get-in @app-state* [:tabs tab-id :route :name])]
-    (when (and routes route-name)
-      (when-let [watches (find-route-watches-fn routes route-name)]
+        app-state             @app-state*
+        route-name            (get-in app-state [:tabs tab-id :route :name])]
+    (when route-name
+      (when-let [watches (find-route-watches-fn app-state route-name)]
         (doseq [source watches]
           (watch-source-as-route! app-state* session-id tab-id request-var source)))))
   nil)

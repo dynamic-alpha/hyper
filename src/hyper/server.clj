@@ -192,21 +192,25 @@
 
 (defn find-route-watches
   "Collect all Watchable sources for a named route.
+   Takes the dereferenced app-state map and a route name.
    Returns a vector of sources built from:
-   - The route's :watches vector (explicit external sources)
+   - The global :watches supplied to create-handler (applied to every route)
+   - The route's :watches vector (explicit per-route external sources)
    - The route's :get value, if it's a Var (auto-watch for live reloading)
    Returns nil if there are no watches."
-  [routes route-name]
-  (when-let [route-data (->> routes
-                             (some (fn [[_path data]]
-                                     (when (= route-name (:name data))
-                                       data))))]
-    (let [explicit    (vec (or (:watches route-data) []))
-          get-handler (:get route-data)
-          watches     (cond-> explicit
-                        (var? get-handler) (conj get-handler))]
-      (when (seq watches)
-        watches))))
+  [app-state route-name]
+  (let [routes (or (:routes app-state) [])]
+    (when-let [route-data (->> routes
+                               (some (fn [[_path data]]
+                                       (when (= route-name (:name data))
+                                         data))))]
+      (let [global      (vec (:global-watches app-state))
+            explicit    (vec (or (:watches route-data) []))
+            get-handler (:get route-data)
+            watches     (cond-> (into global explicit)
+                          (var? get-handler) (conj get-handler))]
+        (when (seq watches)
+          watches)))))
 
 (defn live-routes
   "Get the current routes, resolving through :routes-source if it's a Var.
@@ -511,12 +515,15 @@
                         or (fn [req] ...) -> hiccup nodes appended to the <head>
    - :static-resources  Classpath resource root(s) to serve as static assets
    - :static-dir        Filesystem directory (or directories) to serve as static assets
+   - :watches           Vector of Watchable sources added to every page route.
+                        Useful for top-level atoms that should trigger a re-render
+                        on any page (e.g. a global config or feature-flags atom).
 
    Routes should use :get handlers that return hiccup (Chassis vectors).
    Hyper will wrap them to provide full HTML responses and SSE connections."
   ([routes app-state* executor request-var]
    (create-handler routes app-state* executor request-var {}))
-  ([routes app-state* executor request-var {:as opts}]
+  ([routes app-state* executor request-var {:keys [watches] :as opts}]
    (let [page-wrapper                             (page-handler app-state* request-var opts)
          system-routes                            [["/hyper/events" {:get (sse-events-handler app-state* request-var)}]
                                                    ["/hyper/actions" {:post (action-handler app-state* request-var)}]
@@ -524,10 +531,13 @@
          ;; Store the routes source (Var or value) so title resolution can
          ;; always read the latest route metadata, even between router rebuilds.
          ;; Store executor and request-var so render watches can access them.
+         ;; Store global :watches so find-route-watches can prepend them to
+         ;; every page route's watch list.
          _                                        (swap! app-state* assoc
                                                          :routes-source routes
                                                          :executor executor
-                                                         :request-var request-var)
+                                                         :request-var request-var
+                                                         :global-watches (vec watches))
          initial-routes                           (if (var? routes) @routes routes)
          initial-handler                          (build-ring-handler initial-routes app-state* page-wrapper system-routes)
          handler                                  (if (var? routes)
