@@ -218,6 +218,36 @@ for things like a top-level config atom or feature-flags that affect every view:
 Global watches are combined with any per-route `:watches` — global sources come
 first, then route-specific ones.
 
+### File watches
+
+Require `hyper.file-watcher` to extend `java.io.File` with the `Watchable`
+protocol. Any `File` can then be used directly in `:watches` — Hyper will
+re-render affected tabs whenever the file changes on disk:
+
+```clojure
+(require '[clojure.java.io :as io]
+         '[hyper.file-watcher])   ; side-effect: extends java.io.File
+
+;; Watch a single file
+(def routes
+  [["/" {:name    :settings
+         :get     #'settings-page
+         :watches [(io/file "config/settings.edn")]}]])
+
+;; Watch a directory — any change inside it triggers a re-render
+;; (useful for Tailwind CSS output)
+(def handler
+  (h/create-handler
+    #'routes
+    :watches [(io/file "target/public")]))
+```
+
+Under the hood this uses [Beholder](https://github.com/nextjournal/beholder)
+for native OS file-system events (FSEvents on macOS, inotify on Linux) — changes
+are picked up near-instantly. The watcher is started automatically when the
+first tab begins watching a path and stopped when the last tab disconnects or
+navigates away — no manual lifecycle management required.
+
 ## Assets and `<head>` injection
 
 Hyper doesn’t ship with an asset pipeline (Tailwind, Vite, etc.), but it *does*
