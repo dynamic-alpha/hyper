@@ -263,7 +263,10 @@ You can also pass multiple directories (first match wins):
 
 ### Injecting into `<head>`
 
-Pass `:head` as either hiccup, or a function `(fn [req] ...)` that returns hiccup:
+Pass `:head` as either hiccup, or a function `(fn [req] ...)` that returns hiccup.
+When `:head` is a function, it is re-evaluated on every SSE render cycle and the
+full `<head>` is pushed to the client. This means dynamic stylesheets, meta tags,
+and the `<title>` are all kept in sync reactively.
 
 ```clojure
 (def handler
