@@ -1,7 +1,9 @@
 (ns hyper.server-test
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
+            [hyper.actions :as actions]
             [hyper.core]
+            [hyper.render :as render]
             [hyper.server :as server]
             [hyper.state :as state]))
 
@@ -232,13 +234,47 @@
           request-var #'hyper.core/*request*
           executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           handler     (server/create-handler routes app-state* executor request-var)
-          server      (server/start! handler {:port 13000})]
+          stop-fn     (server/start! handler {:port 13000})]
 
-      (is (some? server))
-      (is (fn? server))
+      (is (some? stop-fn))
+      (is (fn? stop-fn))
 
       ;; Stop server
-      (server/stop! server))))
+      (server/stop! stop-fn))))
+
+(deftest test-shutdown-cleans-up-tabs
+  (testing "Stopping the server cleans up all tab watchers, actions, and SSE channels"
+    (let [app-state*  (atom (state/init-state))
+          routes      [["/" {:name :home
+                             :get  (fn [_req] [:div "Hello"])}]]
+          request-var #'hyper.core/*request*
+          executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          handler     (server/create-handler routes app-state* executor request-var)
+          stop-fn     (server/start! handler {:port 13001})
+          session-id  "test-session"
+          tab-id-1    "test-tab-1"
+          tab-id-2    "test-tab-2"]
+
+      ;; Simulate two connected tabs with watchers, actions, and SSE channels
+      (doseq [tab-id [tab-id-1 tab-id-2]]
+        (state/get-or-create-tab! app-state* session-id tab-id)
+        (render/register-render-fn! app-state* tab-id (fn [_] [:div "test"]))
+        (render/register-sse-channel! app-state* tab-id {:mock true} false)
+        (render/setup-watchers! app-state* session-id tab-id request-var)
+        (actions/register-action! app-state* session-id tab-id
+                                  #(println "action") (str "a-" tab-id "-0")))
+
+      ;; Verify resources exist
+      (is (= 2 (count (:tabs @app-state*))))
+      (is (= 2 (count (:actions @app-state*))))
+
+      ;; Stop — should clean up everything
+      (server/stop! stop-fn)
+
+      (is (empty? (:tabs @app-state*)) "All tabs should be cleaned up")
+      (is (empty? (:actions @app-state*)) "All actions should be cleaned up")
+      (is (.isShutdown ^java.util.concurrent.ExecutorService (:executor @app-state*))
+          "Executor should be shut down"))))
 
 (deftest test-create-handler-with-var-routes
   (testing "Accepts a Var and serves initial routes"

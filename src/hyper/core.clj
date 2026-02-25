@@ -272,7 +272,9 @@
      ;; Custom executor
      (def handler (create-handler routes :executor my-executor))
 
-     (def server (start! handler {:port 3000}))"
+     (def app (start! handler {:port 3000}))
+     ;; Later...
+     (stop! app)"
   [routes & {:keys [app-state executor head static-resources static-dir watches]
              :or   {app-state (atom (state/init-state))
                     executor  (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)}}]
@@ -289,20 +291,20 @@
    options:
    - :port - Port to run server on (default: 3000)
 
-   Returns server instance. Call (stop! server) to stop.
+   Returns a stop function. Call (stop! app) to shut down the server
+   and clean up all tab resources (watchers, SSE channels, actions).
 
    Example:
-     (def router ...)
-     (def handler (create-handler router))
-     (def server (start! handler {:port 3000}))
+     (def handler (create-handler routes))
+     (def app (start! handler {:port 3000}))
      ;; Later...
-     (stop! server)"
+     (stop! app)"
   [handler {:keys [port] :or {port 3000}}]
   (server/start! handler {:port port}))
 
 (defn stop!
-  "Stop the hyper application server.
+  "Stop the hyper application server and clean up all resources.
 
-   server: Server instance returned from start!"
-  [server]
-  (server/stop! server))
+   app: Stop function returned from start!"
+  [app]
+  (server/stop! app))

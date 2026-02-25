@@ -557,7 +557,26 @@
              (params/wrap-params)
              (cookies/wrap-cookies))]
      ;; Static middleware should be outermost so static requests avoid params/cookies.
-     (wrap-static handler-with-mw opts))))
+     ;; Attach app-state* as metadata so start! can build a stop fn that cleans up.
+     (with-meta (wrap-static handler-with-mw opts)
+       {::app-state app-state*}))))
+
+(defn- -do-stop
+  "Stop the HTTP server and clean up all tab resources.
+   Tears down all watchers, SSE channels, actions, and shuts down the executor."
+  [server app-state*]
+  (when server
+    (server :timeout 100))
+  (when app-state*
+    (let [tab-ids (keys (:tabs @app-state*))]
+      (doseq [tab-id tab-ids]
+        (render/cleanup-tab! app-state* tab-id))
+      (when-let [^java.util.concurrent.ExecutorService executor (:executor @app-state*)]
+        (.shutdownNow executor))
+      (t/log! {:level :info
+               :id    :hyper.event/server-stop
+               :data  {:hyper/tab-count (count tab-ids)}
+               :msg   "Hyper server stopped"}))))
 
 (defn start!
   "Start the HTTP server with the given handler.
@@ -565,20 +584,19 @@
    handler: Ring handler (created with create-handler)
    port: Port to run on (default: 3000)
 
-   Returns server instance."
+   Returns a stop function. Call (stop-fn) or pass to stop! to shut down
+   the server and clean up all tab resources (watchers, SSE channels, actions)."
   [handler {:keys [port] :or {port 3000}}]
-  (let [server (http-kit/run-server handler {:port port})]
+  (let [server     (http-kit/run-server handler {:port port})
+        app-state* (::app-state (meta handler))]
     (t/log! {:level :info
              :id    :hyper.event/server-start
              :data  {:hyper/port port}
              :msg   "Hyper server started"})
-    server))
+    (partial -do-stop server app-state*)))
 
 (defn stop!
-  "Stop the HTTP server."
-  [server]
-  (when server
-    (server :timeout 100)
-    (t/log! {:level :info
-             :id    :hyper.event/server-stop
-             :msg   "Hyper server stopped"})))
+  "Stop the HTTP server and clean up all resources."
+  [stop-fn]
+  (when stop-fn
+    (stop-fn)))
