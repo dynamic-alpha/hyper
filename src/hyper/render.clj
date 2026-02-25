@@ -133,32 +133,37 @@
    (cursors/atoms) so that title updates reactively with state changes."
   [app-state* session-id tab-id request-var]
   (when-let [stored-render-fn (get-render-fn app-state* tab-id)]
-    (let [router         (get @app-state* :router)
-          route          (get-in @app-state* [:tabs tab-id :route])
+    (let [router           (get @app-state* :router)
+          route            (get-in @app-state* [:tabs tab-id :route])
           ;; Re-resolve render-fn from live routes so route Var redefs
           ;; and Var-based handlers always use the latest function.
-          live-routes-fn (requiring-resolve 'hyper.server/live-routes)
-          find-render-fn (requiring-resolve 'hyper.server/find-render-fn)
-          current-routes (live-routes-fn app-state*)
-          render-fn      (if-let [route-name (:name route)]
-                           (let [fresh-fn (when current-routes
-                                            (find-render-fn current-routes route-name))]
-                             (if fresh-fn
-                               (do
+          live-routes-fn   (requiring-resolve 'hyper.server/live-routes)
+          find-render-fn   (requiring-resolve 'hyper.server/find-render-fn)
+          current-routes   (live-routes-fn app-state*)
+          render-fn        (if-let [route-name (:name route)]
+                             (let [fresh-fn (when current-routes
+                                              (find-render-fn current-routes route-name))]
+                               (if fresh-fn
+                                 (do
                                  ;; Update stored render-fn so navigate/actions
                                  ;; also use the latest
-                                 (when (not= fresh-fn stored-render-fn)
-                                   (register-render-fn! app-state* tab-id fresh-fn))
-                                 fresh-fn)
-                               stored-render-fn))
-                           stored-render-fn)
-          current-url    (when route
-                           (state/build-url (:path route) (:query-params route)))
-          req            (cond-> {:hyper/session-id session-id
-                                  :hyper/tab-id     tab-id
-                                  :hyper/app-state  app-state*}
-                           router (assoc :hyper/router router))
-          action-idx-var (requiring-resolve 'hyper.core/*action-idx*)]
+                                   (when (not= fresh-fn stored-render-fn)
+                                     (register-render-fn! app-state* tab-id fresh-fn))
+                                   fresh-fn)
+                                 stored-render-fn))
+                             stored-render-fn)
+          current-url      (when route
+                             (state/build-url (:path route) (:query-params route)))
+          req              (cond-> {:hyper/session-id session-id
+                                    :hyper/tab-id     tab-id
+                                    :hyper/app-state  app-state*}
+                             router (assoc :hyper/router router))
+          action-idx-var   (requiring-resolve 'hyper.core/*action-idx*)
+          cleanup-actions! (requiring-resolve 'hyper.actions/cleanup-tab-actions!)]
+      ;; Clean slate — remove all actions for this tab before re-rendering
+      ;; so that structurally dynamic renders (shrinking lists, conditional
+      ;; branches) don't leave stale action closures behind.
+      (cleanup-actions! app-state* tab-id)
       (push-thread-bindings {request-var    req
                              action-idx-var (atom 0)})
       (try

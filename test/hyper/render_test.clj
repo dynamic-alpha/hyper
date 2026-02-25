@@ -1,7 +1,8 @@
 (ns hyper.render-test
   (:require [clojure.test :refer [deftest is testing]]
             [dev.onionpancakes.chassis.core :as c]
-            [hyper.core]
+            [hyper.actions :as actions]
+            [hyper.core :as hy]
             [hyper.render :as render]
             [hyper.state :as state]))
 
@@ -222,3 +223,47 @@
       ;; Cleanup should remove entire tab including last-render-ms
       (render/cleanup-tab! app-state* tab-id)
       (is (nil? (get-in @app-state* [:tabs tab-id]))))))
+
+(deftest test-actions-cleaned-between-renders
+  (testing "Stale actions from a previous render are cleaned up when the next render produces fewer"
+    (let [app-state*    (atom (assoc (state/init-state)
+                                     :executor (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)))
+          session-id    "test-session-actions"
+          tab-id        "test-tab-actions"
+          sent-messages (atom [])
+          mock-send!    (fn [_state* _tid msg]
+                          (swap! sent-messages conj msg)
+                          true)
+          ;; Render fn whose action count depends on state
+          render-fn     (fn [_req]
+                          (let [n (or (get-in @app-state* [:tabs tab-id :data :item-count]) 3)]
+                            (into [:div]
+                                  (for [i (range n)]
+                                    [:button (hy/action #(println "action" i))
+                                     (str "Button " i)]))))]
+
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (render/register-render-fn! app-state* tab-id render-fn)
+      (render/register-sse-channel! app-state* tab-id {:mock true} false)
+
+      (with-redefs [render/send-sse! mock-send!]
+        (render/setup-watchers! app-state* session-id tab-id #'hy/*request*)
+
+        ;; Initial render: 3 items → 3 actions
+        (swap! app-state* assoc-in [:tabs tab-id :data :item-count] 3)
+        (Thread/sleep 50)
+
+        (let [tab-actions (fn []
+                            (->> (:actions @app-state*)
+                                 (filter (fn [[_k v]] (= (:tab-id v) tab-id)))
+                                 count))]
+
+          (is (= 3 (tab-actions)) "Should have 3 actions after first render")
+
+          ;; Shrink to 1 item → should have exactly 1 action, not 3
+          (swap! app-state* assoc-in [:tabs tab-id :data :item-count] 1)
+          (Thread/sleep 50)
+
+          (is (= 1 (tab-actions)) "Stale actions should be cleaned up, only 1 remaining"))
+
+        (render/remove-watchers! app-state* tab-id)))))
