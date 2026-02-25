@@ -20,9 +20,9 @@
   [label cursor*]
   [:div.counter {:id (str "counter-" label)}
    [:h2 label ": " @cursor*]
-   [:button.inc (h/action (swap! cursor* inc)) "+"]
-   [:button.dec (h/action (swap! cursor* dec)) "–"]
-   [:button.reset (h/action (reset! cursor* 0)) "Reset"]])
+   [:button.inc {:data-on:click (h/action (swap! cursor* inc))} "+"]
+   [:button.dec {:data-on:click (h/action (swap! cursor* dec))} "–"]
+   [:button.reset {:data-on:click (h/action (reset! cursor* 0))} "Reset"]])
 
 (defn default-counters-get []
   (let [external* (atom 0)]

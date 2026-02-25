@@ -81,7 +81,7 @@
     (is (thrown? Exception
                  (hy/action (println "test")))))
 
-  (testing "action registers and returns click handler"
+  (testing "action registers and returns Datastar expression string"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-3"
           tab-id     "test-tab-2"
@@ -89,15 +89,14 @@
       (binding [hy/*request* {:hyper/session-id session-id
                               :hyper/tab-id     tab-id
                               :hyper/app-state  app-state*}]
-        (let [action-attrs (hy/action (reset! executed true))]
-          (is (map? action-attrs))
-          (is (contains? action-attrs :data-on:click))
-          (is (.contains (str (:data-on:click action-attrs)) "@post"))
-          (is (.contains (str (:data-on:click action-attrs)) "/hyper/actions"))
-          (is (.contains (str (:data-on:click action-attrs)) "action-id="))
+        (let [action-expr (hy/action (reset! executed true))]
+          (is (string? action-expr))
+          (is (.contains action-expr "@post"))
+          (is (.contains action-expr "/hyper/actions"))
+          (is (.contains action-expr "action-id="))
 
           ;; Extract action ID and execute it
-          (let [action-id (second (re-find #"action-id=([^']+)" (str (:data-on:click action-attrs))))]
+          (let [action-id (second (re-find #"action-id=([^']+)" action-expr))]
             (is (some? action-id))
             ((get-in @app-state* [:actions action-id :fn]))
             (is @executed)))))))

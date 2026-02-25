@@ -16,7 +16,7 @@ automatically. No client-side framework, no JSON APIs, no JavaScript to write.
   (let [count* (h/tab-cursor :count 0)]
     [:div
      [:h1 "Count: " @count*]
-     [:button (h/action (swap! (h/tab-cursor :count) inc))
+     [:button {:data-on:click (h/action (swap! (h/tab-cursor :count) inc))}
       "Increment"]]))
 
 (def routes
@@ -25,7 +25,7 @@ automatically. No client-side framework, no JSON APIs, no JavaScript to write.
          :get #'home-page}]])
 
 (def handler (h/create-handler #'routes))
-(def server (h/start! handler {:port 3000}))
+(def app (h/start! handler {:port 3000}))
 ```
 
 ## Cursors
@@ -61,15 +61,16 @@ that session, and so on.
 
 Actions are server-side functions triggered by user interactions. The `action`
 macro captures the current session and tab context at render time, registers a
-handler on the server, and returns Datastar attributes that POST to it on click.
+handler on the server, and returns a Datastar expression string that can be
+bound to any event attribute.
 
 ```clojure
 (defn counter [req]
   (let [count* (h/tab-cursor :count 0)]
     [:div
      [:p "Count: " @count*]
-     [:button (h/action (swap! (h/tab-cursor :count) inc)) "+1"]
-     [:button (h/action (swap! (h/tab-cursor :count) dec)) "-1"]]))
+     [:button {:data-on:click (h/action (swap! (h/tab-cursor :count) inc))} "+1"]
+     [:button {:data-on:click (h/action (swap! (h/tab-cursor :count) dec))} "-1"]]))
 ```
 
 When the button is clicked, Datastar POSTs to the server, Hyper executes the
@@ -81,14 +82,14 @@ inside them:
 
 ```clojure
 ;; Toggle a global theme that affects all tabs and sessions
-[:button (h/action
-           (let [theme* (h/global-cursor :theme "light")]
-             (swap! theme* #(if (= % "light") "dark" "light"))))
+[:button {:data-on:click (h/action
+                           (let [theme* (h/global-cursor :theme "light")]
+                             (swap! theme* #(if (= % "light") "dark" "light"))))}
  "Toggle theme"]
 
 ;; Update session state shared across tabs
-[:button (h/action
-           (reset! (h/session-cursor :user) {:name "Alice"}))
+[:button {:data-on:click (h/action
+                           (reset! (h/session-cursor :user) {:name "Alice"}))}
  "Log in"]
 ```
 

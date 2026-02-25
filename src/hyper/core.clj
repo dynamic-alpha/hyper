@@ -135,8 +135,8 @@
     (render/watch-source! app-state* session-id tab-id request-var source)))
 
 (defmacro action
-  "Create an action that executes the given body when triggered.
-   Returns a map with :data-on:click attribute for Datastar.
+  "Create a server action expression for use in Datastar event attributes.
+   Returns a Datastar expression string that can be bound to any event.
 
    The action is registered with the current session/tab context
    and can access state via cursors. Action IDs are deterministic
@@ -144,8 +144,11 @@
    produce identical HTML, enabling effective brotli streaming compression.
 
    Example:
-     [:button (action (swap! (tab-cursor :count) inc))
-      \"Increment\"]"
+     [:button {:data-on:click (action (swap! (tab-cursor :count) inc))}
+      \"Increment\"]
+
+     ;; Works with any event
+     [:div {:data-on:mousedown (action (swap! (tab-cursor :dragging) not))}]"
   [& body]
   `(let [session-id# (get *request* :hyper/session-id)
          tab-id#     (get *request* :hyper/tab-id)
@@ -167,11 +170,11 @@
            idx#       (if *action-idx* (swap! *action-idx* inc) (hash action-fn#))
            action-id# (str "a-" tab-id# "-" idx#)
            _#         (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#)]
-       {:data-on:click (str "@post('/hyper/actions?action-id=" action-id# "')")})))
+       (str "@post('/hyper/actions?action-id=" action-id# "')"))))
 
 (defn navigate
   "Create a navigation link using reitit named routes.
-   Returns a map with :href for standard links and :data-on-click for SPA navigation.
+   Returns a map with :href for standard links and :data-on:click__prevent for SPA navigation.
 
    On click, registers an action that:
    1. Looks up the target route's handler
@@ -225,7 +228,7 @@
                                                      (str "a-" tab-id "-" nav-idx))
              escaped-title (or (server/escape-js-string title) "")
              escaped-href  (server/escape-js-string href)]
-         {:href                                                                                   href
+         {:href href
           :data-on:click__prevent
           (str "@post('/hyper/actions?action-id=" action-id "');"
                " window.history.pushState({title: '" escaped-title "'}, '', '" escaped-href "');"

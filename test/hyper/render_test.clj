@@ -239,7 +239,7 @@
                           (let [n (or (get-in @app-state* [:tabs tab-id :data :item-count]) 3)]
                             (into [:div]
                                   (for [i (range n)]
-                                    [:button (hy/action #(println "action" i))
+                                    [:button {:data-on:click (hy/action #(println "action" i))}
                                      (str "Button " i)]))))]
 
       (state/get-or-create-tab! app-state* session-id tab-id)

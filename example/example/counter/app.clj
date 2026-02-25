@@ -8,11 +8,11 @@
   [:div {:style "border: 1px solid #ccc; border-radius: 8px; padding: 16px; margin-bottom: 16px;"}
    [:h2 {:style "margin-top: 0;"} label ": " @cursor*]
    [:p {:style "color: #666; margin-top: 0;"} description]
-   [:button (h/action (swap! cursor* inc)) "+"]
+   [:button {:data-on:click (h/action (swap! cursor* inc))} "+"]
    " "
-   [:button (h/action (swap! cursor* dec)) "–"]
+   [:button {:data-on:click (h/action (swap! cursor* dec))} "–"]
    " "
-   [:button (h/action (reset! cursor* 0)) "Reset"]])
+   [:button {:data-on:click (h/action (reset! cursor* 0))} "Reset"]])
 
 (def routes
   [["/" {:name :home
