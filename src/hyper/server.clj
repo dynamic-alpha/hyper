@@ -273,9 +273,9 @@
 
 (defn- hyper-scripts
   "JavaScript for SPA navigation support:
-   - MutationObserver on #hyper-app watches data-hyper-url and data-hyper-title
-     attribute changes, syncs browser URL bar via replaceState with title in
-     history state, and updates document.title.
+   - MutationObserver on #hyper-app watches data-hyper-url attribute changes
+     and syncs the browser URL bar via replaceState. Title syncing is handled
+     server-side by re-rendering the full <head> (including <title>) via SSE.
    - popstate listener handles browser back/forward by posting to /hyper/navigate
      and restoring document.title from history state.
 
@@ -291,27 +291,17 @@
     // Seed the initial history entry with the current title so back-navigation restores it
     window.history.replaceState({title: document.title}, '', window.location.href);
     var observer = new MutationObserver(function(mutations) {
-      var urlChanged = false;
-      var titleChanged = false;
       for (var i = 0; i < mutations.length; i++) {
-        if (mutations[i].attributeName === 'data-hyper-url') urlChanged = true;
-        if (mutations[i].attributeName === 'data-hyper-title') titleChanged = true;
-      }
-      var title = appEl.getAttribute('data-hyper-title');
-      if (titleChanged && title) {
-        document.title = title;
-      }
-      if (urlChanged) {
-        var url = appEl.getAttribute('data-hyper-url');
-        if (url && url !== window.location.pathname + window.location.search) {
-          window.history.replaceState({title: title || document.title}, '', url);
+        if (mutations[i].attributeName === 'data-hyper-url') {
+          var url = appEl.getAttribute('data-hyper-url');
+          if (url && url !== window.location.pathname + window.location.search) {
+            window.history.replaceState({title: document.title}, '', url);
+          }
+          break;
         }
       }
-      if (titleChanged && !urlChanged) {
-        window.history.replaceState({title: title || document.title}, '', window.location.href);
-      }
     });
-    observer.observe(appEl, { attributes: true, attributeFilter: ['data-hyper-url', 'data-hyper-title'] });
+    observer.observe(appEl, { attributes: true, attributeFilter: ['data-hyper-url'] });
   }
   window.addEventListener('popstate', function(e) {
     if (e.state && e.state.title) {
@@ -325,7 +315,7 @@
 })();
 "))])
 
-(defn- resolve-head
+(defn resolve-head
   "Resolve extra <head> content.
 
    - If :head is a function, it is called with the Ring request (already enriched
@@ -343,11 +333,12 @@
 (defn page-handler
   "Wrap a page render function to provide full HTML response.
    Resolves :title from route metadata — supports static strings, functions,
-   and deref-able values (cursors/atoms). Title is also stamped on #hyper-app
-   as data-hyper-title for client-side history state tracking.
+   and deref-able values (cursors/atoms).
 
    Options:
-   - :head Hiccup nodes to append into the <head>, or (fn [req] ...) -> hiccup"
+   - :head Hiccup nodes to append into the <head>, or (fn [req] ...) -> hiccup.
+           When head is a function, it is re-evaluated on each SSE render cycle
+           and the full <head> is pushed to the client."
   [app-state* request-var {:keys [head]}]
   (fn [render-fn]
     (fn [req]
@@ -382,9 +373,7 @@
                                   extra-head]
                                  [:body
                                   {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
-                                  [:div {:id               "hyper-app"
-                                         :data-hyper-title title}
-                                   content]
+                                  [:div {:id "hyper-app"} content]
                                   (hyper-scripts tab-id)]]])]
               {:status  200
                :headers {"Content-Type" "text/html; charset=utf-8"}
@@ -523,7 +512,7 @@
    Hyper will wrap them to provide full HTML responses and SSE connections."
   ([routes app-state* executor request-var]
    (create-handler routes app-state* executor request-var {}))
-  ([routes app-state* executor request-var {:keys [watches] :as opts}]
+  ([routes app-state* executor request-var {:keys [watches head] :as opts}]
    (let [page-wrapper                             (page-handler app-state* request-var opts)
          system-routes                            [["/hyper/events" {:get (sse-events-handler app-state* request-var)}]
                                                    ["/hyper/actions" {:post (action-handler app-state* request-var)}]
@@ -537,7 +526,8 @@
                                                          :routes-source routes
                                                          :executor executor
                                                          :request-var request-var
-                                                         :global-watches (vec watches))
+                                                         :global-watches (vec watches)
+                                                         :head head)
          initial-routes                           (if (var? routes) @routes routes)
          initial-handler                          (build-ring-handler initial-routes app-state* page-wrapper system-routes)
          handler                                  (if (var? routes)

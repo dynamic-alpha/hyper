@@ -64,6 +64,18 @@
   (str "event: datastar-patch-elements\n"
        "data: elements " html "\n\n"))
 
+(defn format-datastar-head-fragment
+  "Format HTML as a Datastar patch-elements SSE event targeting <head>.
+
+   Uses `selector head` and `mode inner` so the entire inner content of the
+   <head> element is replaced — this is how we push dynamic <title>, meta tags,
+   stylesheets, etc. without a full page reload."
+  [html]
+  (str "event: datastar-patch-elements\n"
+       "data: selector head\n"
+       "data: mode inner\n"
+       "data: elements " html "\n\n"))
+
 (defn send-sse!
   "Send an SSE message to a tab's channel.
    If the tab has a streaming brotli compressor (client supports br),
@@ -104,10 +116,13 @@
 
 (defn render-and-send!
   "Render the view for a tab and send it via SSE.
-   Stamps the current route URL as a data-hyper-url attribute and the resolved
-   page title as data-hyper-title on the #hyper-app div. The client-side
-   MutationObserver syncs the browser URL bar via replaceState and updates
-   document.title, keeping browser history entries accurate.
+
+   Sends two fragments per render cycle:
+   1. The `<head>` — re-rendered with the current title, Datastar script, and
+      any extra :head content (supporting dynamic fns). Uses `selector head`
+      with `mode inner` so the browser picks up `<title>` changes natively.
+   2. The `#hyper-app` div — the page body with a `data-hyper-url` attribute
+      for client-side URL bar syncing via MutationObserver.
 
    On each render, re-resolves the render-fn from live routes so that:
    - Redefining the routes Var with new inline fns picks up the new function
@@ -154,12 +169,26 @@
               title-spec          (when (and current-routes route)
                                     (find-route-title-fn current-routes (:name route)))
               title               (resolve-title-fn title-spec req)
+              ;; Resolve head content
+              resolve-head-fn     (requiring-resolve 'hyper.server/resolve-head)
+              datastar-script-fn  (requiring-resolve 'hyper.server/datastar-script)
+              head                (get @app-state* :head)
+              extra-head          (resolve-head-fn head req)
+              head-html           (c/html
+                                    [:<>
+                                     [:meta {:charset "UTF-8"}]
+                                     [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
+                                     [:title (or title "Hyper App")]
+                                     (datastar-script-fn)
+                                     extra-head])
+              head-fragment       (format-datastar-head-fragment head-html)
+              ;; Body fragment
               div-attrs           (cond-> {:id "hyper-app"}
-                                    current-url (assoc :data-hyper-url current-url)
-                                    title       (assoc :data-hyper-title title))
+                                    current-url (assoc :data-hyper-url current-url))
               html                (c/html [:div div-attrs hiccup-result])
-              fragment            (format-datastar-fragment html)]
-          (send-sse! app-state* tab-id fragment))
+              body-fragment       (format-datastar-fragment html)]
+          ;; Send head first (title update), then body
+          (send-sse! app-state* tab-id (str head-fragment body-fragment)))
         (finally
           (pop-thread-bindings))))))
 
