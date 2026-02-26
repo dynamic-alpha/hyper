@@ -1,49 +1,50 @@
-{:paths ["src" "resources"]
+{:paths
+ ["src" "resources"]
+ :deps
+ {org.clojure/clojure                 {:mvn/version "1.12.0"}
 
- :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+  ;; Web server
+  ring/ring-core                      {:mvn/version "1.12.1"}
+  ring/ring-jetty-adapter             {:mvn/version "1.12.1"}
 
-        ;; Web server
-        ring/ring-core {:mvn/version "1.12.1"}
-        ring/ring-jetty-adapter {:mvn/version "1.12.1"}
+  ;; Routing
+  metosin/reitit-ring                 {:mvn/version "0.7.0"}
+  metosin/reitit-malli                {:mvn/version "0.7.0"}
 
-        ;; Routing
-        metosin/reitit-ring {:mvn/version "0.7.0"}
-        metosin/reitit-malli {:mvn/version "0.7.0"}
+  ;; HTML generation
+  dev.onionpancakes/chassis           {:mvn/version "1.0.365"}
 
-        ;; HTML generation
-        dev.onionpancakes/chassis {:mvn/version "1.0.365"}
+  ;; Compression
+  com.aayushatharva.brotli4j/brotli4j {:mvn/version "1.18.0"}
+  io.netty/netty-buffer               {:mvn/version "4.1.119.Final"}
 
-        ;; Compression
-        com.aayushatharva.brotli4j/brotli4j {:mvn/version "1.18.0"}
-        io.netty/netty-buffer {:mvn/version "4.1.119.Final"}
+  ;; Server-sent events support
+  http-kit/http-kit                   {:mvn/version "2.8.0"}
 
-        ;; Server-sent events support
-        http-kit/http-kit {:mvn/version "2.8.0"}
+  ;; Utilities
+  ring/ring-defaults                  {:mvn/version "0.5.0"}
 
-        ;; Utilities
-        ring/ring-defaults {:mvn/version "0.5.0"}
+  ;; JSON
+  cheshire/cheshire                   {:mvn/version "6.1.0"}
 
-        ;; JSON
-        cheshire/cheshire {:mvn/version "6.1.0"}
-
-        ;; Logging
-        com.taoensso/telemere {:mvn/version "1.1.0"}}
+  ;; Logging
+  com.taoensso/telemere               {:mvn/version "1.1.0"}}
 
  :aliases
-   {:test {:extra-paths ["test"]
-          :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}
-                       lambdaisland/kaocha {:mvn/version "1.91.1392"}
-                       io.github.pfeodrippe/wally {:mvn/version "0.0.4"}
-                       com.aayushatharva.brotli4j/native-osx-aarch64 {:mvn/version "1.18.0"}
-                       com.aayushatharva.brotli4j/native-osx-x86_64 {:mvn/version "1.18.0"}
-                       com.aayushatharva.brotli4j/native-linux-x86_64 {:mvn/version "1.18.0"}
+ {:test {:extra-paths ["test"]
+         :extra-deps  {org.clojure/test.check                          {:mvn/version "1.1.1"}
+                       lambdaisland/kaocha                             {:mvn/version "1.91.1392"}
+                       io.github.pfeodrippe/wally                      {:mvn/version "0.0.4"}
+                       com.aayushatharva.brotli4j/native-osx-aarch64   {:mvn/version "1.18.0"}
+                       com.aayushatharva.brotli4j/native-osx-x86_64    {:mvn/version "1.18.0"}
+                       com.aayushatharva.brotli4j/native-linux-x86_64  {:mvn/version "1.18.0"}
                        com.aayushatharva.brotli4j/native-linux-aarch64 {:mvn/version "1.18.0"}}
-         :main-opts ["-m" "kaocha.runner"]
-         :exec-fn kaocha.runner/exec-fn
-         :exec-args {:randomize? false
-                     :fail-fast? true}}
+         :main-opts   ["-m" "kaocha.runner"]
+         :exec-fn     kaocha.runner/exec-fn
+         :exec-args   {:randomize? false
+                       :fail-fast? true}}
 
-  :dev {:extra-deps {com.aayushatharva.brotli4j/native-osx-aarch64 {:mvn/version "1.18.0"}
-                      com.aayushatharva.brotli4j/native-osx-x86_64 {:mvn/version "1.18.0"}
-                      com.aayushatharva.brotli4j/native-linux-x86_64 {:mvn/version "1.18.0"}
+  :dev  {:extra-deps {com.aayushatharva.brotli4j/native-osx-aarch64   {:mvn/version "1.18.0"}
+                      com.aayushatharva.brotli4j/native-osx-x86_64    {:mvn/version "1.18.0"}
+                      com.aayushatharva.brotli4j/native-linux-x86_64  {:mvn/version "1.18.0"}
                       com.aayushatharva.brotli4j/native-linux-aarch64 {:mvn/version "1.18.0"}}}}}

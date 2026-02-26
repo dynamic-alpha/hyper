@@ -214,10 +214,10 @@
           request-var #'hyper.core/*request*
           executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           _handler    (server/create-handler routes app-state* executor request-var
-                                             {:watches [global-src]})]
-      (let [app-state (assoc @app-state* :routes routes)]
-        ;; Global watches come first, then per-route watches
-        (is (= [global-src route-src] (server/find-route-watches app-state :home))))))
+                                             {:watches [global-src]})
+          app-state   (assoc @app-state* :routes routes)]
+      ;; Global watches come first, then per-route watches
+      (is (= [global-src route-src] (server/find-route-watches app-state :home)))))
 
   (testing "No :watches option leaves global-watches empty"
     (let [app-state*  (atom (state/init-state))
@@ -285,15 +285,14 @@
     (let [app-state*  (atom (state/init-state))
           ;; Use an atom to back the Var so we can simulate re-def
           routes-atom (atom [["/" {:name :home
-                                   :get  (fn [_req] [:div "Home V1"])}]])]
-      ;; Create a real Var to pass as routes
-      (let [routes-var (intern *ns* (gensym "test-routes-") @routes-atom)
-            handler    (server/create-handler routes-var app-state*
-                                              (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
-                                              #'hyper.core/*request*)
-            response   (handler {:uri "/" :request-method :get})]
-        (is (= 200 (:status response)))
-        (is (.contains (:body response) "Home V1")))))
+                                   :get  (fn [_req] [:div "Home V1"])}]])
+          routes-var  (intern *ns* (gensym "test-routes-") @routes-atom)
+          handler     (server/create-handler routes-var app-state*
+                                             (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+                                             #'hyper.core/*request*)
+          response    (handler {:uri "/" :request-method :get})]
+      (is (= 200 (:status response)))
+      (is (.contains (:body response) "Home V1"))))
 
   (testing "Picks up route changes on next request"
     (let [app-state* (atom (state/init-state))

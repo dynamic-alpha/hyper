@@ -7,7 +7,8 @@
    - navigate function for SPA navigation
    - watch! for observing external state sources
    - create-handler for building ring handlers"
-  (:require [hyper.actions :as actions]
+  (:require [clojure.string :as str]
+            [hyper.actions :as actions]
             [hyper.render :as render]
             [hyper.server :as server]
             [hyper.state :as state]
@@ -167,7 +168,7 @@
                             vals
                             (map (fn [{:keys [js key]}]
                                    (str key ":" js)))
-                            (clojure.string/join ","))]
+                            (str/join ","))]
       (str "fetch('/hyper/actions?action-id=" action-id
            "',{method:'POST',headers:{'Content-Type':'application/json'}"
            ",body:JSON.stringify({" json-entries "})})"))))

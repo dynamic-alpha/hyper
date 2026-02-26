@@ -1,7 +1,6 @@
 (ns hyper.render-test
   (:require [clojure.test :refer [deftest is testing]]
             [dev.onionpancakes.chassis.core :as c]
-            [hyper.actions :as actions]
             [hyper.core :as hy]
             [hyper.render :as render]
             [hyper.state :as state]))

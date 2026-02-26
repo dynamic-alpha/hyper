@@ -1,5 +1,6 @@
 (ns hyper.brotli-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [hyper.brotli :as br]
             [hyper.render :as render]
             [hyper.state :as state]
@@ -94,13 +95,13 @@
           br-stream       (br/compress-out-stream out-streaming :window-size 18)
           streaming-sizes (mapv (fn [i]
                                   (let [sse (str "event: datastar-patch-elements\ndata: elements "
-                                                 (clojure.string/replace fragment "1" (str i))
+                                                 (str/replace fragment "1" (str i))
                                                  "\n\n")]
                                     (alength (br/compress-stream out-streaming br-stream sse))))
                                 (range 10))
           oneshot-sizes   (mapv (fn [i]
                                   (let [sse (str "event: datastar-patch-elements\ndata: elements "
-                                                 (clojure.string/replace fragment "1" (str i))
+                                                 (str/replace fragment "1" (str i))
                                                  "\n\n")]
                                     (alength (br/compress sse :quality 5))))
                                 (range 10))]

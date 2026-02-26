@@ -160,18 +160,17 @@
           tab-id     (:hyper/tab-id ctx)]
 
       (binding [hy/*request* ctx]
-        (let [nav-attrs (hy/navigate :about)]
-          ;; Extract and execute the action
-          (let [action-id (second (re-find #"action-id=([^']+)"
-                                           (str (:data-on:click__prevent nav-attrs))))]
-            (is (some? action-id))
-            ((get-in @app-state* [:actions action-id :fn]) nil)
-            ;; Route state should be updated
-            (let [route (state/get-tab-route app-state* tab-id)]
-              (is (= :about (:name route)))
-              (is (= "/about" (:path route))))
-            ;; Render fn should be swapped
-            (is (= about-fn (get-in @app-state* [:tabs tab-id :render-fn])))))))))
+        (let [nav-attrs (hy/navigate :about)
+              action-id (second (re-find #"action-id=([^']+)"
+                                         (str (:data-on:click__prevent nav-attrs))))
+              _         (do (is (some? action-id))
+                            ((get-in @app-state* [:actions action-id :fn]) nil))
+              route     (state/get-tab-route app-state* tab-id)]
+          ;; Route state should be updated
+          (is (= :about (:name route)))
+          (is (= "/about" (:path route)))
+          ;; Render fn should be swapped
+          (is (= about-fn (get-in @app-state* [:tabs tab-id :render-fn]))))))))
 
 (deftest test-create-handler
   (testing "creates handler with default app-state"

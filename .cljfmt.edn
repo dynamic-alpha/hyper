@@ -2,4 +2,5 @@
  :align-map-columns?              true
  :function-arguments-indentation  :cursive
  :sort-ns-references?             true
- :normalize-newlines-at-file-end? true}
+ :normalize-newlines-at-file-end? true
+ :paths                           ["deps.edn" "src" "test" "example"]}
