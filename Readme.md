@@ -350,6 +350,36 @@ and the `<title>` are all kept in sync reactively.
 
 This is typically how you’d include your compiled Tailwind stylesheet.
 
+## Brotli compression
+
+Hyper uses [brotli4j](https://github.com/hyperxpro/Brotli4j) to compress both
+initial page responses and streaming SSE updates. The core `brotli4j` library is
+included as a dependency, but the **platform-specific native library** is not —
+you need to add the right one for your OS and architecture.
+
+Add **one** of the following to your project's `:deps`:
+
+| Platform | Dependency |
+|---|---|
+| macOS (Apple Silicon) | `com.aayushatharva.brotli4j/native-osx-aarch64 {:mvn/version "1.18.0"}` |
+| macOS (Intel) | `com.aayushatharva.brotli4j/native-osx-x86_64 {:mvn/version "1.18.0"}` |
+| Linux (x86_64) | `com.aayushatharva.brotli4j/native-linux-x86_64 {:mvn/version "1.18.0"}` |
+| Linux (aarch64) | `com.aayushatharva.brotli4j/native-linux-aarch64 {:mvn/version "1.18.0"}` |
+
+For example, on an Apple Silicon Mac:
+
+```clojure
+;; deps.edn
+{:deps {dynamic-alpha/hyper {:git/url "..."}
+        com.aayushatharva.brotli4j/native-osx-aarch64 {:mvn/version "1.18.0"}}}
+```
+
+If you deploy to a different platform than you develop on (e.g. dev on macOS,
+deploy on Linux), add both native deps — the correct one is selected at runtime.
+
+If the native library is missing, you'll see an error like
+`UnsatisfiedLinkError` or `Brotli4jLoader` failure at startup.
+
 ## clj-kondo
 
 Hyper ships with clj-kondo config. Import it with:
