@@ -2,8 +2,10 @@
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
             [hyper.actions :as actions]
+            [hyper.context :as context]
             [hyper.core]
             [hyper.render :as render]
+            [hyper.routes :as routes]
             [hyper.server :as server]
             [hyper.state :as state]))
 
@@ -83,7 +85,7 @@
     (let [app-state*  (atom (state/init-state))
           routes      [["/" {:name :home
                              :get  (fn [_req] [:div "Home"])}]]
-          request-var #'hyper.core/*request*
+          request-var #'context/*request*
           executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           handler     (server/create-handler routes app-state* executor request-var)]
       (is (fn? handler))
@@ -97,7 +99,7 @@
     (let [app-state*  (atom (state/init-state))
           routes      [["/" {:name :home
                              :get  (fn [_req] [:div "Home"])}]]
-          request-var #'hyper.core/*request*
+          request-var #'context/*request*
           executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           handler     (server/create-handler routes app-state* executor request-var
                                              {:head [[:link {:rel "stylesheet" :href "/app.css"}]]})
@@ -112,7 +114,7 @@
     (let [app-state*  (atom (state/init-state))
           routes      [["/" {:name :home
                              :get  (fn [_req] [:div "Home"])}]]
-          request-var #'hyper.core/*request*
+          request-var #'context/*request*
           executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           handler     (server/create-handler routes app-state* executor request-var
                                              {:head (fn [_req]
@@ -134,7 +136,7 @@
           app-state*  (atom (state/init-state))
           routes      [["/" {:name :home
                              :get  (fn [_req] [:div "Home"])}]]
-          request-var #'hyper.core/*request*
+          request-var #'context/*request*
           executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           handler     (server/create-handler routes app-state* executor request-var
                                              {:static-dir (.getAbsolutePath tmp-dir)})
@@ -160,7 +162,7 @@
           app-state*  (atom (state/init-state))
           routes      [["/" {:name :home
                              :get  (fn [_req] [:div "Home"])}]]
-          request-var #'hyper.core/*request*
+          request-var #'context/*request*
           executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           handler     (server/create-handler routes app-state* executor request-var
                                              {:static-dir [(.getAbsolutePath tmp1-dir)
@@ -176,7 +178,7 @@
     (let [app-state*  (atom (state/init-state))
           routes      [["/" {:name :home
                              :get  (fn [_req] [:div "Home"])}]]
-          request-var #'hyper.core/*request*
+          request-var #'context/*request*
           executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           handler     (server/create-handler routes app-state* executor request-var
                                              {:static-resources "public"})
@@ -192,7 +194,7 @@
                              :get  (fn [_req] [:div "Home"])}]
                        ["/about" {:name :about
                                   :get  (fn [_req] [:div "About"])}]]
-          request-var #'hyper.core/*request*
+          request-var #'context/*request*
           executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           _handler    (server/create-handler routes app-state* executor request-var
                                              {:watches [global-src]})]
@@ -200,9 +202,9 @@
       (is (= [global-src] (:global-watches @app-state*)))
 
       ;; find-route-watches returns the global source for every route
-      (let [app-state (assoc @app-state* :routes routes)]
-        (is (= [global-src] (server/find-route-watches app-state :home)))
-        (is (= [global-src] (server/find-route-watches app-state :about))))))
+      (let [route-index (routes/index-routes routes)]
+        (is (= [global-src] (routes/find-route-watches route-index [global-src] :home)))
+        (is (= [global-src] (routes/find-route-watches route-index [global-src] :about))))))
 
   (testing "Global :watches are combined with per-route :watches"
     (let [app-state*  (atom (state/init-state))
@@ -211,31 +213,31 @@
           routes      [["/" {:name    :home
                              :get     (fn [_req] [:div "Home"])
                              :watches [route-src]}]]
-          request-var #'hyper.core/*request*
+          request-var #'context/*request*
           executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           _handler    (server/create-handler routes app-state* executor request-var
                                              {:watches [global-src]})
-          app-state   (assoc @app-state* :routes routes)]
+          route-index (routes/index-routes routes)]
       ;; Global watches come first, then per-route watches
-      (is (= [global-src route-src] (server/find-route-watches app-state :home)))))
+      (is (= [global-src route-src] (routes/find-route-watches route-index [global-src] :home)))))
 
   (testing "No :watches option leaves global-watches empty"
     (let [app-state*  (atom (state/init-state))
           routes      [["/" {:name :home
                              :get  (fn [_req] [:div "Home"])}]]
-          request-var #'hyper.core/*request*
+          request-var #'context/*request*
           executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           _handler    (server/create-handler routes app-state* executor request-var {})]
       (is (= [] (:global-watches @app-state*)))
-      (let [app-state (assoc @app-state* :routes routes)]
-        (is (nil? (server/find-route-watches app-state :home)))))))
+      (let [route-index (routes/index-routes routes)]
+        (is (nil? (routes/find-route-watches route-index [] :home)))))))
 
 (deftest test-server-lifecycle
   (testing "Server start and stop"
     (let [app-state*  (atom (state/init-state))
           routes      [["/" {:name :home
                              :get  (fn [_req] [:div "Hello"])}]]
-          request-var #'hyper.core/*request*
+          request-var #'context/*request*
           executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           handler     (server/create-handler routes app-state* executor request-var)
           stop-fn     (server/start! handler {:port 13000})]
@@ -251,7 +253,7 @@
     (let [app-state*  (atom (state/init-state))
           routes      [["/" {:name :home
                              :get  (fn [_req] [:div "Hello"])}]]
-          request-var #'hyper.core/*request*
+          request-var #'context/*request*
           executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
           handler     (server/create-handler routes app-state* executor request-var)
           stop-fn     (server/start! handler {:port 13001})
@@ -289,7 +291,7 @@
           routes-var  (intern *ns* (gensym "test-routes-") @routes-atom)
           handler     (server/create-handler routes-var app-state*
                                              (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
-                                             #'hyper.core/*request*)
+                                             #'context/*request*)
           response    (handler {:uri "/" :request-method :get})]
       (is (= 200 (:status response)))
       (is (.contains (:body response) "Home V1"))))
@@ -305,7 +307,7 @@
           routes-var (intern *ns* (gensym "test-routes-") v1-routes)
           handler    (server/create-handler routes-var app-state*
                                             (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
-                                            #'hyper.core/*request*)]
+                                            #'context/*request*)]
 
       ;; Initial request serves v1
       (let [response (handler {:uri "/" :request-method :get})]
@@ -335,14 +337,14 @@
           build-count (atom 0)
           handler     (server/create-handler routes-var app-state*
                                              (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
-                                             #'hyper.core/*request*)]
+                                             #'context/*request*)]
 
       ;; build-ring-handler was called once during create-handler
       ;; Subsequent requests with the same routes should not rebuild
-      (with-redefs [server/find-render-fn (let [orig server/find-render-fn]
-                                            (fn [routes route-name]
+      (with-redefs [routes/find-render-fn (let [orig routes/find-render-fn]
+                                            (fn [route-index route-name]
                                               (swap! build-count inc)
-                                              (orig routes route-name)))]
+                                              (orig route-index route-name)))]
         ;; Several requests — find-render-fn is only called by navigate-handler,
         ;; not by the router rebuild path. We just verify the handler works
         ;; consistently without errors.
@@ -362,7 +364,7 @@
                             :get  (fn [_req] [:div "Static"])}]]
           handler    (server/create-handler routes app-state*
                                             (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
-                                            #'hyper.core/*request*)
+                                            #'context/*request*)
           response   (handler {:uri "/" :request-method :get})]
       (is (= 200 (:status response)))
       (is (.contains (:body response) "Static")))))

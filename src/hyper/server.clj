@@ -3,12 +3,13 @@
 
    Provides Ring handler creation for hyper applications."
   (:require [cheshire.core :as json]
-            [clojure.edn :as edn]
             [clojure.string]
             [dev.onionpancakes.chassis.core :as c]
             [hyper.actions :as actions]
             [hyper.brotli :as br]
+            [hyper.context :as context]
             [hyper.render :as render]
+            [hyper.routes :as routes]
             [hyper.state :as state]
             [org.httpkit.server :as http-kit]
             [reitit.coercion :as coercion]
@@ -30,24 +31,6 @@
 
 (defn generate-tab-id []
   (str "tab-" (java.util.UUID/randomUUID)))
-
-(defn serialize-session-data
-  "Serialize session data to a string for cookie storage."
-  [session-data]
-  (when session-data
-    (try
-      (pr-str session-data)
-      (catch Exception _
-        nil))))
-
-(defn deserialize-session-data
-  "Deserialize session data from a cookie string."
-  [cookie-value]
-  (when (and cookie-value (not (empty? cookie-value)))
-    (try
-      (edn/read-string cookie-value)
-      (catch Exception _
-        {}))))
 
 (defn wrap-hyper-context
   "Middleware that adds session-id and tab-id to the request."
@@ -84,19 +67,13 @@
   [:script {:type "module"
             :src  "https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js"}])
 
-(defn- accepts-br?
-  "Check if the request's Accept-Encoding header includes brotli."
-  [req]
-  (when-let [accept (get-in req [:headers "accept-encoding"])]
-    (some? (re-find #"\bbr\b" accept))))
-
 (defn sse-events-handler
   "Handler for SSE event stream."
   [app-state* request-var]
   (fn [req]
     (let [session-id (:hyper/session-id req)
           tab-id     (:hyper/tab-id req)
-          compress?  (accepts-br? req)]
+          compress?  (br/accepts-br? req)]
 
       (http-kit/as-channel req
                            {:on-open  (fn [channel]
@@ -183,87 +160,9 @@
                          :data {:hyper/action-id action-id}})
               {:status  500
                :headers {"Content-Type" "application/json"}
-               :body    (str "{\"error\": \"" (.getMessage e) "\"}")})
+               :body    (json/generate-string {:error (.getMessage e)})})
             (finally
               (pop-thread-bindings))))))))
-
-(defn find-render-fn
-  "Find the original (unwrapped) render fn for a named route.
-   Looks up the :get handler from the routes vector by :name."
-  [routes route-name]
-  (->> routes
-       (some (fn [[_path data]]
-               (when (= route-name (:name data))
-                 (:get data))))))
-
-(defn find-route-title
-  "Find the :title metadata for a named route.
-   Returns the title value (string or fn) or nil."
-  [routes route-name]
-  (->> routes
-       (some (fn [[_path data]]
-               (when (= route-name (:name data))
-                 (:title data))))))
-
-(defn find-route-watches
-  "Collect all Watchable sources for a named route.
-   Takes the dereferenced app-state map and a route name.
-   Returns a vector of sources built from:
-   - The global :watches supplied to create-handler (applied to every route)
-   - The route's :watches vector (explicit per-route external sources)
-   - The route's :get value, if it's a Var (auto-watch for live reloading)
-   Returns nil if there are no watches."
-  [app-state route-name]
-  (let [routes (or (:routes app-state) [])]
-    (when-let [route-data (->> routes
-                               (some (fn [[_path data]]
-                                       (when (= route-name (:name data))
-                                         data))))]
-      (let [global      (vec (:global-watches app-state))
-            explicit    (vec (or (:watches route-data) []))
-            get-handler (:get route-data)
-            watches     (cond-> (into global explicit)
-                          (var? get-handler) (conj get-handler))]
-        (when (seq watches)
-          watches)))))
-
-(defn live-routes
-  "Get the current routes, resolving through :routes-source if it's a Var.
-   This ensures we always read the latest route metadata (including :title)
-   when a render is triggered."
-  [app-state*]
-  (let [source (get @app-state* :routes-source)]
-    (if (var? source)
-      @source
-      (get @app-state* :routes))))
-
-(defn resolve-title
-  "Resolve a title value. If it's a fn, call it with the request.
-   Returns the resolved string, or nil."
-  [title req]
-  (cond
-    (nil? title)  nil
-    (fn? title)   (title req)
-    (string? title) title
-    (instance? clojure.lang.IDeref title) (str @title)
-    :else         (str title)))
-
-(defn escape-js-string
-  "Escape a string for safe embedding in a single-quoted JavaScript string literal
-   inside a <script> block. Handles backslashes, quotes, newlines, line/paragraph
-   separators, and </script> injection."
-  [s]
-  (when s
-    (-> s
-        (clojure.string/replace "\\" "\\\\")
-        (clojure.string/replace "'" "\\'")
-        (clojure.string/replace "\"" "\\\"")
-        (clojure.string/replace "\n" "\\n")
-        (clojure.string/replace "\r" "\\r")
-        (clojure.string/replace "\u2028" "\\u2028")
-        (clojure.string/replace "\u2029" "\\u2029")
-        ;; Prevent </script> from closing the script block in HTML parser
-        (clojure.string/replace "</" "<\\/"))))
 
 (defn- extract-route-info
   "Extract route info from a reitit match and Ring request.
@@ -330,21 +229,6 @@
 })();
 "))])
 
-(defn resolve-head
-  "Resolve extra <head> content.
-
-   - If :head is a function, it is called with the Ring request (already enriched
-     with Hyper context) and should return hiccup nodes.
-   - Otherwise, :head is treated as hiccup and used as-is.
-
-   Intended for injecting stylesheets/scripts (e.g. Tailwind output CSS) without
-   Hyper needing to know anything about build tooling."
-  [head req]
-  (cond
-    (fn? head)   (head req)
-    (some? head) head
-    :else        nil))
-
 (defn page-handler
   "Wrap a page render function to provide full HTML response.
    Resolves :title from route metadata — supports static strings, functions,
@@ -366,31 +250,30 @@
                                  (assoc :hyper/app-state app-state*
                                         :hyper/router (get @app-state* :router)
                                         :hyper/route-match (:reitit.core/match req))
-                                 (dissoc :reitit.core/match))
-              action-idx-var (requiring-resolve 'hyper.core/*action-idx*)]
-          (push-thread-bindings {request-var    req-with-state
-                                 action-idx-var (atom 0)})
+                                 (dissoc :reitit.core/match))]
+          (push-thread-bindings {request-var            req-with-state
+                                 #'context/*action-idx* (atom 0)})
           (try
-            (let [content    (render-fn req-with-state)
-                  route-name (:name route-info)
-                  routes     (live-routes app-state*)
-                  title-spec (find-route-title routes route-name)
-                  title      (or (resolve-title title-spec req-with-state) "Hyper App")
-                  extra-head (some-> (resolve-head head req-with-state)
-                                     render/mark-head-elements)
-                  html       (c/html
-                               [c/doctype-html5
-                                [:html
-                                 [:head
-                                  [:meta {:charset "UTF-8"}]
-                                  [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
-                                  [:title title]
-                                  (datastar-script)
-                                  extra-head]
-                                 [:body
-                                  {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
-                                  [:div {:id "hyper-app"} content]
-                                  (hyper-scripts tab-id)]]])]
+            (let [content     (render-fn req-with-state)
+                  route-name  (:name route-info)
+                  route-index (routes/live-route-index app-state*)
+                  title-spec  (routes/find-route-title route-index route-name)
+                  title       (or (routes/resolve-title title-spec req-with-state) "Hyper App")
+                  extra-head  (some-> (routes/resolve-head head req-with-state)
+                                      render/mark-head-elements)
+                  html        (c/html
+                                [c/doctype-html5
+                                 [:html
+                                  [:head
+                                   [:meta {:charset "UTF-8"}]
+                                   [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
+                                   [:title title]
+                                   (datastar-script)
+                                   extra-head]
+                                  [:body
+                                   {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
+                                   [:div {:id "hyper-app"} content]
+                                   (hyper-scripts tab-id)]]])]
               {:status  200
                :headers {"Content-Type" "text/html; charset=utf-8"}
                :body    html})
@@ -406,7 +289,7 @@
           tab-id      (:hyper/tab-id req)
           _session-id (:hyper/session-id req)
           router      (get @app-state* :router)
-          routes      (live-routes app-state*)]
+          route-index (routes/live-route-index app-state*)]
       (if-not (and path tab-id router)
         {:status  400
          :headers {"Content-Type" "application/json"}
@@ -430,7 +313,7 @@
                                  (catch Exception _e nil))
                   query-params (or (:query coerced) raw-query-params {})
                   path-params  (or (:path coerced) (:path-params match) {})
-                  render-fn    (find-render-fn routes route-name)]
+                  render-fn    (routes/find-render-fn route-index route-name)]
               (when render-fn
                 (render/register-render-fn! app-state* tab-id render-fn))
               ;; Setting the route triggers the route watcher,

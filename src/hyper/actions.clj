@@ -14,10 +14,14 @@
    (register-action! app-state* session-id tab-id action-fn
                      (str "action-" (java.util.UUID/randomUUID))))
   ([app-state* session-id tab-id action-fn action-id]
-   (swap! app-state* assoc-in [:actions action-id]
-          {:fn         action-fn
-           :session-id session-id
-           :tab-id     tab-id})
+   (swap! app-state* (fn [state]
+                       (-> state
+                           (assoc-in [:actions action-id]
+                                     {:fn         action-fn
+                                      :session-id session-id
+                                      :tab-id     tab-id})
+                           (update-in [:actions-by-tab tab-id]
+                                      (fnil conj #{}) action-id))))
    action-id))
 
 (defn execute-action!
@@ -41,9 +45,9 @@
 (defn cleanup-tab-actions!
   "Remove all actions for a tab."
   [app-state* tab-id]
-  (swap! app-state* update :actions
-         (fn [actions]
-           (into {}
-                 (remove (fn [[_k v]] (= (:tab-id v) tab-id))
-                         actions))))
+  (swap! app-state* (fn [state]
+                      (let [action-ids (get-in state [:actions-by-tab tab-id])]
+                        (-> state
+                            (update :actions #(apply dissoc % action-ids))
+                            (update :actions-by-tab dissoc tab-id)))))
   nil)

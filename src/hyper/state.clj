@@ -22,10 +22,10 @@
     [path]
     (vec path)))
 
-(deftype Cursor [parent-atom path-prefix path meta-data ^:volatile-mutable validator watches]
+(deftype Cursor [parent-atom full-path meta-data ^:volatile-mutable validator watches]
   clojure.lang.IRef
   (deref [_]
-    (get-in @parent-atom (concat path-prefix (normalize-path path))))
+    (get-in @parent-atom full-path))
 
   (setValidator [_ vf]
     (set! validator vf))
@@ -38,13 +38,12 @@
 
   (addWatch [this key callback]
     (swap! watches assoc key callback)
-    (let [full-path (concat path-prefix (normalize-path path))]
-      (add-watch parent-atom key
-                 (fn [k _r old-state new-state]
-                   (let [old-val (get-in old-state full-path)
-                         new-val (get-in new-state full-path)]
-                     (when (not= old-val new-val)
-                       (callback k this old-val new-val))))))
+    (add-watch parent-atom key
+               (fn [k _r old-state new-state]
+                 (let [old-val (get-in old-state full-path)
+                       new-val (get-in new-state full-path)]
+                   (when (not= old-val new-val)
+                     (callback k this old-val new-val)))))
     this)
 
   (removeWatch [_this key]
@@ -54,42 +53,36 @@
 
   clojure.lang.IAtom
   (swap [_this f]
-    (let [full-path (concat path-prefix (normalize-path path))]
-      (swap! parent-atom update-in full-path f)
-      (get-in @parent-atom full-path)))
+    (swap! parent-atom update-in full-path f)
+    (get-in @parent-atom full-path))
 
   (swap [_this f arg]
-    (let [full-path (concat path-prefix (normalize-path path))]
-      (swap! parent-atom update-in full-path f arg)
-      (get-in @parent-atom full-path)))
+    (swap! parent-atom update-in full-path f arg)
+    (get-in @parent-atom full-path))
 
   (swap [_this f arg1 arg2]
-    (let [full-path (concat path-prefix (normalize-path path))]
-      (swap! parent-atom update-in full-path f arg1 arg2)
-      (get-in @parent-atom full-path)))
+    (swap! parent-atom update-in full-path f arg1 arg2)
+    (get-in @parent-atom full-path))
 
   (swap [_this f arg1 arg2 args]
-    (let [full-path (concat path-prefix (normalize-path path))]
-      (apply swap! parent-atom update-in full-path f arg1 arg2 args)
-      (get-in @parent-atom full-path)))
+    (apply swap! parent-atom update-in full-path f arg1 arg2 args)
+    (get-in @parent-atom full-path))
 
   (compareAndSet [_ oldv newv]
-    (let [full-path (concat path-prefix (normalize-path path))]
-      (loop []
-        (let [current-state @parent-atom
-              current-val   (get-in current-state full-path)]
-          (if (= current-val oldv)
-            (if (compare-and-set! parent-atom
-                                  current-state
-                                  (assoc-in current-state full-path newv))
-              true
-              (recur))
-            false)))))
+    (loop []
+      (let [current-state @parent-atom
+            current-val   (get-in current-state full-path)]
+        (if (= current-val oldv)
+          (if (compare-and-set! parent-atom
+                                current-state
+                                (assoc-in current-state full-path newv))
+            true
+            (recur))
+          false))))
 
   (reset [_this newv]
-    (let [full-path (concat path-prefix (normalize-path path))]
-      (swap! parent-atom assoc-in full-path newv)
-      newv))
+    (swap! parent-atom assoc-in full-path newv)
+    newv)
 
   clojure.lang.IMeta
   (meta [_] @meta-data)
@@ -105,7 +98,8 @@
   "Create a cursor pointing to a path in the parent atom.
    path-prefix is the base path, path is relative to that."
   [parent-atom path-prefix path]
-  (->Cursor parent-atom path-prefix path (atom {}) nil (atom {})))
+  (let [full-path (into (vec path-prefix) (normalize-path path))]
+    (->Cursor parent-atom full-path (atom {}) nil (atom {}))))
 
 (defn session-cursor
   "Create a cursor to session state at the given path.
@@ -144,12 +138,13 @@
 (defn init-state
   "Create initial app state structure."
   []
-  {:global   {}
-   :sessions {}
-   :tabs     {}
-   :actions  {}
-   :router   nil
-   :routes   nil})
+  {:global         {}
+   :sessions       {}
+   :tabs           {}
+   :actions        {}
+   :actions-by-tab {}
+   :router         nil
+   :routes         nil})
 
 (defn get-or-create-session!
   "Ensure session exists in app-state."

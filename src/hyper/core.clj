@@ -9,34 +9,13 @@
    - create-handler for building ring handlers"
   (:require [clojure.string :as str]
             [hyper.actions :as actions]
+            [hyper.context :as context :refer [*request* *action-idx*]]
             [hyper.render :as render]
+            [hyper.routes :as routes]
             [hyper.server :as server]
             [hyper.state :as state]
+            [hyper.utils :as utils]
             [reitit.core :as reitit]))
-
-;; Dynamic var to hold current request context
-(def ^:dynamic *request* nil)
-
-;; Per-render action counter. Bound to (atom 0) before each render so that
-;; deterministic render functions produce the same action IDs every time,
-;; enabling effective brotli streaming compression.
-(def ^:dynamic *action-idx* nil)
-
-(defn- require-context!
-  "Extract and validate the request context from *request*.
-   Throws if called outside a request context or if required keys are missing.
-   Returns a map with :session-id, :tab-id, and :app-state*."
-  [caller-name]
-  (when-not *request*
-    (throw (ex-info (str caller-name " called outside request context") {})))
-  (let [session-id (:hyper/session-id *request*)
-        tab-id     (:hyper/tab-id *request*)
-        app-state* (:hyper/app-state *request*)]
-    (when-not app-state*
-      (throw (ex-info "No app-state in request" {:request *request*})))
-    {:session-id session-id
-     :tab-id     tab-id
-     :app-state* app-state*}))
 
 (defn global-cursor
   "Create a cursor to global state at the given path.
@@ -51,10 +30,10 @@
      (global-cursor [:config :feature-flags])
      (global-cursor :user-count 0)"
   ([path]
-   (let [{:keys [app-state*]} (require-context! "global-cursor")]
+   (let [{:keys [app-state*]} (context/require-context! "global-cursor")]
      (state/global-cursor app-state* path)))
   ([path default-value]
-   (let [{:keys [app-state*]} (require-context! "global-cursor")]
+   (let [{:keys [app-state*]} (context/require-context! "global-cursor")]
      (state/global-cursor app-state* path default-value))))
 
 (defn session-cursor
@@ -67,10 +46,10 @@
      (session-cursor [:user :name])
      (session-cursor :counter 0)"
   ([path]
-   (let [{:keys [session-id app-state*]} (require-context! "session-cursor")]
+   (let [{:keys [session-id app-state*]} (context/require-context! "session-cursor")]
      (state/session-cursor app-state* session-id path)))
   ([path default-value]
-   (let [{:keys [session-id app-state*]} (require-context! "session-cursor")]
+   (let [{:keys [session-id app-state*]} (context/require-context! "session-cursor")]
      (state/session-cursor app-state* session-id path default-value))))
 
 (defn tab-cursor
@@ -83,10 +62,10 @@
      (tab-cursor [:todos :list])
      (tab-cursor :count 0)"
   ([path]
-   (let [{:keys [tab-id app-state*]} (require-context! "tab-cursor")]
+   (let [{:keys [tab-id app-state*]} (context/require-context! "tab-cursor")]
      (state/tab-cursor app-state* tab-id path)))
   ([path default-value]
-   (let [{:keys [tab-id app-state*]} (require-context! "tab-cursor")]
+   (let [{:keys [tab-id app-state*]} (context/require-context! "tab-cursor")]
      (state/tab-cursor app-state* tab-id path default-value))))
 
 (defn path-cursor
@@ -102,10 +81,10 @@
      (path-cursor :count 0)     ;; URL: /?count=0
      (path-cursor :search \"\")   ;; URL: /?search=hello"
   ([path]
-   (let [{:keys [tab-id app-state*]} (require-context! "path-cursor")]
+   (let [{:keys [tab-id app-state*]} (context/require-context! "path-cursor")]
      (state/create-cursor app-state* [:tabs tab-id :route :query-params] path)))
   ([path default-value]
-   (let [{:keys [tab-id app-state*]} (require-context! "path-cursor")
+   (let [{:keys [tab-id app-state*]} (context/require-context! "path-cursor")
          cursor                      (state/create-cursor
                                        app-state*
                                        [:tabs tab-id :route :query-params]
@@ -131,7 +110,7 @@
      ;; Watch any Watchable source
      (watch! my-event-stream)"
   [source]
-  (let [{:keys [session-id tab-id app-state*]} (require-context! "watch!")
+  (let [{:keys [session-id tab-id app-state*]} (context/require-context! "watch!")
         request-var                            (get @app-state* :request-var)]
     (render/watch-source! app-state* session-id tab-id request-var source)))
 
@@ -210,31 +189,24 @@
   (let [used-params (find-client-params body)
         param-syms  (keys used-params)
         cp-sym      (gensym "client-params")]
-    `(let [session-id# (get *request* :hyper/session-id)
-           tab-id#     (get *request* :hyper/tab-id)
-           app-state*# (get *request* :hyper/app-state)
-           router#     (get *request* :hyper/router)]
-       (when-not session-id#
-         (throw (ex-info "action macro called outside request context" {})))
-       (when-not tab-id#
-         (throw (ex-info "No tab-id in request context" {})))
-       (when-not app-state*#
-         (throw (ex-info "No app-state in request context" {})))
-
-       (let [action-fn# (fn [~cp-sym]
-                          (let [~@(mapcat (fn [sym]
-                                            (let [k (keyword (:key (get client-param-registry sym)))]
-                                              [sym (list `get cp-sym k)]))
-                                          param-syms)]
-                            (binding [*request* {:hyper/session-id session-id#
-                                                 :hyper/tab-id     tab-id#
-                                                 :hyper/app-state  app-state*#
-                                                 :hyper/router     router#}]
-                              ~@body)))
-             idx#       (if *action-idx* (swap! *action-idx* inc) (hash action-fn#))
-             action-id# (str "a-" tab-id# "-" idx#)
-             _#         (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#)]
-         (build-action-expr action-id# '~used-params)))))
+    `(let [{session-id# :session-id
+            tab-id#     :tab-id
+            app-state*# :app-state*
+            router#     :router}    (context/require-context! "action")
+           action-fn#               (fn [~cp-sym]
+                                      (let [~@(mapcat (fn [sym]
+                                                        (let [k (keyword (:key (get client-param-registry sym)))]
+                                                          [sym (list `get cp-sym k)]))
+                                                      param-syms)]
+                                        (binding [context/*request* {:hyper/session-id session-id#
+                                                                     :hyper/tab-id     tab-id#
+                                                                     :hyper/app-state  app-state*#
+                                                                     :hyper/router     router#}]
+                                          ~@body)))
+           idx#                     (if context/*action-idx* (swap! context/*action-idx* inc) (hash action-fn#))
+           action-id#               (str "a-" tab-id# "-" idx#)
+           _#                       (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#)]
+       (build-action-expr action-id# '~used-params))))
 
 (defn navigate
   "Create a navigation link using reitit named routes.
@@ -270,14 +242,14 @@
      (when-let [path (:path (reitit/match-by-name router route-name params))]
        (let [href          (state/build-url path query-params)
              ;; Use live-routes to always get the latest route metadata
-             routes        (server/live-routes app-state*)
+             route-index   (routes/live-route-index app-state*)
              ;; Resolve title eagerly for the pushState call
-             title-spec    (server/find-route-title routes route-name)
-             title         (server/resolve-title title-spec *request*)
+             title-spec    (routes/find-route-title route-index route-name)
+             title         (routes/resolve-title title-spec *request*)
              ;; Register an action that performs the navigation server-side
              nav-fn        (fn [_client-params]
-                             (let [routes    (server/live-routes app-state*)
-                                   render-fn (server/find-render-fn routes route-name)]
+                             (let [route-idx (routes/live-route-index app-state*)
+                                   render-fn (routes/find-render-fn route-idx route-name)]
                                (when render-fn
                                  (render/register-render-fn! app-state* tab-id render-fn))
                         ;; Setting the route triggers the route watcher,
@@ -290,8 +262,8 @@
              nav-idx       (if *action-idx* (swap! *action-idx* inc) (hash nav-fn))
              action-id     (actions/register-action! app-state* session-id tab-id nav-fn
                                                      (str "a-" tab-id "-" nav-idx))
-             escaped-title (or (server/escape-js-string title) "")
-             escaped-href  (server/escape-js-string href)]
+             escaped-title (or (utils/escape-js-string title) "")
+             escaped-href  (utils/escape-js-string href)]
          {:href                                                                                   href
           :data-on:click__prevent
           (str "@post('/hyper/actions?action-id=" action-id "');"
@@ -345,7 +317,7 @@
   [routes & {:keys [app-state executor head static-resources static-dir watches]
              :or   {app-state (atom (state/init-state))
                     executor  (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)}}]
-  (server/create-handler routes app-state executor #'*request*
+  (server/create-handler routes app-state executor #'context/*request*
                          {:head             head
                           :static-resources static-resources
                           :static-dir       static-dir

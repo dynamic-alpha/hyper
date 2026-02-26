@@ -4,9 +4,13 @@
    Handles rendering hiccup to HTML and sending updates via
    Server-Sent Events using Datastar fragment format."
   (:require [dev.onionpancakes.chassis.core :as c]
+            [hyper.actions :as actions]
             [hyper.brotli :as br]
+            [hyper.context :as context]
             [hyper.protocols :as proto]
+            [hyper.routes :as routes]
             [hyper.state :as state]
+            [hyper.utils :as utils]
             [org.httpkit.server :as http]
             [taoensso.telemere :as t]))
 
@@ -113,15 +117,14 @@
    (the SDK's ExecuteScript convention) with `data-effect=\"el.remove()\"`
    so it auto-cleans after execution."
   [title extra-head-html]
-  (let [escape-fn (requiring-resolve 'hyper.server/escape-js-string)
-        js        (str "(function(){"
-                       "document.title='" (escape-fn (or title "Hyper App")) "';"
-                       (when (seq extra-head-html)
-                         (str "document.querySelectorAll('[data-hyper-head]').forEach(function(el){el.remove()});"
-                              "var f=document.createRange().createContextualFragment('"
-                              (escape-fn extra-head-html) "');"
-                              "document.head.appendChild(f);"))
-                       "})();")]
+  (let [js (str "(function(){"
+                "document.title='" (utils/escape-js-string (or title "Hyper App")) "';"
+                (when (seq extra-head-html)
+                  (str "document.querySelectorAll('[data-hyper-head]').forEach(function(el){el.remove()});"
+                       "var f=document.createRange().createContextualFragment('"
+                       (utils/escape-js-string extra-head-html) "');"
+                       "document.head.appendChild(f);"))
+                "})();")]
     (str "event: datastar-patch-elements\n"
          "data: mode append\n"
          "data: selector body\n"
@@ -179,67 +182,59 @@
    - Redefining the routes Var with new inline fns picks up the new function
    - Var-based :get handlers (e.g. #'my-page) automatically deref to the latest
 
-   Title is resolved from route :title metadata via hyper.server/resolve-title,
+   Title is resolved from route :title metadata via hyper.routes/resolve-title,
    supporting static strings, functions of the request, and deref-able values
    (cursors/atoms) so that title updates reactively with state changes."
   [app-state* session-id tab-id request-var]
   (when-let [stored-render-fn (get-render-fn app-state* tab-id)]
-    (let [router           (get @app-state* :router)
-          route            (get-in @app-state* [:tabs tab-id :route])
+    (let [router      (get @app-state* :router)
+          route       (get-in @app-state* [:tabs tab-id :route])
           ;; Re-resolve render-fn from live routes so route Var redefs
           ;; and Var-based handlers always use the latest function.
-          live-routes-fn   (requiring-resolve 'hyper.server/live-routes)
-          find-render-fn   (requiring-resolve 'hyper.server/find-render-fn)
-          current-routes   (live-routes-fn app-state*)
-          render-fn        (if-let [route-name (:name route)]
-                             (let [fresh-fn (when current-routes
-                                              (find-render-fn current-routes route-name))]
-                               (if fresh-fn
-                                 (do
+          route-index (routes/live-route-index app-state*)
+          render-fn   (if-let [route-name (:name route)]
+                        (let [fresh-fn (when (seq route-index)
+                                         (routes/find-render-fn route-index route-name))]
+                          (if fresh-fn
+                            (do
                                    ;; Update stored render-fn so navigate/actions
                                    ;; also use the latest
-                                   (when (not= fresh-fn stored-render-fn)
-                                     (register-render-fn! app-state* tab-id fresh-fn))
-                                   fresh-fn)
-                                 stored-render-fn))
-                             stored-render-fn)
-          current-url      (when route
-                             (state/build-url (:path route) (:query-params route)))
-          req              (cond-> {:hyper/session-id session-id
-                                    :hyper/tab-id     tab-id
-                                    :hyper/app-state  app-state*}
-                             router (assoc :hyper/router router))
-          action-idx-var   (requiring-resolve 'hyper.core/*action-idx*)
-          cleanup-actions! (requiring-resolve 'hyper.actions/cleanup-tab-actions!)]
+                              (when (not= fresh-fn stored-render-fn)
+                                (register-render-fn! app-state* tab-id fresh-fn))
+                              fresh-fn)
+                            stored-render-fn))
+                        stored-render-fn)
+          current-url (when route
+                        (state/build-url (:path route) (:query-params route)))
+          req         (cond-> {:hyper/session-id session-id
+                               :hyper/tab-id     tab-id
+                               :hyper/app-state  app-state*}
+                        router (assoc :hyper/router router))]
       ;; Clean slate — remove all actions for this tab before re-rendering
       ;; so that structurally dynamic renders (shrinking lists, conditional
       ;; branches) don't leave stale action closures behind.
-      (cleanup-actions! app-state* tab-id)
-      (push-thread-bindings {request-var    req
-                             action-idx-var (atom 0)})
+      (actions/cleanup-tab-actions! app-state* tab-id)
+      (push-thread-bindings {request-var            req
+                             #'context/*action-idx* (atom 0)})
       (try
-        (let [hiccup-result       (safe-render render-fn req)
-              ;; Resolve title — requiring-resolve to avoid circular dep
-              resolve-title-fn    (requiring-resolve 'hyper.server/resolve-title)
-              find-route-title-fn (requiring-resolve 'hyper.server/find-route-title)
-              title-spec          (when (and current-routes route)
-                                    (find-route-title-fn current-routes (:name route)))
-              title               (resolve-title-fn title-spec req)
+        (let [hiccup-result   (safe-render render-fn req)
+              title-spec      (when (and (seq route-index) route)
+                                (routes/find-route-title route-index (:name route)))
+              title           (routes/resolve-title title-spec req)
               ;; Resolve head content — only user-provided :head, not the
               ;; static meta/viewport/datastar-script (those stay from
               ;; the initial page load and never need updating).
-              resolve-head-fn     (requiring-resolve 'hyper.server/resolve-head)
-              head                (get @app-state* :head)
-              extra-head          (some-> (resolve-head-fn head req)
-                                          mark-head-elements)
-              extra-head-html     (when extra-head
-                                    (c/html extra-head))
-              head-event          (format-head-update title extra-head-html)
+              head            (get @app-state* :head)
+              extra-head      (some-> (routes/resolve-head head req)
+                                      mark-head-elements)
+              extra-head-html (when extra-head
+                                (c/html extra-head))
+              head-event      (format-head-update title extra-head-html)
               ;; Body fragment
-              div-attrs           (cond-> {:id "hyper-app"}
-                                    current-url (assoc :data-hyper-url current-url))
-              html                (c/html [:div div-attrs hiccup-result])
-              body-fragment       (format-datastar-fragment html)]
+              div-attrs       (cond-> {:id "hyper-app"}
+                                current-url (assoc :data-hyper-url current-url))
+              html            (c/html [:div div-attrs hiccup-result])
+              body-fragment   (format-datastar-fragment html)]
           ;; Send head update (title + managed elements), then body
           (send-sse! app-state* tab-id (str head-event body-fragment)))
         (finally
@@ -286,36 +281,41 @@
 ;; External source watching
 ;; ---------------------------------------------------------------------------
 
+(defn- add-external-watch!
+  "Watch an external Watchable source for a tab, tracking it under the
+   given state-key (:watches or :route-watches). When the source changes,
+   submits a throttled re-render to the executor."
+  [app-state* session-id tab-id request-var source prefix state-key]
+  (let [watch-key (keyword (str prefix tab-id "-" (System/identityHashCode source)))]
+    (proto/-add-watch source watch-key
+                      (fn [_old _new]
+                        (submit-render! app-state*
+                                        #(throttled-render-and-send! app-state* session-id tab-id request-var))))
+    (swap! app-state* update-in [:tabs tab-id state-key]
+           (fnil assoc {}) watch-key source)
+    nil))
+
+(defn- remove-external-watches-by-key!
+  "Remove all external watches stored under state-key for a tab."
+  [app-state* tab-id state-key]
+  (let [watches (get-in @app-state* [:tabs tab-id state-key])]
+    (doseq [[watch-key source] watches]
+      (proto/-remove-watch source watch-key))
+    (swap! app-state* update-in [:tabs tab-id] dissoc state-key))
+  nil)
+
 (defn watch-source!
   "Watch an external Watchable source for a specific tab. When the source
    changes, submits a throttled re-render to the executor. The watch key
    is unique per tab-id so that multiple tabs each get their own re-render.
    Idempotent — calling with the same source and tab is safe."
   [app-state* session-id tab-id request-var source]
-  (let [watch-key (keyword (str "hyper-ext-" tab-id "-" (System/identityHashCode source)))]
-    (proto/-add-watch source watch-key
-                      (fn [_old _new]
-                        (submit-render! app-state*
-                                        #(throttled-render-and-send! app-state* session-id tab-id request-var))))
-    ;; Track for cleanup
-    (swap! app-state* update-in [:tabs tab-id :watches]
-           (fnil assoc {}) watch-key source)
-    nil))
-
-(defn unwatch-source!
-  "Remove a single external watch by key for a tab."
-  [_app-state* source watch-key]
-  (proto/-remove-watch source watch-key)
-  nil)
+  (add-external-watch! app-state* session-id tab-id request-var source "hyper-ext-" :watches))
 
 (defn remove-external-watches!
   "Remove all external watches for a tab."
   [app-state* tab-id]
-  (let [watches (get-in @app-state* [:tabs tab-id :watches])]
-    (doseq [[watch-key source] watches]
-      (unwatch-source! app-state* source watch-key))
-    (swap! app-state* update-in [:tabs tab-id] dissoc :watches))
-  nil)
+  (remove-external-watches-by-key! app-state* tab-id :watches))
 
 ;; ---------------------------------------------------------------------------
 ;; Route-level watches
@@ -324,26 +324,10 @@
 ;; tear down the old route's watches and set up the new route's watches
 ;; without disturbing anything the user registered via watch!.
 
-(defn- watch-source-as-route!
-  "Like watch-source! but tracks under :route-watches instead of :watches."
-  [app-state* session-id tab-id request-var source]
-  (let [watch-key (keyword (str "hyper-route-" tab-id "-" (System/identityHashCode source)))]
-    (proto/-add-watch source watch-key
-                      (fn [_old _new]
-                        (submit-render! app-state*
-                                        #(throttled-render-and-send! app-state* session-id tab-id request-var))))
-    (swap! app-state* update-in [:tabs tab-id :route-watches]
-           (fnil assoc {}) watch-key source)
-    nil))
-
 (defn teardown-route-watches!
   "Remove all route-level watches for a tab."
   [app-state* tab-id]
-  (let [watches (get-in @app-state* [:tabs tab-id :route-watches])]
-    (doseq [[watch-key source] watches]
-      (unwatch-source! app-state* source watch-key))
-    (swap! app-state* update-in [:tabs tab-id] dissoc :route-watches))
-  nil)
+  (remove-external-watches-by-key! app-state* tab-id :route-watches))
 
 (defn setup-route-watches!
   "Set up watches declared on the current route's :watches metadata and
@@ -351,68 +335,53 @@
    route-level watches first so that navigation swaps cleanly."
   [app-state* session-id tab-id request-var]
   (teardown-route-watches! app-state* tab-id)
-  (let [find-route-watches-fn (requiring-resolve 'hyper.server/find-route-watches)
-        app-state             @app-state*
-        route-name            (get-in app-state [:tabs tab-id :route :name])]
+  (let [app-state  @app-state*
+        route-name (get-in app-state [:tabs tab-id :route :name])]
     (when route-name
-      (when-let [watches (find-route-watches-fn app-state route-name)]
-        (doseq [source watches]
-          (watch-source-as-route! app-state* session-id tab-id request-var source)))))
+      (let [route-index    (routes/live-route-index app-state*)
+            global-watches (:global-watches app-state)]
+        (when-let [watches (routes/find-route-watches route-index global-watches route-name)]
+          (doseq [source watches]
+            (add-external-watch! app-state* session-id tab-id request-var source "hyper-route-" :route-watches))))))
   nil)
 
 (defn setup-watchers!
-  "Setup watchers on global, session, tab, and route state to trigger re-renders.
+  "Setup a single watcher on app-state that triggers re-renders when
+   global, session, tab, or route state changes for this tab.
    Route URL sync is handled client-side via MutationObserver on data-hyper-url."
   [app-state* session-id tab-id request-var]
-  (let [watch-key      (keyword (str "render-" tab-id))
-        global-path    [:global]
-        session-path   [:sessions session-id :data]
-        tab-path       [:tabs tab-id :data]
-        route-path     [:tabs tab-id :route]
-        trigger-render (fn [_k _r old-state new-state path]
-                         (when (not= (get-in old-state path)
-                                     (get-in new-state path))
-                           (submit-render! app-state*
-                                           #(throttled-render-and-send! app-state* session-id tab-id request-var))))]
-
-    ;; Watch global data (shared across all sessions/tabs)
-    (add-watch app-state* (keyword (str "global-" watch-key))
-               (fn [k r old-state new-state]
-                 (trigger-render k r old-state new-state global-path)))
-
-    ;; Watch session data
-    (add-watch app-state* (keyword (str "session-" watch-key))
-               (fn [k r old-state new-state]
-                 (trigger-render k r old-state new-state session-path)))
-
-    ;; Watch tab data
-    (add-watch app-state* (keyword (str "tab-" watch-key))
-               (fn [k r old-state new-state]
-                 (trigger-render k r old-state new-state tab-path)))
-
-    ;; Watch route changes to trigger re-render and swap route-level watches.
-    ;; The rendered fragment includes data-hyper-url on #hyper-app,
-    ;; and the client-side MutationObserver handles replaceState.
-    (add-watch app-state* (keyword (str "route-" watch-key))
+  (let [watch-key    (keyword (str "render-" tab-id))
+        global-path  [:global]
+        session-path [:sessions session-id :data]
+        tab-path     [:tabs tab-id :data]
+        route-path   [:tabs tab-id :route]]
+    (add-watch app-state* watch-key
                (fn [_k _r old-state new-state]
-                 (let [old-route (get-in old-state route-path)
-                       new-route (get-in new-state route-path)]
-                   (when (and new-route (not= old-route new-route))
-                     ;; Swap route-level watches when navigating to a new route
-                     (when (not= (:name old-route) (:name new-route))
-                       (setup-route-watches! app-state* session-id tab-id request-var))
+                 (let [route-changed? (let [old-route (get-in old-state route-path)
+                                            new-route (get-in new-state route-path)]
+                                        (and new-route (not= old-route new-route)))]
+                   ;; Swap route-level watches when navigating to a new named route
+                   (when route-changed?
+                     (let [old-name (get-in old-state (conj route-path :name))
+                           new-name (get-in new-state (conj route-path :name))]
+                       (when (not= old-name new-name)
+                         (setup-route-watches! app-state* session-id tab-id request-var))))
+                   ;; Re-render if any watched path changed
+                   (when (or route-changed?
+                             (not= (get-in old-state global-path)
+                                   (get-in new-state global-path))
+                             (not= (get-in old-state session-path)
+                                   (get-in new-state session-path))
+                             (not= (get-in old-state tab-path)
+                                   (get-in new-state tab-path)))
                      (submit-render! app-state*
                                      #(throttled-render-and-send! app-state* session-id tab-id request-var)))))))
   nil)
 
 (defn remove-watchers!
-  "Remove watchers for a tab."
+  "Remove the watcher for a tab."
   [app-state* tab-id]
-  (let [watch-key (keyword (str "render-" tab-id))]
-    (remove-watch app-state* (keyword (str "global-" watch-key)))
-    (remove-watch app-state* (keyword (str "session-" watch-key)))
-    (remove-watch app-state* (keyword (str "tab-" watch-key)))
-    (remove-watch app-state* (keyword (str "route-" watch-key))))
+  (remove-watch app-state* (keyword (str "render-" tab-id)))
   nil)
 
 (defn cleanup-tab!
@@ -422,9 +391,6 @@
   (remove-external-watches! app-state* tab-id)
   (teardown-route-watches! app-state* tab-id)
   (unregister-sse-channel! app-state* tab-id)
-  ;; Use requiring-resolve for hyper.actions to avoid circular dependency
-  ;; (actions requires nothing from render, but render is loaded first)
-  (let [cleanup-actions! (requiring-resolve 'hyper.actions/cleanup-tab-actions!)]
-    (cleanup-actions! app-state* tab-id))
+  (actions/cleanup-tab-actions! app-state* tab-id)
   (state/cleanup-tab! app-state* tab-id)
   nil)

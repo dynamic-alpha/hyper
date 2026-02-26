@@ -102,7 +102,7 @@
 ;; Ring middleware
 ;; ---------------------------------------------------------------------------
 
-(defn- accepts-br?
+(defn accepts-br?
   "Check if the request's Accept-Encoding header includes brotli."
   [req]
   (when-let [accept (get-in req [:headers "accept-encoding"])]

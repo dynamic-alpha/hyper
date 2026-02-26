@@ -1,6 +1,7 @@
 (ns hyper.render-test
   (:require [clojure.test :refer [deftest is testing]]
             [dev.onionpancakes.chassis.core :as c]
+            [hyper.context :as context]
             [hyper.core :as hy]
             [hyper.render :as render]
             [hyper.state :as state]))
@@ -100,7 +101,7 @@
 
       ;; Temporarily override send-sse! for testing
       (with-redefs [render/send-sse! mock-send!]
-        (render/setup-watchers! app-state* session-id tab-id #'hyper.core/*request*)
+        (render/setup-watchers! app-state* session-id tab-id #'context/*request*)
 
         ;; Change tab state
         (swap! app-state* assoc-in [:tabs tab-id :data :count] 1)
@@ -135,7 +136,7 @@
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
       (render/register-sse-channel! app-state* tab-id mock-channel false)
-      (render/setup-watchers! app-state* session-id tab-id #'hyper.core/*request*)
+      (render/setup-watchers! app-state* session-id tab-id #'context/*request*)
 
       (is (some? (render/get-render-fn app-state* tab-id)))
       (is (some? (render/get-sse-channel app-state* tab-id)))
@@ -197,16 +198,16 @@
 
       (with-redefs [render/send-sse! (fn [_state* _tid _msg] true)]
         ;; First render succeeds
-        (render/throttled-render-and-send! app-state* session-id tab-id #'hyper.core/*request*)
+        (render/throttled-render-and-send! app-state* session-id tab-id #'context/*request*)
         (is (= 1 @render-count))
 
         ;; Immediate second render is throttled
-        (render/throttled-render-and-send! app-state* session-id tab-id #'hyper.core/*request*)
+        (render/throttled-render-and-send! app-state* session-id tab-id #'context/*request*)
         (is (= 1 @render-count))
 
         ;; After throttle period, render succeeds
         (Thread/sleep 20)
-        (render/throttled-render-and-send! app-state* session-id tab-id #'hyper.core/*request*)
+        (render/throttled-render-and-send! app-state* session-id tab-id #'context/*request*)
         (is (= 2 @render-count)))))
 
   (testing "cleanup removes last-render-ms tracking"
@@ -287,7 +288,7 @@
       (render/register-sse-channel! app-state* tab-id {:mock true} false)
 
       (with-redefs [render/send-sse! mock-send!]
-        (render/setup-watchers! app-state* session-id tab-id #'hy/*request*)
+        (render/setup-watchers! app-state* session-id tab-id #'context/*request*)
 
         ;; Initial render: 3 items → 3 actions
         (swap! app-state* assoc-in [:tabs tab-id :data :item-count] 3)

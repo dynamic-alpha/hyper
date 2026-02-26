@@ -1,5 +1,6 @@
 (ns hyper.core-test
   (:require [clojure.test :refer [deftest is testing]]
+            [hyper.context :as context]
             [hyper.core :as hy]
             [hyper.state :as state]
             [reitit.ring :as ring]))
@@ -11,9 +12,9 @@
 
   (testing "global-cursor creates cursor to global state"
     (let [app-state* (atom (state/init-state))]
-      (binding [hy/*request* {:hyper/session-id "s1"
-                              :hyper/tab-id     "t1"
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id "s1"
+                                   :hyper/tab-id     "t1"
+                                   :hyper/app-state  app-state*}]
         (let [cursor (hy/global-cursor :theme)]
           (reset! cursor "dark")
           (is (= "dark" @cursor))
@@ -21,9 +22,9 @@
 
   (testing "global-cursor with default value"
     (let [app-state* (atom (state/init-state))]
-      (binding [hy/*request* {:hyper/session-id "s1"
-                              :hyper/tab-id     "t1"
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id "s1"
+                                   :hyper/tab-id     "t1"
+                                   :hyper/app-state  app-state*}]
         (let [cursor (hy/global-cursor :counter 0)]
           (is (= 0 @cursor))
           (swap! cursor inc)
@@ -32,14 +33,14 @@
   (testing "global-cursor is shared across different tab contexts"
     (let [app-state* (atom (state/init-state))]
       ;; Write from tab 1
-      (binding [hy/*request* {:hyper/session-id "s1"
-                              :hyper/tab-id     "t1"
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id "s1"
+                                   :hyper/tab-id     "t1"
+                                   :hyper/app-state  app-state*}]
         (reset! (hy/global-cursor :shared 0) 42))
       ;; Read from tab 2 in a different session
-      (binding [hy/*request* {:hyper/session-id "s2"
-                              :hyper/tab-id     "t2"
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id "s2"
+                                   :hyper/tab-id     "t2"
+                                   :hyper/app-state  app-state*}]
         (is (= 42 @(hy/global-cursor :shared 0)))))))
 
 (deftest test-session-cursor
@@ -51,8 +52,8 @@
     (let [app-state* (atom (state/init-state))
           session-id "test-session-1"]
       (state/get-or-create-session! app-state* session-id)
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/app-state  app-state*}]
         (let [cursor (hy/session-cursor :user)]
           (reset! cursor {:name "Alice"})
           (is (= {:name "Alice"} @cursor))
@@ -68,9 +69,9 @@
           session-id "test-session-2"
           tab-id     "test-tab-1"]
       (state/get-or-create-tab! app-state* session-id tab-id)
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/tab-id     tab-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
         (let [cursor (hy/tab-cursor :count)]
           (reset! cursor 42)
           (is (= 42 @cursor))
@@ -86,9 +87,9 @@
           session-id "test-session-3"
           tab-id     "test-tab-2"
           executed   (atom false)]
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/tab-id     tab-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
         (let [action-expr (hy/action (reset! executed true))]
           (is (string? action-expr))
           (is (.contains action-expr "@post"))
@@ -124,7 +125,7 @@
           ctx    (make-test-context routes)]
 
       (testing "without params"
-        (binding [hy/*request* ctx]
+        (binding [context/*request* ctx]
           (let [nav-attrs (hy/navigate :home)]
             (is (map? nav-attrs))
             (is (= "/" (:href nav-attrs)))
@@ -134,20 +135,20 @@
             (is (.contains (str (:data-on:click__prevent nav-attrs)) "pushState")))))
 
       (testing "with path params"
-        (binding [hy/*request* ctx]
+        (binding [context/*request* ctx]
           (let [nav-attrs (hy/navigate :user-profile {:id "123"})]
             (is (= "/users/123" (:href nav-attrs)))
             (is (.contains (str (:data-on:click__prevent nav-attrs)) "pushState"))
             (is (.contains (str (:data-on:click__prevent nav-attrs)) "/users/123")))))
 
       (testing "with query params"
-        (binding [hy/*request* ctx]
+        (binding [context/*request* ctx]
           (let [nav-attrs (hy/navigate :home nil {:q "clojure"})]
             (is (= "/?q=clojure" (:href nav-attrs)))
             (is (.contains (str (:data-on:click__prevent nav-attrs)) "pushState")))))
 
       (testing "returns nil for unknown route"
-        (binding [hy/*request* ctx]
+        (binding [context/*request* ctx]
           (is (nil? (hy/navigate :nonexistent)))))))
 
   (testing "navigate action updates render fn and route state"
@@ -159,7 +160,7 @@
           app-state* (:hyper/app-state ctx)
           tab-id     (:hyper/tab-id ctx)]
 
-      (binding [hy/*request* ctx]
+      (binding [context/*request* ctx]
         (let [nav-attrs (hy/navigate :about)
               action-id (second (re-find #"action-id=([^']+)"
                                          (str (:data-on:click__prevent nav-attrs))))
@@ -202,8 +203,8 @@
     (let [app-state* (atom (state/init-state))
           session-id "test-session-4"]
       (state/get-or-create-session! app-state* session-id)
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/app-state  app-state*}]
         (let [cursor (hy/session-cursor :counter 0)]
           (is (= 0 @cursor))
           (is (= 0 (get-in @app-state* [:sessions session-id :data :counter])))))))
@@ -213,8 +214,8 @@
           session-id "test-session-5"]
       (state/get-or-create-session! app-state* session-id)
       (swap! app-state* assoc-in [:sessions session-id :data :counter] 99)
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/app-state  app-state*}]
         (let [cursor (hy/session-cursor :counter 0)]
           (is (= 99 @cursor))))))
 
@@ -223,9 +224,9 @@
           session-id "test-session-6"
           tab-id     "test-tab-3"]
       (state/get-or-create-tab! app-state* session-id tab-id)
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/tab-id     tab-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
         (let [cursor (hy/tab-cursor :items [])]
           (is (= [] @cursor))
           (is (= [] (get-in @app-state* [:tabs tab-id :data :items])))))))
@@ -236,9 +237,9 @@
           tab-id     "test-tab-4"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (swap! app-state* assoc-in [:tabs tab-id :data :items] [1 2 3])
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/tab-id     tab-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
         (let [cursor (hy/tab-cursor :items [])]
           (is (= [1 2 3] @cursor))))))
 
@@ -247,9 +248,9 @@
           session-id "test-session-8"
           tab-id     "test-tab-5"]
       (state/get-or-create-tab! app-state* session-id tab-id)
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/tab-id     tab-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
         (let [cursor (hy/tab-cursor [:config :theme] "light")]
           (is (= "light" @cursor))
           (is (= "light" (get-in @app-state* [:tabs tab-id :data :config :theme]))))))))
@@ -267,9 +268,9 @@
       ;; Seed route state
       (state/set-tab-route! app-state* tab-id
                             {:name :home :path "/" :path-params {} :query-params {}})
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/tab-id     tab-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
         (let [cursor (hy/path-cursor :count 0)]
           (is (= 0 @cursor))
           ;; Write updates route query params
@@ -285,9 +286,9 @@
       (state/set-tab-route! app-state* tab-id
                             {:name        :search :path         "/search"
                              :path-params {}      :query-params {:q "clojure"}})
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/tab-id     tab-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
         (let [cursor (hy/path-cursor :q "")]
           (is (= "clojure" @cursor))))))
 
@@ -298,9 +299,9 @@
       (state/get-or-create-tab! app-state* session-id tab-id)
       (state/set-tab-route! app-state* tab-id
                             {:name :home :path "/" :path-params {} :query-params {}})
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/tab-id     tab-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
         (let [cursor (hy/path-cursor :count 0)]
           (swap! cursor inc)
           (is (= 1 @cursor))
@@ -313,9 +314,9 @@
           session-id "test-session-cp"
           tab-id     "test-tab-cp"]
       (state/get-or-create-tab! app-state* session-id tab-id)
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/tab-id     tab-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
         (let [action-expr (hy/action (reset! (hy/tab-cursor :query) $value))]
           (is (string? action-expr))
           (is (.contains action-expr "fetch("))
@@ -331,9 +332,9 @@
           session-id "test-session-cp"
           tab-id     "test-tab-cp"]
       (state/get-or-create-tab! app-state* session-id tab-id)
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/tab-id     tab-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
         (let [action-expr (hy/action (reset! (hy/tab-cursor :dark?) $checked))]
           (is (.contains action-expr "checked:evt.target.checked"))
           (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
@@ -346,9 +347,9 @@
           session-id "test-session-cp"
           tab-id     "test-tab-cp"]
       (state/get-or-create-tab! app-state* session-id tab-id)
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/tab-id     tab-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
         (let [action-expr (hy/action (reset! (hy/tab-cursor :last-key) $key))]
           (is (.contains action-expr "key:evt.key"))
           (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
@@ -361,9 +362,9 @@
           session-id "test-session-cp"
           tab-id     "test-tab-cp"]
       (state/get-or-create-tab! app-state* session-id tab-id)
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/tab-id     tab-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
         (let [action-expr (hy/action (reset! (hy/tab-cursor :form) $form-data))]
           (is (.contains action-expr "formData:Object.fromEntries"))
           (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
@@ -377,9 +378,9 @@
           session-id "test-session-cp"
           tab-id     "test-tab-cp"]
       (state/get-or-create-tab! app-state* session-id tab-id)
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/tab-id     tab-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
         (let [action-expr (hy/action (swap! (hy/tab-cursor :count 0) inc))]
           (is (.contains action-expr "@post("))
           (is (not (.contains action-expr "fetch(")))))))
@@ -389,9 +390,9 @@
           session-id "test-session-cp"
           tab-id     "test-tab-cp"]
       (state/get-or-create-tab! app-state* session-id tab-id)
-      (binding [hy/*request* {:hyper/session-id session-id
-                              :hyper/tab-id     tab-id
-                              :hyper/app-state  app-state*}]
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
         (let [action-expr (hy/action (do (reset! (hy/tab-cursor :val) $value)
                                          (reset! (hy/tab-cursor :k) $key)))]
           (is (.contains action-expr "fetch("))
