@@ -242,6 +242,23 @@ You can also read it from `context/*request*` inside actions or anywhere within
 the request context — the value is always consistent with the tab's current
 route.
 
+### Ring response passthrough
+
+If a route handler returns a Ring response map (a map with `:status`) instead of
+hiccup, Hyper passes it through as-is without wrapping it in HTML. This gives
+you an escape hatch for redirects, error responses, or anything else that
+doesn't fit the render-and-stream model:
+
+```clojure
+(defn admin-page [req]
+  (if-not (admin? req)
+    {:status 302 :headers {"Location" "/login"} :body ""}
+    [:div "Secret admin stuff"]))
+```
+
+This works for any status code or response shape — 301/302 redirects, 403
+forbidden, JSON responses, etc.
+
 ## Watches
 
 Under the hood, Hyper maintains a persistent SSE connection per tab. When state

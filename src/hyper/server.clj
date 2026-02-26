@@ -254,29 +254,33 @@
           (push-thread-bindings {request-var            req-with-state
                                  #'context/*action-idx* (atom 0)})
           (try
-            (let [content     (render-fn req-with-state)
-                  route-name  (:name route-info)
-                  route-index (routes/live-route-index app-state*)
-                  title-spec  (routes/find-route-title route-index route-name)
-                  title       (or (routes/resolve-title title-spec req-with-state) "Hyper App")
-                  extra-head  (some-> (routes/resolve-head head req-with-state)
-                                      render/mark-head-elements)
-                  html        (c/html
-                                [c/doctype-html5
-                                 [:html
-                                  [:head
-                                   [:meta {:charset "UTF-8"}]
-                                   [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
-                                   [:title title]
-                                   (datastar-script)
-                                   extra-head]
-                                  [:body
-                                   {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
-                                   [:div {:id "hyper-app"} content]
-                                   (hyper-scripts tab-id)]]])]
-              {:status  200
-               :headers {"Content-Type" "text/html; charset=utf-8"}
-               :body    html})
+            (let [content (render-fn req-with-state)]
+              ;; If the render fn returns a Ring response map (e.g. a 302
+              ;; redirect), pass it through without wrapping in HTML.
+              (if (and (map? content) (:status content))
+                content
+                (let [route-name  (:name route-info)
+                      route-index (routes/live-route-index app-state*)
+                      title-spec  (routes/find-route-title route-index route-name)
+                      title       (or (routes/resolve-title title-spec req-with-state) "Hyper App")
+                      extra-head  (some-> (routes/resolve-head head req-with-state)
+                                          render/mark-head-elements)
+                      html        (c/html
+                                    [c/doctype-html5
+                                     [:html
+                                      [:head
+                                       [:meta {:charset "UTF-8"}]
+                                       [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
+                                       [:title title]
+                                       (datastar-script)
+                                       extra-head]
+                                      [:body
+                                       {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
+                                       [:div {:id "hyper-app"} content]
+                                       (hyper-scripts tab-id)]]])]
+                  {:status  200
+                   :headers {"Content-Type" "text/html; charset=utf-8"}
+                   :body    html})))
             (finally
               (pop-thread-bindings))))))))
 

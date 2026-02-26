@@ -186,6 +186,53 @@
       (is (= 200 (:status response)))
       (is (= "static-ok\n" (slurp (:body response)))))))
 
+(deftest test-ring-response-passthrough
+  (testing "render fn returning a Ring response map is passed through as-is"
+    (let [app-state*  (atom (state/init-state))
+          routes      [["/" {:name :home
+                             :get  (fn [_req]
+                                     {:status  302
+                                      :headers {"Location" "/login"}
+                                      :body    ""})}]]
+          request-var #'context/*request*
+          executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          handler     (server/create-handler routes app-state* executor request-var)
+          response    (handler {:uri "/" :request-method :get})]
+      (is (= 302 (:status response)))
+      (is (= "/login" (get-in response [:headers "Location"])))
+      (is (= "" (:body response)))))
+
+  (testing "render fn returning hiccup still wraps in HTML"
+    (let [app-state*  (atom (state/init-state))
+          routes      [["/" {:name :home
+                             :get  (fn [_req] [:div "Normal page"])}]]
+          request-var #'context/*request*
+          executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          handler     (server/create-handler routes app-state* executor request-var)
+          response    (handler {:uri "/" :request-method :get})]
+      (is (= 200 (:status response)))
+      (is (.contains (:body response) "Normal page"))
+      (is (.contains (:body response) "<!DOCTYPE html"))))
+
+  (testing "render fn can conditionally redirect or render"
+    (let [app-state*  (atom (state/init-state))
+          routes      [["/" {:name :home
+                             :get  (fn [req]
+                                     (if (get-in req [:query-params "auth"])
+                                       [:div "Welcome"]
+                                       {:status  302
+                                        :headers {"Location" "/login"}
+                                        :body    ""}))}]]
+          request-var #'context/*request*
+          executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          handler     (server/create-handler routes app-state* executor request-var)
+          authed      (handler {:uri "/" :request-method :get :query-params {"auth" "true"}})
+          unauthed    (handler {:uri "/" :request-method :get :query-params {}})]
+      (is (= 200 (:status authed)))
+      (is (.contains (:body authed) "Welcome"))
+      (is (= 302 (:status unauthed)))
+      (is (= "/login" (get-in unauthed [:headers "Location"]))))))
+
 (deftest test-create-handler-with-global-watches
   (testing "Global :watches are stored in app-state"
     (let [app-state*  (atom (state/init-state))
