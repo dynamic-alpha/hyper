@@ -40,6 +40,47 @@
          (counter-widget "Tab" tab*)
          (counter-widget "URL" url*)]))))
 
+(defn forms-get [_]
+  (let [text*    (h/tab-cursor :text "")
+        checked* (h/tab-cursor :dark-mode false)
+        key*     (h/tab-cursor :last-key "")
+        select*  (h/tab-cursor :color "red")
+        form*    (h/tab-cursor :form-data nil)]
+    [:div
+     [:h1 "Test Forms"]
+
+     [:div#text-demo
+      [:input#text-input {:type "text"
+                          :value @text*
+                          :data-on:input (h/action (reset! (h/tab-cursor :text) $value))}]
+      [:span#text-result (if (seq @text*) @text* "empty")]]
+
+     [:div#select-demo
+      [:select#color-select {:data-on:change (h/action (reset! (h/tab-cursor :color) $value))}
+       (for [c ["red" "green" "blue"]]
+         [:option {:value c :selected (= c @select*)} c])]
+      [:span#select-result @select*]]
+
+     [:div#checkbox-demo
+      [:input#dark-checkbox {:type "checkbox"
+                             :checked @checked*
+                             :data-on:change (h/action (reset! (h/tab-cursor :dark-mode) $checked))}]
+      [:span#checkbox-result (if @checked* "ON" "OFF")]]
+
+     [:div#key-demo
+      [:input#key-input {:type "text"
+                         :data-on:keydown (h/action (reset! (h/tab-cursor :last-key) $key))}]
+      [:span#key-result (if (seq @key*) @key* "none")]]
+
+     [:div#form-demo
+      [:form#test-form {:data-on:submit__prevent
+                        (h/action (reset! (h/tab-cursor :form-data) $form-data))}
+       [:input {:name "name" :id "form-name"}]
+       [:input {:name "email" :id "form-email"}]
+       [:button#form-submit {:type "submit"} "Submit"]]
+      (when @form*
+        [:pre#form-result (pr-str @form*)])]]))
+
 (defn default-routes []
   [["/" {:name  :home
          :title "Home"
@@ -51,7 +92,11 @@
     {:name  :counters
      :title (fn [_]
               (str "Counter: " @(h/session-cursor :count 0)))
-     :get   (default-counters-get)}]])
+     :get   (default-counters-get)}]
+   ["/forms"
+    {:name  :forms
+     :title "Forms"
+     :get   #'forms-get}]])
 
 (def ^:dynamic *test-routes* (default-routes))
 
@@ -343,6 +388,86 @@
         (w/with-page s1-tab1
           (click-counter-button "Tab" ".dec")
           (wait-for-text "#counter-Tab h2" "Tab: 2")))
+
+      (finally
+        (close-browser! browser-info)))))
+
+;; ---------------------------------------------------------------------------
+;; Test 4: Forms & Inputs — client params ($value, $checked, $key, $form-data)
+;; ---------------------------------------------------------------------------
+
+(deftest ^:e2e forms-test
+  (let [browser-info (launch-browser)
+        ctx          (new-context browser-info)
+        page         (new-page ctx)]
+    (try
+      (w/with-page page
+        (w/navigate (str base-url "/forms"))
+        (wait-for-sse)
+
+        (testing "Initial state"
+          (is (= "Test Forms" (w/text-content "h1")))
+          (is (= "empty" (w/text-content "#text-result")))
+          (is (= "red" (w/text-content "#select-result")))
+          (is (= "OFF" (w/text-content "#checkbox-result")))
+          (is (= "none" (w/text-content "#key-result"))))
+
+        ;; ----------------------------------------------------------------
+        ;; $value — text input
+        ;; ----------------------------------------------------------------
+        (testing "$value text input sends keystrokes to server"
+          (w/fill "#text-input" "hello")
+          (wait-for-text "#text-result" "hello"))
+
+        ;; ----------------------------------------------------------------
+        ;; $value — select
+        ;; ----------------------------------------------------------------
+        (testing "$value select sends selected option to server"
+          ;; Wait for any in-flight SSE morph from the previous test to
+          ;; settle — a morph race (Playwright resolves the element, then
+          ;; SSE replaces it before the event fires) can silently drop the
+          ;; change event.
+          (Thread/sleep 500)
+          (w/select "#color-select" "blue")
+          (wait-for-text "#select-result" "blue"))
+
+        ;; ----------------------------------------------------------------
+        ;; $checked — checkbox
+        ;; ----------------------------------------------------------------
+        (testing "$checked sends boolean to server"
+          (is (= "OFF" (w/text-content "#checkbox-result")))
+          (w/click "#dark-checkbox")
+          (wait-for-text "#checkbox-result" "ON")
+          ;; Toggle back
+          (w/click "#dark-checkbox")
+          (wait-for-text "#checkbox-result" "OFF"))
+
+        ;; ----------------------------------------------------------------
+        ;; $key — keyboard events
+        ;; ----------------------------------------------------------------
+        (testing "$key captures key name"
+          (w/click "#key-input")
+          (w/keyboard-press "ArrowUp")
+          (wait-for-text "#key-result" "ArrowUp")
+          ;; Re-focus: the SSE re-render morphs the DOM and the input
+          ;; may lose focus, so click it again before the next keypress.
+          (w/click "#key-input")
+          (w/keyboard-press "Escape")
+          (wait-for-text "#key-result" "Escape"))
+
+        ;; ----------------------------------------------------------------
+        ;; $form-data — form submission
+        ;; ----------------------------------------------------------------
+        (testing "$form-data sends all named fields as a map"
+          (w/fill "#form-name" "Alice")
+          (w/fill "#form-email" "alice@example.com")
+          (w/click "#form-submit")
+          (w/wait-for "#form-result" {:state :visible :timeout 5000})
+          (let [result (w/text-content "#form-result")]
+            (is (.contains result ":name"))
+            (is (.contains result "Alice"))
+            (is (.contains result ":email"))
+            (is (.contains result "alice@example.com")))))
 
       (finally
         (close-browser! browser-info)))))
