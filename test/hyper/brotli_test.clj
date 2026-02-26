@@ -123,6 +123,29 @@
       (br/close-stream br-stream))))
 
 ;; ---------------------------------------------------------------------------
+;; Accept-Encoding detection
+;; ---------------------------------------------------------------------------
+
+(deftest test-accepts-br?
+  (testing "returns true when accept-encoding includes br"
+    (is (true? (br/accepts-br? {:headers {"accept-encoding" "gzip, deflate, br"}}))))
+
+  (testing "returns true for br-only"
+    (is (true? (br/accepts-br? {:headers {"accept-encoding" "br"}}))))
+
+  (testing "returns false when br is absent"
+    (is (false? (br/accepts-br? {:headers {"accept-encoding" "gzip, deflate"}}))))
+
+  (testing "returns falsy when no accept-encoding header"
+    (is (not (br/accepts-br? {:headers {}}))))
+
+  (testing "returns falsy for nil headers"
+    (is (not (br/accepts-br? {:headers nil}))))
+
+  (testing "returns falsy for nil request"
+    (is (not (br/accepts-br? nil)))))
+
+;; ---------------------------------------------------------------------------
 ;; Ring middleware
 ;; ---------------------------------------------------------------------------
 
