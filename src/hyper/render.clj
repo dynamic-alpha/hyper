@@ -209,7 +209,8 @@
           req         (cond-> {:hyper/session-id session-id
                                :hyper/tab-id     tab-id
                                :hyper/app-state  app-state*}
-                        router (assoc :hyper/router router))]
+                        router (assoc :hyper/router router)
+                        route  (assoc :hyper/route route))]
       ;; Clean slate — remove all actions for this tab before re-rendering
       ;; so that structurally dynamic renders (shrinking lists, conditional
       ;; branches) don't leave stale action closures behind.

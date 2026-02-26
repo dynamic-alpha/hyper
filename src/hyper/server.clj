@@ -249,7 +249,7 @@
         (let [req-with-state (-> req
                                  (assoc :hyper/app-state app-state*
                                         :hyper/router (get @app-state* :router)
-                                        :hyper/route-match (:reitit.core/match req))
+                                        :hyper/route  route-info)
                                  (dissoc :reitit.core/match))]
           (push-thread-bindings {request-var            req-with-state
                                  #'context/*action-idx* (atom 0)})

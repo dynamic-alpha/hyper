@@ -183,7 +183,7 @@ plain vectors with `:name`, `:get`, and optional metadata like `:title`:
                    :title "About"
                    :get #'about-page}]
    ["/user/:id"   {:name :user
-                   :title (fn [req] (str "User " (get-in req [:hyper/route-match :path-params :id])))
+                   :title (fn [req] (str "User " (get-in req [:hyper/route :path-params :id])))
                    :get #'user-page}]])
 ```
 
@@ -204,6 +204,43 @@ functions of the request, or deref-able values like cursors.
 Pass routes as a Var (`#'routes`) to `create-handler` for live-reloading during
 development — route changes are picked up on the next request without restarting
 the server and any connected tabs will automatically re-render.
+
+### `:hyper/route`
+
+Every request passed to your render function includes `:hyper/route` — a map
+with the current route's name, path, and parameters:
+
+```clojure
+{:name         :user
+ :path         "/user/42"
+ :path-params  {:id "42"}
+ :query-params {:tab "posts"}}
+```
+
+This works identically on the initial page load and on every SSE re-render after
+SPA navigation, so it's safe to use anywhere — including shared components like
+navbars and breadcrumbs:
+
+```clojure
+(defn navbar [req]
+  (let [current (get-in req [:hyper/route :name])]
+    [:nav
+     [:a (merge (h/navigate :home)
+                (when (= :home current) {:class "active"}))
+      "Home"]
+     [:a (merge (h/navigate :about)
+                (when (= :about current) {:class "active"}))
+      "About"]]))
+
+(defn home-page [req]
+  [:div
+   (navbar req)
+   [:h1 "Home"]])
+```
+
+You can also read it from `context/*request*` inside actions or anywhere within
+the request context — the value is always consistent with the tab's current
+route.
 
 ## Watches
 
