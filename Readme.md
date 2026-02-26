@@ -43,8 +43,17 @@ Each cursor type scopes state differently:
 (h/path-cursor :page 1)               ;; backed by URL query params
 ```
 
-`path` can be a keyword or a vector for nested access: `(h/tab-cursor [:form :email])`.
-The optional second argument sets a default value when the path is nil.
+The first argument is a key — either a keyword for flat access, or a vector for
+nested access. `global-cursor`, `session-cursor`, and `tab-cursor` all support
+this:
+
+```clojure
+(h/tab-cursor :count 0)               ;; flat — state[:count]
+(h/tab-cursor [:form :email] "")       ;; nested — state[:form][:email]
+(h/session-cursor [:user :name])       ;; nested — session[:user][:name]
+```
+
+The optional second argument sets a default value when the key is nil.
 
 | Cursor | Shared across tabs? | Shared across sessions? | Survives page reload? |
 |---|---|---|---|
