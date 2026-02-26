@@ -330,6 +330,7 @@
     (some? head) head
     :else        nil))
 
+
 (defn page-handler
   "Wrap a page render function to provide full HTML response.
    Resolves :title from route metadata — supports static strings, functions,
@@ -361,7 +362,8 @@
                   routes     (live-routes app-state*)
                   title-spec (find-route-title routes route-name)
                   title      (or (resolve-title title-spec req-with-state) "Hyper App")
-                  extra-head (resolve-head head req-with-state)
+                  extra-head (some-> (resolve-head head req-with-state)
+                                     render/mark-head-elements)
                   html       (c/html
                                [c/doctype-html5
                                 [:html

@@ -104,7 +104,9 @@
           response    (handler {:uri "/" :request-method :get})]
       (is (= 200 (:status response)))
       (is (.contains (:body response) "rel=\"stylesheet\""))
-      (is (.contains (:body response) "href=\"/app.css\""))))
+      (is (.contains (:body response) "href=\"/app.css\""))
+      (is (.contains (:body response) "data-hyper-head")
+          "Head elements are marked for SSE management")))
 
   (testing "Allows :head to be a function"
     (let [app-state*  (atom (state/init-state))
@@ -118,7 +120,9 @@
           response    (handler {:uri "/" :request-method :get})]
       (is (= 200 (:status response)))
       (is (.contains (:body response) "name=\"test\""))
-      (is (.contains (:body response) "content=\"ok\""))))
+      (is (.contains (:body response) "content=\"ok\""))
+      (is (.contains (:body response) "data-hyper-head")
+          "Head elements are marked for SSE management")))
 
   (testing "Serves static assets from :static-dir"
     (let [tmp-path    (java.nio.file.Files/createTempDirectory

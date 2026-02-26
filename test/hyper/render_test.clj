@@ -224,6 +224,47 @@
       (render/cleanup-tab! app-state* tab-id)
       (is (nil? (get-in @app-state* [:tabs tab-id]))))))
 
+(deftest test-mark-head-elements
+  (testing "Single element gets marked"
+    (is (= [:style {:data-hyper-head true} "body{}"]
+           (render/mark-head-elements [:style "body{}"]))))
+
+  (testing "Single element with existing attrs gets marked"
+    (is (= [:link {:rel "stylesheet" :href "/a.css" :data-hyper-head true}]
+           (render/mark-head-elements [:link {:rel "stylesheet" :href "/a.css"}]))))
+
+  (testing "Sequence of elements all get marked"
+    (is (= [[:style {:data-hyper-head true} "body{}"]
+            [:link {:rel "stylesheet" :href "/b.css" :data-hyper-head true}]]
+           (render/mark-head-elements
+             [[:style "body{}"]
+              [:link {:rel "stylesheet" :href "/b.css"}]]))))
+
+  (testing "nil returns nil"
+    (is (nil? (render/mark-head-elements nil)))))
+
+(deftest test-head-update-format
+  (testing "Head update sends a self-removing script event"
+    (let [event (render/format-head-update "My Page" "<style data-hyper-head>body{}</style>")]
+      ;; Should be a patch-elements event
+      (is (.startsWith event "event: datastar-patch-elements\n"))
+      ;; Should append to body
+      (is (.contains event "data: mode append\n"))
+      (is (.contains event "data: selector body\n"))
+      ;; Should contain a self-removing script tag
+      (is (.contains event "data: elements <script data-effect=\"el.remove()\">"))
+      ;; Should set document.title
+      (is (.contains event "document.title='My Page'"))
+      ;; Should include head element swap logic
+      (is (.contains event "[data-hyper-head]"))
+      ;; Should end with double newline
+      (is (.endsWith event "\n\n"))))
+  (testing "Head update without extra head content only sets title"
+    (let [event (render/format-head-update "Title Only" nil)]
+      (is (.contains event "document.title='Title Only'"))
+      ;; Should NOT contain head element removal/insertion JS
+      (is (not (.contains event "[data-hyper-head]"))))))
+
 (deftest test-actions-cleaned-between-renders
   (testing "Stale actions from a previous render are cleaned up when the next render produces fewer"
     (let [app-state*    (atom (assoc (state/init-state)

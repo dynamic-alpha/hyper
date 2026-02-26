@@ -64,17 +64,68 @@
   (str "event: datastar-patch-elements\n"
        "data: elements " html "\n\n"))
 
-(defn format-datastar-head-fragment
-  "Format HTML as a Datastar patch-elements SSE event targeting <head>.
+(defn mark-head-elements
+  "Add `{:data-hyper-head true}` to each top-level hiccup element in a
+   resolved :head value.  The marker lets the SSE head-update JS identify
+   which <head> children are framework-managed (vs. static meta/title/script
+   from the initial page load) so it can remove-then-append on each cycle.
 
-   Uses `selector head` and `mode inner` so the entire inner content of the
-   <head> element is replaced — this is how we push dynamic <title>, meta tags,
-   stylesheets, etc. without a full page reload."
-  [html]
-  (str "event: datastar-patch-elements\n"
-       "data: selector head\n"
-       "data: mode inner\n"
-       "data: elements " html "\n\n"))
+   Handles:
+   - a single vector element  `[:style ...]`
+   - a seq/list of elements   `([:link ...] [:style ...])`
+   - a vector of elements     `[[:link ...] [:style ...]]`"
+  [head-hiccup]
+  (when head-hiccup
+    (letfn [(mark-one [el]
+              (if (and (vector? el) (keyword? (first el)))
+                (let [[tag & rest] el
+                      [attrs & children] (if (map? (first rest))
+                                           rest
+                                           (cons {} rest))]
+                  (into [tag (assoc attrs :data-hyper-head true)] children))
+                el))]
+      (cond
+        ;; Single element like [:style "..."]
+        (and (vector? head-hiccup) (keyword? (first head-hiccup)))
+        (mark-one head-hiccup)
+
+        ;; Sequence of elements
+        (sequential? head-hiccup)
+        (mapv mark-one head-hiccup)
+
+        :else head-hiccup))))
+
+(defn format-head-update
+  "Build a self-removing <script> SSE event that imperatively updates
+   the document title and swaps user-provided <head> elements.
+
+   Why not morph?  Morphing <head> inner content via idiomorph can
+   disconnect <style>/<link> elements from the browser's CSSOM — the
+   nodes stay in the DOM but styles stop applying.  By using JS to
+   remove-then-append we guarantee the browser re-evaluates them.
+
+   User-managed head elements are tagged with `data-hyper-head` on the
+   initial page load.  On each SSE cycle we remove all `[data-hyper-head]`
+   nodes and insert the freshly-rendered set, supporting dynamic fns,
+   cache-busted asset URLs, etc.
+
+   The script tag uses Datastar's `mode append` + `selector body` pattern
+   (the SDK's ExecuteScript convention) with `data-effect=\"el.remove()\"`
+   so it auto-cleans after execution."
+  [title extra-head-html]
+  (let [escape-fn (requiring-resolve 'hyper.server/escape-js-string)
+        js        (str "(function(){"
+                       "document.title='" (escape-fn (or title "Hyper App")) "';"
+                       (when (seq extra-head-html)
+                         (str "document.querySelectorAll('[data-hyper-head]').forEach(function(el){el.remove()});"
+                              "var f=document.createRange().createContextualFragment('"
+                              (escape-fn extra-head-html) "');"
+                              "document.head.appendChild(f);"))
+                       "})();")]
+    (str "event: datastar-patch-elements\n"
+         "data: mode append\n"
+         "data: selector body\n"
+         "data: elements <script data-effect=\"el.remove()\">" js "</script>\n\n")))
 
 (defn send-sse!
   "Send an SSE message to a tab's channel.
@@ -145,8 +196,8 @@
                                               (find-render-fn current-routes route-name))]
                                (if fresh-fn
                                  (do
-                                 ;; Update stored render-fn so navigate/actions
-                                 ;; also use the latest
+                                   ;; Update stored render-fn so navigate/actions
+                                   ;; also use the latest
                                    (when (not= fresh-fn stored-render-fn)
                                      (register-render-fn! app-state* tab-id fresh-fn))
                                    fresh-fn)
@@ -174,26 +225,23 @@
               title-spec          (when (and current-routes route)
                                     (find-route-title-fn current-routes (:name route)))
               title               (resolve-title-fn title-spec req)
-              ;; Resolve head content
+              ;; Resolve head content — only user-provided :head, not the
+              ;; static meta/viewport/datastar-script (those stay from
+              ;; the initial page load and never need updating).
               resolve-head-fn     (requiring-resolve 'hyper.server/resolve-head)
-              datastar-script-fn  (requiring-resolve 'hyper.server/datastar-script)
               head                (get @app-state* :head)
-              extra-head          (resolve-head-fn head req)
-              head-html           (c/html
-                                    [:<>
-                                     [:meta {:charset "UTF-8"}]
-                                     [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
-                                     [:title (or title "Hyper App")]
-                                     (datastar-script-fn)
-                                     extra-head])
-              head-fragment       (format-datastar-head-fragment head-html)
+              extra-head          (some-> (resolve-head-fn head req)
+                                          mark-head-elements)
+              extra-head-html     (when extra-head
+                                    (c/html extra-head))
+              head-event          (format-head-update title extra-head-html)
               ;; Body fragment
               div-attrs           (cond-> {:id "hyper-app"}
                                     current-url (assoc :data-hyper-url current-url))
               html                (c/html [:div div-attrs hiccup-result])
               body-fragment       (format-datastar-fragment html)]
-          ;; Send head first (title update), then body
-          (send-sse! app-state* tab-id (str head-fragment body-fragment)))
+          ;; Send head update (title + managed elements), then body
+          (send-sse! app-state* tab-id (str head-event body-fragment)))
         (finally
           (pop-thread-bindings))))))
 
