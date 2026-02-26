@@ -21,19 +21,22 @@
    action-id))
 
 (defn execute-action!
-  "Execute an action by ID with error handling."
-  [app-state* action-id]
-  (if-let [action-data (get-in @app-state* [:actions action-id])]
-    (let [{:keys [fn]} action-data]
-      (t/catch->error! :hyper.error/execute-action
-                       (fn))
-      true)
-    (do
-      (t/log! {:level :warn
-               :id    :hyper.error/action-not-found
-               :data  {:hyper/action-id action-id}
-               :msg   "Action not found"})
-      (throw (ex-info "Action not found" {:hyper/action-id action-id})))))
+  "Execute an action by ID with error handling.
+   When client-params are provided they are passed to the action fn."
+  ([app-state* action-id]
+   (execute-action! app-state* action-id nil))
+  ([app-state* action-id client-params]
+   (if-let [action-data (get-in @app-state* [:actions action-id])]
+     (let [{:keys [fn]} action-data]
+       (t/catch->error! :hyper.error/execute-action
+                        (fn client-params))
+       true)
+     (do
+       (t/log! {:level :warn
+                :id    :hyper.error/action-not-found
+                :data  {:hyper/action-id action-id}
+                :msg   "Action not found"})
+       (throw (ex-info "Action not found" {:hyper/action-id action-id}))))))
 
 (defn cleanup-tab-actions!
   "Remove all actions for a tab."

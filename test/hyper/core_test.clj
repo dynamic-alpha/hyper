@@ -98,7 +98,7 @@
           ;; Extract action ID and execute it
           (let [action-id (second (re-find #"action-id=([^']+)" action-expr))]
             (is (some? action-id))
-            ((get-in @app-state* [:actions action-id :fn]))
+            ((get-in @app-state* [:actions action-id :fn]) nil)
             (is @executed)))))))
 
 (defn- make-test-context
@@ -165,7 +165,7 @@
           (let [action-id (second (re-find #"action-id=([^']+)"
                                            (str (:data-on:click__prevent nav-attrs))))]
             (is (some? action-id))
-            ((get-in @app-state* [:actions action-id :fn]))
+            ((get-in @app-state* [:actions action-id :fn]) nil)
             ;; Route state should be updated
             (let [route (state/get-tab-route app-state* tab-id)]
               (is (= :about (:name route)))
@@ -307,3 +307,94 @@
           (is (= 1 @cursor))
           (swap! cursor + 10)
           (is (= 11 @cursor)))))))
+
+(deftest test-action-with-client-params
+  (testing "$value client param generates fetch expression"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-cp"
+          tab-id     "test-tab-cp"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (binding [hy/*request* {:hyper/session-id session-id
+                              :hyper/tab-id     tab-id
+                              :hyper/app-state  app-state*}]
+        (let [action-expr (hy/action (reset! (hy/tab-cursor :query) $value))]
+          (is (string? action-expr))
+          (is (.contains action-expr "fetch("))
+          (is (.contains action-expr "value:evt.target.value"))
+          (is (not (.contains action-expr "@post")))
+          (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
+            (is (some? action-id))
+            ((get-in @app-state* [:actions action-id :fn]) {:value "hello"})
+            (is (= "hello" (get-in @app-state* [:tabs tab-id :data :query]))))))))
+
+  (testing "$checked client param generates fetch expression"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-cp"
+          tab-id     "test-tab-cp"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (binding [hy/*request* {:hyper/session-id session-id
+                              :hyper/tab-id     tab-id
+                              :hyper/app-state  app-state*}]
+        (let [action-expr (hy/action (reset! (hy/tab-cursor :dark?) $checked))]
+          (is (.contains action-expr "checked:evt.target.checked"))
+          (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
+            (is (some? action-id))
+            ((get-in @app-state* [:actions action-id :fn]) {:checked true})
+            (is (= true (get-in @app-state* [:tabs tab-id :data :dark?]))))))))
+
+  (testing "$key client param generates fetch expression"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-cp"
+          tab-id     "test-tab-cp"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (binding [hy/*request* {:hyper/session-id session-id
+                              :hyper/tab-id     tab-id
+                              :hyper/app-state  app-state*}]
+        (let [action-expr (hy/action (reset! (hy/tab-cursor :last-key) $key))]
+          (is (.contains action-expr "key:evt.key"))
+          (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
+            (is (some? action-id))
+            ((get-in @app-state* [:actions action-id :fn]) {:key "Enter"})
+            (is (= "Enter" (get-in @app-state* [:tabs tab-id :data :last-key]))))))))
+
+  (testing "$form-data client param generates fetch expression"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-cp"
+          tab-id     "test-tab-cp"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (binding [hy/*request* {:hyper/session-id session-id
+                              :hyper/tab-id     tab-id
+                              :hyper/app-state  app-state*}]
+        (let [action-expr (hy/action (reset! (hy/tab-cursor :form) $form-data))]
+          (is (.contains action-expr "formData:Object.fromEntries"))
+          (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
+            (is (some? action-id))
+            ((get-in @app-state* [:actions action-id :fn]) {:formData {:email "a@b.com" :name "Alice"}})
+            (is (= {:email "a@b.com" :name "Alice"}
+                   (get-in @app-state* [:tabs tab-id :data :form]))))))))
+
+  (testing "no client params uses @post expression"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-cp"
+          tab-id     "test-tab-cp"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (binding [hy/*request* {:hyper/session-id session-id
+                              :hyper/tab-id     tab-id
+                              :hyper/app-state  app-state*}]
+        (let [action-expr (hy/action (swap! (hy/tab-cursor :count 0) inc))]
+          (is (.contains action-expr "@post("))
+          (is (not (.contains action-expr "fetch(")))))))
+
+  (testing "multiple client params in single action"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-cp"
+          tab-id     "test-tab-cp"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (binding [hy/*request* {:hyper/session-id session-id
+                              :hyper/tab-id     tab-id
+                              :hyper/app-state  app-state*}]
+        (let [action-expr (hy/action (do (reset! (hy/tab-cursor :val) $value)
+                                         (reset! (hy/tab-cursor :k) $key)))]
+          (is (.contains action-expr "fetch("))
+          (is (.contains action-expr "value:evt.target.value"))
+          (is (.contains action-expr "key:evt.key")))))))

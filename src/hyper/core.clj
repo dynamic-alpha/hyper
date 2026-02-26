@@ -134,6 +134,44 @@
         request-var                            (get @app-state* :request-var)]
     (render/watch-source! app-state* session-id tab-id request-var source)))
 
+;; ---------------------------------------------------------------------------
+;; Client param support for actions
+;; ---------------------------------------------------------------------------
+
+(def ^:private client-param-registry
+  "Maps special $ symbols to their JavaScript extraction expression and
+   JSON key name. When these symbols appear in an action body, the macro
+   generates a fetch() call that sends the values as a JSON POST body."
+  {'$value     {:js "evt.target.value"     :key "value"}
+   '$checked   {:js "evt.target.checked"   :key "checked"}
+   '$key       {:js "evt.key"              :key "key"}
+   '$form-data {:js "Object.fromEntries(new FormData(evt.target.closest('form')))"
+                :key "formData"}})
+
+(defn- find-client-params
+  "Walk the action body forms and return the subset of client-param-registry
+   entries whose symbols appear in the body."
+  [body]
+  (let [all-syms (set (filter symbol? (tree-seq coll? seq body)))]
+    (into {} (filter (fn [[sym _]] (all-syms sym))) client-param-registry)))
+
+(defn build-action-expr
+  "Build the Datastar/JS expression string for an action.
+   When no client params are needed, returns a simple @post expression.
+   When client params are present, returns a fetch() call that sends
+   the extracted DOM values as a JSON POST body."
+  [action-id used-params]
+  (if (empty? used-params)
+    (str "@post('/hyper/actions?action-id=" action-id "')")
+    (let [json-entries (->> used-params
+                            vals
+                            (map (fn [{:keys [js key]}]
+                                   (str key ":" js)))
+                            (clojure.string/join ","))]
+      (str "fetch('/hyper/actions?action-id=" action-id
+           "',{method:'POST',headers:{'Content-Type':'application/json'}"
+           ",body:JSON.stringify({" json-entries "})})"))))
+
 (defmacro action
   "Create a server action expression for use in Datastar event attributes.
    Returns a Datastar expression string that can be bound to any event.
@@ -143,34 +181,59 @@
    (derived from a per-render counter + tab-id) so that re-renders
    produce identical HTML, enabling effective brotli streaming compression.
 
+   Supports client-side special forms that transmit DOM values to the server:
+   - $value     — the value of the input/select/textarea that fired the event
+   - $checked   — the checked state of a checkbox/radio (boolean)
+   - $key       — the key name for keyboard events (e.g. \"Enter\", \"Escape\")
+   - $form-data — all named fields in the enclosing form as a map
+
    Example:
      [:button {:data-on:click (action (swap! (tab-cursor :count) inc))}
       \"Increment\"]
 
-     ;; Works with any event
-     [:div {:data-on:mousedown (action (swap! (tab-cursor :dragging) not))}]"
-  [& body]
-  `(let [session-id# (get *request* :hyper/session-id)
-         tab-id#     (get *request* :hyper/tab-id)
-         app-state*# (get *request* :hyper/app-state)
-         router#     (get *request* :hyper/router)]
-     (when-not session-id#
-       (throw (ex-info "action macro called outside request context" {})))
-     (when-not tab-id#
-       (throw (ex-info "No tab-id in request context" {})))
-     (when-not app-state*#
-       (throw (ex-info "No app-state in request context" {})))
+     ;; Capture input value
+     [:input {:data-on:change (action (reset! (tab-cursor :query) $value))}]
 
-     (let [action-fn# (fn []
-                        (binding [*request* {:hyper/session-id session-id#
-                                             :hyper/tab-id     tab-id#
-                                             :hyper/app-state  app-state*#
-                                             :hyper/router     router#}]
-                          ~@body))
-           idx#       (if *action-idx* (swap! *action-idx* inc) (hash action-fn#))
-           action-id# (str "a-" tab-id# "-" idx#)
-           _#         (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#)]
-       (str "@post('/hyper/actions?action-id=" action-id# "')"))))
+     ;; Keyboard shortcut
+     [:input {:data-on:keydown (action (when (= $key \"Enter\") (search!)))}]
+
+     ;; Checkbox
+     [:input {:type \"checkbox\"
+              :data-on:change (action (reset! (tab-cursor :dark?) $checked))}]
+
+     ;; Form submission
+     [:form {:data-on:submit__prevent (action (save-user! $form-data))}
+      [:input {:name \"email\"}]
+      [:button \"Save\"]]"
+  [& body]
+  (let [used-params    (find-client-params body)
+        param-syms     (keys used-params)
+        cp-sym         (gensym "client-params")]
+    `(let [session-id# (get *request* :hyper/session-id)
+           tab-id#     (get *request* :hyper/tab-id)
+           app-state*# (get *request* :hyper/app-state)
+           router#     (get *request* :hyper/router)]
+       (when-not session-id#
+         (throw (ex-info "action macro called outside request context" {})))
+       (when-not tab-id#
+         (throw (ex-info "No tab-id in request context" {})))
+       (when-not app-state*#
+         (throw (ex-info "No app-state in request context" {})))
+
+       (let [action-fn# (fn [~cp-sym]
+                          (let [~@(mapcat (fn [sym]
+                                           (let [k (keyword (:key (get client-param-registry sym)))]
+                                             [sym (list `get cp-sym k)]))
+                                         param-syms)]
+                            (binding [*request* {:hyper/session-id session-id#
+                                                 :hyper/tab-id     tab-id#
+                                                 :hyper/app-state  app-state*#
+                                                 :hyper/router     router#}]
+                              ~@body)))
+             idx#       (if *action-idx* (swap! *action-idx* inc) (hash action-fn#))
+             action-id# (str "a-" tab-id# "-" idx#)
+             _#         (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#)]
+         (build-action-expr action-id# '~used-params)))))
 
 (defn navigate
   "Create a navigation link using reitit named routes.
@@ -211,7 +274,7 @@
              title-spec    (server/find-route-title routes route-name)
              title         (server/resolve-title title-spec *request*)
              ;; Register an action that performs the navigation server-side
-             nav-fn        (fn []
+             nav-fn        (fn [_client-params]
                              (let [routes    (server/live-routes app-state*)
                                    render-fn (server/find-render-fn routes route-name)]
                                (when render-fn

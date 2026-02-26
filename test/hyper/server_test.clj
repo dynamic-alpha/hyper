@@ -266,7 +266,7 @@
         (render/register-sse-channel! app-state* tab-id {:mock true} false)
         (render/setup-watchers! app-state* session-id tab-id request-var)
         (actions/register-action! app-state* session-id tab-id
-                                  #(println "action") (str "a-" tab-id "-0")))
+                                  (fn [_] (println "action")) (str "a-" tab-id "-0")))
 
       ;; Verify resources exist
       (is (= 2 (count (:tabs @app-state*))))

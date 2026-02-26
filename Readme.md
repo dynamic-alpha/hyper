@@ -98,6 +98,41 @@ when the tab disconnects. The body can contain arbitrary Clojure — call
 functions, hit databases, update multiple cursors — whatever happens, the
 resulting state changes trigger re-renders for the appropriate tabs.
 
+### Client params
+
+Actions can capture client-side DOM values and transmit them to the server using special `$` symbols:
+
+| Symbol | Captures | Use case |
+|---|---|---|
+| `$value` | `evt.target.value` | Input/select/textarea value |
+| `$checked` | `evt.target.checked` | Checkbox/radio boolean state |
+| `$key` | `evt.key` | Keyboard event key name |
+| `$form-data` | All named form fields | Form submission as a map |
+
+Example usage:
+
+```clojure
+;; Capture input value on change
+[:input {:data-on:change (h/action (reset! (h/tab-cursor :query) $value))}]
+
+;; React to specific keys
+[:input {:data-on:keydown
+         (h/action (when (= $key "Enter")
+                     (search! $value)))}]
+
+;; Checkbox toggle
+[:input {:type "checkbox"
+         :data-on:change (h/action (reset! (h/tab-cursor :dark?) $checked))}]
+
+;; Full form submission
+[:form {:data-on:submit__prevent (h/action (save-user! $form-data))}
+ [:input {:name "email"}]
+ [:input {:name "password" :type "password"}]
+ [:button "Save"]]
+```
+
+When `$` symbols appear in the action body, the macro automatically generates a `fetch()` call instead of `@post()`, sending the extracted values as a JSON body. On the server, the action function receives these values bound to the corresponding `$` symbols.
+
 ## Navigation
 
 Hyper uses [Reitit](https://github.com/metosin/reitit) for routing. Routes are

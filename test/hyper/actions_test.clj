@@ -28,7 +28,7 @@
   (testing "executes registered action"
     (let [app-state* (atom (state/init-state))
           executed   (atom false)
-          action-fn  (fn [] (reset! executed true))
+          action-fn  (fn [_] (reset! executed true))
           action-id  (actions/register-action! app-state* "sess1" "tab1" action-fn)]
       (actions/execute-action! app-state* action-id)
       (is @executed)))
@@ -37,7 +37,7 @@
     (let [app-state*     (atom (state/init-state))
           result         (atom nil)
           captured-value 42
-          action-fn      (fn [] (reset! result captured-value))
+          action-fn      (fn [_] (reset! result captured-value))
           action-id      (actions/register-action! app-state* "sess1" "tab1" action-fn)]
       (actions/execute-action! app-state* action-id)
       (is (= 42 @result))))
@@ -51,7 +51,7 @@
   (testing "removes all actions for a tab"
     (let [app-state*  (atom (state/init-state))
           tab-id      "test-tab-cleanup"
-          action-fn   (fn [] :executed)
+          action-fn   (fn [_] :executed)
           action-id-1 (actions/register-action! app-state* "sess1" tab-id action-fn)
           action-id-2 (actions/register-action! app-state* "sess1" tab-id action-fn)
           action-id-3 (actions/register-action! app-state* "sess1" "other-tab" action-fn)]
@@ -64,3 +64,12 @@
       (is (not (contains? (:actions @app-state*) action-id-1)))
       (is (not (contains? (:actions @app-state*) action-id-2)))
       (is (contains? (:actions @app-state*) action-id-3))))) ;; Other tab's action remains
+
+(deftest test-execute-action-with-client-params
+  (testing "executes action with client params passed through"
+    (let [app-state* (atom (state/init-state))
+          result     (atom nil)
+          action-fn  (fn [params] (reset! result (:value params)))
+          action-id  (actions/register-action! app-state* "sess1" "tab1" action-fn)]
+      (actions/execute-action! app-state* action-id {:value "test-value"})
+      (is (= "test-value" @result)))))

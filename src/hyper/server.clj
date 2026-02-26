@@ -2,7 +2,8 @@
   "HTTP server, routing, and middleware.
 
    Provides Ring handler creation for hyper applications."
-  (:require [clojure.edn :as edn]
+  (:require [cheshire.core :as json]
+            [clojure.edn :as edn]
             [clojure.string]
             [dev.onionpancakes.chassis.core :as c]
             [hyper.actions :as actions]
@@ -140,8 +141,21 @@
                                                  :msg   "Tab disconnected"})
                                         (render/cleanup-tab! app-state* tab-id))}))))
 
+(defn- parse-client-params
+  "Parse client params from a JSON request body, if present.
+   Returns a keyword-keyed map or nil."
+  [req]
+  (try
+    (when-let [body (:body req)]
+      (let [s (if (string? body) body (slurp body))]
+        (when-not (clojure.string/blank? s)
+          (json/parse-string s true))))
+    (catch Exception _ nil)))
+
 (defn action-handler
-  "Handler for action POST requests."
+  "Handler for action POST requests.
+   Parses an optional JSON body for client params ($value, $checked, $key,
+   $form-data) and passes them to the action function."
   [app-state* request-var]
   (fn [req]
     (let [action-id (get-in req [:query-params "action-id"])]
@@ -153,10 +167,11 @@
 
         (let [req-with-state (assoc req
                                     :hyper/app-state app-state*
-                                    :hyper/router (get @app-state* :router))]
+                                    :hyper/router (get @app-state* :router))
+              client-params  (parse-client-params req)]
           (push-thread-bindings {request-var req-with-state})
           (try
-            (actions/execute-action! app-state* action-id)
+            (actions/execute-action! app-state* action-id client-params)
 
             {:status  200
              :headers {"Content-Type" "application/json"}
