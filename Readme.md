@@ -1,5 +1,7 @@
 # Hyper
 
+[![CI](https://github.com/dynamic-alpha/hyper/actions/workflows/ci.yaml/badge.svg)](https://github.com/dynamic-alpha/hyper/actions/workflows/ci.yaml)
+
 A reactive server-rendered web framework for Clojure built on
 [Datastar](https://data-star.dev/) and
 [Reitit](https://github.com/metosin/reitit).
@@ -27,6 +29,31 @@ automatically. No client-side framework, no JSON APIs, no JavaScript to write.
 (def handler (h/create-handler #'routes))
 (def app (h/start! handler {:port 3000}))
 ```
+
+## Origin & Inspiration
+
+Hyper wouldn't exist without the generosity of the Clojure community. We're
+grateful to the people whose work and ideas made this possible:
+
+- [Anders Murphy](https://andersmurphy.com)'s essay
+  [Realtime Collaborative Web Apps Without ClojureScript](https://andersmurphy.com/2025/04/07/clojure-realtime-collaborative-web-apps-without-clojurescript.html)
+  laid the groundwork — demonstrating that server-rendered Clojure + Datastar +
+  SSE is a viable architecture for reactive web apps.
+- [David Yang](https://github.com/davidyang) and
+  [David Nolen](https://github.com/swannodette) at
+  [Lightweight Labs](https://lightweightlabs.com), whose talk
+  [From Tomorrow Back to Yesterday](https://www.youtube.com/watch?v=8W6Lr1hRgXo&t=2s)
+  at Clojure/conj 2025 shaped our thinking on server-driven UI and the
+  direction of web development in Clojure.
+
+## Project Status
+
+Hyper is in active alpha development and used in internal projects at Dynamic
+Alpha. The API is evolving rapidly — expect bugs and breakage until a 1.0
+release.
+
+We're building in the open to share with the Clojure community. Feedback and
+contributions are welcome.
 
 ## Cursors
 
