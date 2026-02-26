@@ -345,7 +345,6 @@
     (some? head) head
     :else        nil))
 
-
 (defn page-handler
   "Wrap a page render function to provide full HTML response.
    Resolves :title from route metadata — supports static strings, functions,

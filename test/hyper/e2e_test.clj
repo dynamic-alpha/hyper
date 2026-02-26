@@ -50,8 +50,8 @@
      [:h1 "Test Forms"]
 
      [:div#text-demo
-      [:input#text-input {:type "text"
-                          :value @text*
+      [:input#text-input {:type          "text"
+                          :value         @text*
                           :data-on:input (h/action (reset! (h/tab-cursor :text) $value))}]
       [:span#text-result (if (seq @text*) @text* "empty")]]
 
@@ -62,13 +62,13 @@
       [:span#select-result @select*]]
 
      [:div#checkbox-demo
-      [:input#dark-checkbox {:type "checkbox"
-                             :checked @checked*
+      [:input#dark-checkbox {:type           "checkbox"
+                             :checked        @checked*
                              :data-on:change (h/action (reset! (h/tab-cursor :dark-mode) $checked))}]
       [:span#checkbox-result (if @checked* "ON" "OFF")]]
 
      [:div#key-demo
-      [:input#key-input {:type "text"
+      [:input#key-input {:type            "text"
                          :data-on:keydown (h/action (reset! (h/tab-cursor :last-key) $key))}]
       [:span#key-result (if (seq @key*) @key* "none")]]
 

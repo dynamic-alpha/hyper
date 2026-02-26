@@ -142,10 +142,10 @@
   "Maps special $ symbols to their JavaScript extraction expression and
    JSON key name. When these symbols appear in an action body, the macro
    generates a fetch() call that sends the values as a JSON POST body."
-  {'$value     {:js "evt.target.value"     :key "value"}
-   '$checked   {:js "evt.target.checked"   :key "checked"}
-   '$key       {:js "evt.key"              :key "key"}
-   '$form-data {:js "Object.fromEntries(new FormData(evt.target.closest('form')))"
+  {'$value     {:js "evt.target.value" :key "value"}
+   '$checked   {:js "evt.target.checked" :key "checked"}
+   '$key       {:js "evt.key" :key "key"}
+   '$form-data {:js  "Object.fromEntries(new FormData(evt.target.closest('form')))"
                 :key "formData"}})
 
 (defn- find-client-params
@@ -206,9 +206,9 @@
       [:input {:name \"email\"}]
       [:button \"Save\"]]"
   [& body]
-  (let [used-params    (find-client-params body)
-        param-syms     (keys used-params)
-        cp-sym         (gensym "client-params")]
+  (let [used-params (find-client-params body)
+        param-syms  (keys used-params)
+        cp-sym      (gensym "client-params")]
     `(let [session-id# (get *request* :hyper/session-id)
            tab-id#     (get *request* :hyper/tab-id)
            app-state*# (get *request* :hyper/app-state)
@@ -222,9 +222,9 @@
 
        (let [action-fn# (fn [~cp-sym]
                           (let [~@(mapcat (fn [sym]
-                                           (let [k (keyword (:key (get client-param-registry sym)))]
-                                             [sym (list `get cp-sym k)]))
-                                         param-syms)]
+                                            (let [k (keyword (:key (get client-param-registry sym)))]
+                                              [sym (list `get cp-sym k)]))
+                                          param-syms)]
                             (binding [*request* {:hyper/session-id session-id#
                                                  :hyper/tab-id     tab-id#
                                                  :hyper/app-state  app-state*#
@@ -291,7 +291,7 @@
                                                      (str "a-" tab-id "-" nav-idx))
              escaped-title (or (server/escape-js-string title) "")
              escaped-href  (server/escape-js-string href)]
-         {:href href
+         {:href                                                                                   href
           :data-on:click__prevent
           (str "@post('/hyper/actions?action-id=" action-id "');"
                " window.history.pushState({title: '" escaped-title "'}, '', '" escaped-href "');"

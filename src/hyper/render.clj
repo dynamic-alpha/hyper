@@ -78,7 +78,7 @@
   (when head-hiccup
     (letfn [(mark-one [el]
               (if (and (vector? el) (keyword? (first el)))
-                (let [[tag & rest] el
+                (let [[tag & rest]       el
                       [attrs & children] (if (map? (first rest))
                                            rest
                                            (cons {} rest))]
