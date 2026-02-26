@@ -314,6 +314,14 @@ and the `<title>` are all kept in sync reactively.
 
 This is typically how you’d include your compiled Tailwind stylesheet.
 
+## clj-kondo
+
+Hyper ships with clj-kondo config. Import it with:
+
+```bash
+clj-kondo --copy-configs --dependencies --lint "$(clojure -Spath)"
+```
+
 ## Testing
 
 Tests are run with [Kaocha](https://github.com/lambdaisland/kaocha) via the
