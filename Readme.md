@@ -270,6 +270,20 @@ doesn't fit the render-and-stream model:
 This works for any status code or response shape — 301/302 redirects, 403
 forbidden, JSON responses, etc.
 
+## Suppress hyper wrapping certain endpoints
+
+You can suppress hyper wrapping an endpoint altogether by marking it as `:hyper/disabled?`
+
+```clojure
+(def routes
+  [["/"           {:name :home
+                   :title "Home"
+                   :get #'home-page}]
+   ["/api/info"   {:name :api-info
+                   :hyper/disabled? true ;; disable hyper wrapping this endpoint
+                   :get #'about-page}]])
+```
+
 ## Watches
 
 Under the hood, Hyper maintains a persistent SSE connection per tab. When state
@@ -492,4 +506,3 @@ The E2E suite covers:
   via SSE without a page refresh
 - **Content live reload** — redefining the routes Var with new inline handler
   functions hot-swaps the page content via SSE
-
