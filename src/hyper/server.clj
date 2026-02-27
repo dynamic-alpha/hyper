@@ -50,7 +50,7 @@
    Blocks on a Semaphore until signalled by a watcher, then renders the
    latest state via render/render-tab, compresses (if enabled), and sends.
    Exits when shutdown-renderer* is delivered."
-  [app-state* session-id tab-id channel compress? request-var
+  [app-state* session-id tab-id channel compress?
    ^Semaphore semaphore shutdown-renderer*]
   (let [br-out      (when compress? (br/byte-array-out-stream))
         br-stream   (when br-out (br/compress-out-stream br-out :window-size 18))
@@ -76,7 +76,7 @@
             (when-not (realized? shutdown-renderer*)
               (let [sent? (try
                             (when-let [sse-payload (render/render-tab app-state* session-id
-                                                                     tab-id request-var)]
+                                                                      tab-id)]
                               (let [payload (if br-stream
                                               (br/compress-stream br-out br-stream sse-payload)
                                               sse-payload)]
@@ -112,7 +112,7 @@
    Returns a map with:
    - :trigger-render! — zero-arg fn; call to signal a re-render
    - :stop!           — zero-arg fn; call to shut down the renderer"
-  [app-state* session-id tab-id channel compress? request-var]
+  [app-state* session-id tab-id channel compress?]
   (let [semaphore          (Semaphore. 0)
         shutdown-renderer* (promise)
         trigger-render!    #(.release semaphore)
@@ -121,9 +121,9 @@
         thread             (-> (Thread/ofVirtual)
                                (.name (str "hyper-renderer-" tab-id))
                                (.start ^Runnable
-                                       #(-renderer-loop! app-state* session-id tab-id
-                                                         channel compress? request-var
-                                                         semaphore shutdown-renderer*)))]
+                                 #(-renderer-loop! app-state* session-id tab-id
+                                                   channel compress?
+                                                   semaphore shutdown-renderer*)))]
     {:trigger-render! trigger-render!
      :stop!           stop!
      :thread          thread}))
@@ -167,7 +167,7 @@
   "Handler for SSE event stream.
    Starts a per-tab renderer thread that owns the channel and optional
    brotli stream, then wires up watchers to trigger re-renders."
-  [app-state* request-var]
+  [app-state*]
   (fn [req]
     (let [session-id (:hyper/session-id req)
           tab-id     (:hyper/tab-id req)
@@ -181,7 +181,7 @@
                                         ;; and then blocks until triggered.
                                         (let [{:keys [trigger-render!] :as renderer}
                                               (-start-renderer! app-state* session-id tab-id
-                                                                channel compress? request-var)]
+                                                                channel compress?)]
                                           (swap! app-state* assoc-in [:tabs tab-id :renderer] renderer)
 
                                           (render/setup-watchers! app-state* session-id tab-id trigger-render!)
@@ -215,7 +215,7 @@
   "Handler for action POST requests.
    Parses an optional JSON body for client params ($value, $checked, $key,
    $form-data) and passes them to the action function."
-  [app-state* request-var]
+  [app-state*]
   (fn [req]
     (let [action-id (get-in req [:query-params "action-id"])]
 
@@ -228,7 +228,7 @@
                                     :hyper/app-state app-state*
                                     :hyper/router (get @app-state* :router))
               client-params  (parse-client-params req)]
-          (push-thread-bindings {request-var req-with-state})
+          (push-thread-bindings {#'context/*request* req-with-state})
           (try
             (actions/execute-action! app-state* action-id client-params)
 
@@ -320,7 +320,7 @@
    - :head Hiccup nodes to append into the <head>, or (fn [req] ...) -> hiccup.
            When head is a function, it is re-evaluated on each SSE render cycle
            and the full <head> is pushed to the client."
-  [app-state* request-var {:keys [head]}]
+  [app-state* {:keys [head]}]
   (fn [render-fn]
     (fn [req]
       (let [tab-id     (:hyper/tab-id req)
@@ -333,7 +333,7 @@
                                         :hyper/router (get @app-state* :router)
                                         :hyper/route  route-info)
                                  (dissoc :reitit.core/match))]
-          (push-thread-bindings {request-var            req-with-state
+          (push-thread-bindings {#'context/*request*    req-with-state
                                  #'context/*action-idx* (atom 0)})
           (try
             (let [content (render-fn req-with-state)]
@@ -369,7 +369,7 @@
 (defn- navigate-handler
   "Handler for popstate/navigation POST requests.
    Looks up the route for the given path and updates the tab's route + render fn."
-  [app-state* _request-var]
+  [app-state*]
   (fn [req]
     (let [path        (get-in req [:query-params "path"])
           tab-id      (:hyper/tab-id req)
@@ -481,7 +481,6 @@
            When a Var is provided, route changes are picked up on the next request
            without restarting the server — ideal for REPL-driven development.
    app-state*: Atom containing application state
-   request-var: Dynamic var to bind request context (e.g., hyper.core/*request*)
 
    Options:
    - :head              Hiccup nodes appended to the <head> (e.g. stylesheet <link>),
@@ -494,21 +493,19 @@
 
    Routes should use :get handlers that return hiccup (Chassis vectors).
    Hyper will wrap them to provide full HTML responses and SSE connections."
-  ([routes app-state* request-var]
-   (create-handler routes app-state* request-var {}))
-  ([routes app-state* request-var {:keys [watches head] :as opts}]
-   (let [page-wrapper                             (page-handler app-state* request-var opts)
-         system-routes                            [["/hyper/events" {:get (sse-events-handler app-state* request-var)}]
-                                                   ["/hyper/actions" {:post (action-handler app-state* request-var)}]
-                                                   ["/hyper/navigate" {:post (navigate-handler app-state* request-var)}]]
+  ([routes app-state*]
+   (create-handler routes app-state* {}))
+  ([routes app-state* {:keys [watches head] :as opts}]
+   (let [page-wrapper                             (page-handler app-state* opts)
+         system-routes                            [["/hyper/events" {:get (sse-events-handler app-state*)}]
+                                                   ["/hyper/actions" {:post (action-handler app-state*)}]
+                                                   ["/hyper/navigate" {:post (navigate-handler app-state*)}]]
          ;; Store the routes source (Var or value) so title resolution can
          ;; always read the latest route metadata, even between router rebuilds.
-         ;; Store request-var so render can access it.
          ;; Store global :watches so find-route-watches can prepend them to
          ;; every page route's watch list.
          _                                        (swap! app-state* assoc
                                                          :routes-source routes
-                                                         :request-var request-var
                                                          :global-watches (vec watches)
                                                          :head head)
          initial-routes                           (if (var? routes) @routes routes)

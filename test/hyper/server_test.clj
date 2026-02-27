@@ -2,7 +2,6 @@
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
             [hyper.actions :as actions]
-            [hyper.context :as context]
             [hyper.core]
             [hyper.render :as render]
             [hyper.routes :as routes]
@@ -82,11 +81,10 @@
 
 (deftest test-create-handler
   (testing "Creates a working ring handler"
-    (let [app-state*  (atom (state/init-state))
-          routes      [["/" {:name :home
-                             :get  (fn [_req] [:div "Home"])}]]
-          request-var #'context/*request*
-          handler     (server/create-handler routes app-state* request-var)]
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*)]
       (is (fn? handler))
 
       ;; Test that it handles a request
@@ -95,13 +93,12 @@
         (is (.contains (:body response) "Home")))))
 
   (testing "Allows injecting tags into <head>"
-    (let [app-state*  (atom (state/init-state))
-          routes      [["/" {:name :home
-                             :get  (fn [_req] [:div "Home"])}]]
-          request-var #'context/*request*
-          handler     (server/create-handler routes app-state* request-var
-                                             {:head [[:link {:rel "stylesheet" :href "/app.css"}]]})
-          response    (handler {:uri "/" :request-method :get})]
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*
+                                            {:head [[:link {:rel "stylesheet" :href "/app.css"}]]})
+          response   (handler {:uri "/" :request-method :get})]
       (is (= 200 (:status response)))
       (is (.contains (:body response) "rel=\"stylesheet\""))
       (is (.contains (:body response) "href=\"/app.css\""))
@@ -109,14 +106,13 @@
           "Head elements are marked for SSE management")))
 
   (testing "Allows :head to be a function"
-    (let [app-state*  (atom (state/init-state))
-          routes      [["/" {:name :home
-                             :get  (fn [_req] [:div "Home"])}]]
-          request-var #'context/*request*
-          handler     (server/create-handler routes app-state* request-var
-                                             {:head (fn [_req]
-                                                      [[:meta {:name "test" :content "ok"}]])})
-          response    (handler {:uri "/" :request-method :get})]
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*
+                                            {:head (fn [_req]
+                                                     [[:meta {:name "test" :content "ok"}]])})
+          response   (handler {:uri "/" :request-method :get})]
       (is (= 200 (:status response)))
       (is (.contains (:body response) "name=\"test\""))
       (is (.contains (:body response) "content=\"ok\""))
@@ -124,101 +120,95 @@
           "Head elements are marked for SSE management")))
 
   (testing "Serves static assets from :static-dir"
-    (let [tmp-path    (java.nio.file.Files/createTempDirectory
-                        "hyper-static-"
-                        (make-array java.nio.file.attribute.FileAttribute 0))
-          tmp-dir     (.toFile tmp-path)
-          css-file    (io/file tmp-dir "styles.css")
-          _           (spit css-file "body { background: red; }")
-          app-state*  (atom (state/init-state))
-          routes      [["/" {:name :home
-                             :get  (fn [_req] [:div "Home"])}]]
-          request-var #'context/*request*
-          handler     (server/create-handler routes app-state* request-var
-                                             {:static-dir (.getAbsolutePath tmp-dir)})
-          response    (handler {:uri "/styles.css" :request-method :get})]
+    (let [tmp-path   (java.nio.file.Files/createTempDirectory
+                       "hyper-static-"
+                       (make-array java.nio.file.attribute.FileAttribute 0))
+          tmp-dir    (.toFile tmp-path)
+          css-file   (io/file tmp-dir "styles.css")
+          _          (spit css-file "body { background: red; }")
+          app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*
+                                            {:static-dir (.getAbsolutePath tmp-dir)})
+          response   (handler {:uri "/styles.css" :request-method :get})]
       (is (= 200 (:status response)))
       (is (some? (get-in response [:headers "Content-Type"])))
       (is (.contains (get-in response [:headers "Content-Type"]) "text/css"))
       (is (.contains (slurp (:body response)) "background: red"))))
 
   (testing "Serves static assets from multiple :static-dir roots"
-    (let [tmp1-path   (java.nio.file.Files/createTempDirectory
-                        "hyper-static-1-"
-                        (make-array java.nio.file.attribute.FileAttribute 0))
-          tmp2-path   (java.nio.file.Files/createTempDirectory
-                        "hyper-static-2-"
-                        (make-array java.nio.file.attribute.FileAttribute 0))
-          tmp1-dir    (.toFile tmp1-path)
-          tmp2-dir    (.toFile tmp2-path)
-          a-file      (io/file tmp1-dir "a.css")
-          b-file      (io/file tmp2-dir "b.css")
-          _           (spit a-file "/* a */")
-          _           (spit b-file "/* b */")
-          app-state*  (atom (state/init-state))
-          routes      [["/" {:name :home
-                             :get  (fn [_req] [:div "Home"])}]]
-          request-var #'context/*request*
-          handler     (server/create-handler routes app-state* request-var
-                                             {:static-dir [(.getAbsolutePath tmp1-dir)
-                                                           (.getAbsolutePath tmp2-dir)]})
-          response-a  (handler {:uri "/a.css" :request-method :get})
-          response-b  (handler {:uri "/b.css" :request-method :get})]
+    (let [tmp1-path  (java.nio.file.Files/createTempDirectory
+                       "hyper-static-1-"
+                       (make-array java.nio.file.attribute.FileAttribute 0))
+          tmp2-path  (java.nio.file.Files/createTempDirectory
+                       "hyper-static-2-"
+                       (make-array java.nio.file.attribute.FileAttribute 0))
+          tmp1-dir   (.toFile tmp1-path)
+          tmp2-dir   (.toFile tmp2-path)
+          a-file     (io/file tmp1-dir "a.css")
+          b-file     (io/file tmp2-dir "b.css")
+          _          (spit a-file "/* a */")
+          _          (spit b-file "/* b */")
+          app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*
+                                            {:static-dir [(.getAbsolutePath tmp1-dir)
+                                                          (.getAbsolutePath tmp2-dir)]})
+          response-a (handler {:uri "/a.css" :request-method :get})
+          response-b (handler {:uri "/b.css" :request-method :get})]
       (is (= 200 (:status response-a)))
       (is (.contains (slurp (:body response-a)) "a"))
       (is (= 200 (:status response-b)))
       (is (.contains (slurp (:body response-b)) "b"))))
 
   (testing "Serves static assets from :static-resources"
-    (let [app-state*  (atom (state/init-state))
-          routes      [["/" {:name :home
-                             :get  (fn [_req] [:div "Home"])}]]
-          request-var #'context/*request*
-          handler     (server/create-handler routes app-state* request-var
-                                             {:static-resources "public"})
-          response    (handler {:uri "/hyper-test-static.txt" :request-method :get})]
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*
+                                            {:static-resources "public"})
+          response   (handler {:uri "/hyper-test-static.txt" :request-method :get})]
       (is (= 200 (:status response)))
       (is (= "static-ok\n" (slurp (:body response)))))))
 
 (deftest test-ring-response-passthrough
   (testing "render fn returning a Ring response map is passed through as-is"
-    (let [app-state*  (atom (state/init-state))
-          routes      [["/" {:name :home
-                             :get  (fn [_req]
-                                     {:status  302
-                                      :headers {"Location" "/login"}
-                                      :body    ""})}]]
-          request-var #'context/*request*
-          handler     (server/create-handler routes app-state* request-var)
-          response    (handler {:uri "/" :request-method :get})]
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req]
+                                    {:status  302
+                                     :headers {"Location" "/login"}
+                                     :body    ""})}]]
+          handler    (server/create-handler routes app-state*)
+          response   (handler {:uri "/" :request-method :get})]
       (is (= 302 (:status response)))
       (is (= "/login" (get-in response [:headers "Location"])))
       (is (= "" (:body response)))))
 
   (testing "render fn returning hiccup still wraps in HTML"
-    (let [app-state*  (atom (state/init-state))
-          routes      [["/" {:name :home
-                             :get  (fn [_req] [:div "Normal page"])}]]
-          request-var #'context/*request*
-          handler     (server/create-handler routes app-state* request-var)
-          response    (handler {:uri "/" :request-method :get})]
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Normal page"])}]]
+          handler    (server/create-handler routes app-state*)
+          response   (handler {:uri "/" :request-method :get})]
       (is (= 200 (:status response)))
       (is (.contains (:body response) "Normal page"))
       (is (.contains (:body response) "<!DOCTYPE html"))))
 
   (testing "render fn can conditionally redirect or render"
-    (let [app-state*  (atom (state/init-state))
-          routes      [["/" {:name :home
-                             :get  (fn [req]
-                                     (if (get-in req [:query-params "auth"])
-                                       [:div "Welcome"]
-                                       {:status  302
-                                        :headers {"Location" "/login"}
-                                        :body    ""}))}]]
-          request-var #'context/*request*
-          handler     (server/create-handler routes app-state* request-var)
-          authed      (handler {:uri "/" :request-method :get :query-params {"auth" "true"}})
-          unauthed    (handler {:uri "/" :request-method :get :query-params {}})]
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [req]
+                                    (if (get-in req [:query-params "auth"])
+                                      [:div "Welcome"]
+                                      {:status  302
+                                       :headers {"Location" "/login"}
+                                       :body    ""}))}]]
+          handler    (server/create-handler routes app-state*)
+          authed     (handler {:uri "/" :request-method :get :query-params {"auth" "true"}})
+          unauthed   (handler {:uri "/" :request-method :get :query-params {}})]
       (is (= 200 (:status authed)))
       (is (.contains (:body authed) "Welcome"))
       (is (= 302 (:status unauthed)))
@@ -226,33 +216,30 @@
 
 (deftest test-create-handler-with-global-watches
   (testing "Global :watches are stored in app-state"
-    (let [app-state*  (atom (state/init-state))
-          global-src  (atom 0)
-          routes      [["/" {:name :home
-                             :get  (fn [_req] [:div "Home"])}]
-                       ["/about" {:name :about
-                                  :get  (fn [_req] [:div "About"])}]]
-          request-var #'context/*request*
-          _handler    (server/create-handler routes app-state* request-var
-                                             {:watches [global-src]})]
+    (let [app-state* (atom (state/init-state))
+          global-src (atom 0)
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]
+                      ["/about" {:name :about
+                                 :get  (fn [_req] [:div "About"])}]]
+          _handler   (server/create-handler routes app-state*
+                                            {:watches [global-src]})]
       (is (= [global-src] (:global-watches @app-state*)))))
 
   (testing "No :watches option leaves global-watches empty"
-    (let [app-state*  (atom (state/init-state))
-          routes      [["/" {:name :home
-                             :get  (fn [_req] [:div "Home"])}]]
-          request-var #'context/*request*
-          _handler    (server/create-handler routes app-state* request-var {})]
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          _handler   (server/create-handler routes app-state* {})]
       (is (= [] (:global-watches @app-state*))))))
 
 (deftest test-server-lifecycle
   (testing "Server start and stop"
-    (let [app-state*  (atom (state/init-state))
-          routes      [["/" {:name :home
-                             :get  (fn [_req] [:div "Hello"])}]]
-          request-var #'context/*request*
-          handler     (server/create-handler routes app-state* request-var)
-          stop-fn     (server/start! handler {:port 13000})]
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Hello"])}]]
+          handler    (server/create-handler routes app-state*)
+          stop-fn    (server/start! handler {:port 13000})]
 
       (is (some? stop-fn))
       (is (fn? stop-fn))
@@ -262,16 +249,15 @@
 
 (deftest test-shutdown-cleans-up-tabs
   (testing "Stopping the server cleans up all tab watchers, actions, and renderer threads"
-    (let [app-state*  (atom (state/init-state))
-          routes      [["/" {:name :home
-                             :get  (fn [_req] [:div "Hello"])}]]
-          request-var #'context/*request*
-          handler     (server/create-handler routes app-state* request-var)
-          stop-fn     (server/start! handler {:port 13001})
-          session-id  "test-session"
-          tab-id-1    "test-tab-1"
-          tab-id-2    "test-tab-2"
-          stopped     (atom #{})]
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Hello"])}]]
+          handler    (server/create-handler routes app-state*)
+          stop-fn    (server/start! handler {:port 13001})
+          session-id "test-session"
+          tab-id-1   "test-tab-1"
+          tab-id-2   "test-tab-2"
+          stopped    (atom #{})]
 
       ;; Simulate two connected tabs with watchers, actions, and mock renderers
       (doseq [tab-id [tab-id-1 tab-id-2]]
@@ -303,8 +289,7 @@
           routes-atom (atom [["/" {:name :home
                                    :get  (fn [_req] [:div "Home V1"])}]])
           routes-var  (intern *ns* (gensym "test-routes-") @routes-atom)
-          handler     (server/create-handler routes-var app-state*
-                                             #'context/*request*)
+          handler     (server/create-handler routes-var app-state*)
           response    (handler {:uri "/" :request-method :get})]
       (is (= 200 (:status response)))
       (is (.contains (:body response) "Home V1"))))
@@ -318,8 +303,7 @@
                       ["/new" {:name :new-page
                                :get  (fn [_req] [:div "New Page"])}]]
           routes-var (intern *ns* (gensym "test-routes-") v1-routes)
-          handler    (server/create-handler routes-var app-state*
-                                            #'context/*request*)]
+          handler    (server/create-handler routes-var app-state*)]
 
       ;; Initial request serves v1
       (let [response (handler {:uri "/" :request-method :get})]
@@ -347,8 +331,7 @@
                              :get  (fn [_req] [:div "Stable"])}]]
           routes-var  (intern *ns* (gensym "test-routes-") routes)
           build-count (atom 0)
-          handler     (server/create-handler routes-var app-state*
-                                             #'context/*request*)]
+          handler     (server/create-handler routes-var app-state*)]
 
       ;; build-ring-handler was called once during create-handler
       ;; Subsequent requests with the same routes should not rebuild
@@ -373,8 +356,7 @@
     (let [app-state* (atom (state/init-state))
           routes     [["/" {:name :home
                             :get  (fn [_req] [:div "Static"])}]]
-          handler    (server/create-handler routes app-state*
-                                            #'context/*request*)
+          handler    (server/create-handler routes app-state*)
           response   (handler {:uri "/" :request-method :get})]
       (is (= 200 (:status response)))
       (is (.contains (:body response) "Static")))))

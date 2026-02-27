@@ -204,5 +204,3 @@
     (let [handler  (br/wrap-brotli (fn [_req] nil))
           response (handler {:headers {"accept-encoding" "br"}})]
       (is (nil? response)))))
-
-

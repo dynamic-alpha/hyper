@@ -129,7 +129,7 @@
    Title is resolved from route :title metadata via hyper.routes/resolve-title,
    supporting static strings, functions of the request, and deref-able values
    (cursors/atoms) so that title updates reactively with state changes."
-  [app-state* session-id tab-id request-var]
+  [app-state* session-id tab-id]
   (when-let [stored-render-fn (get-render-fn app-state* tab-id)]
     (let [router      (get @app-state* :router)
           route       (get-in @app-state* [:tabs tab-id :route])
@@ -159,7 +159,7 @@
       ;; so that structurally dynamic renders (shrinking lists, conditional
       ;; branches) don't leave stale action closures behind.
       (actions/cleanup-tab-actions! app-state* tab-id)
-      (push-thread-bindings {request-var            req
+      (push-thread-bindings {#'context/*request*    req
                              #'context/*action-idx* (atom 0)})
       (try
         (let [hiccup-result   (safe-render render-fn req)

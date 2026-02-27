@@ -312,7 +312,7 @@
      (stop! app)"
   [routes & {:keys [app-state head static-resources static-dir watches]
              :or   {app-state (atom (state/init-state))}}]
-  (server/create-handler routes app-state #'context/*request*
+  (server/create-handler routes app-state
                          {:head             head
                           :static-resources static-resources
                           :static-dir       static-dir

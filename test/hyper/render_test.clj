@@ -1,7 +1,6 @@
 (ns hyper.render-test
   (:require [clojure.test :refer [deftest is testing]]
             [dev.onionpancakes.chassis.core :as c]
-            [hyper.context :as context]
             [hyper.core :as hy]
             [hyper.render :as render]
             [hyper.state :as state]))
@@ -45,7 +44,7 @@
           session-id "test-session-rt-1"
           tab-id     "test-tab-rt-1"]
       (state/get-or-create-tab! app-state* session-id tab-id)
-      (is (nil? (render/render-tab app-state* session-id tab-id #'context/*request*)))))
+      (is (nil? (render/render-tab app-state* session-id tab-id)))))
 
   (testing "render-tab returns SSE payload string when render-fn is registered"
     (let [app-state* (atom (state/init-state))
@@ -54,7 +53,7 @@
           render-fn  (fn [_req] [:div "Hello World"])]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
-      (let [result (render/render-tab app-state* session-id tab-id #'context/*request*)]
+      (let [result (render/render-tab app-state* session-id tab-id)]
         (is (string? result))
         ;; Should contain head update event
         (is (.contains result "document.title="))
@@ -63,10 +62,10 @@
         (is (.contains result "Hello World")))))
 
   (testing "Renders and formats content correctly"
-    (let [app-state*    (atom (state/init-state))
-          session-id    "test-session-3"
-          tab-id        "test-tab-3"
-          render-fn     (fn [_req] [:div "Hello World"])]
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-3"
+          tab-id     "test-tab-3"
+          render-fn  (fn [_req] [:div "Hello World"])]
 
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
@@ -80,13 +79,13 @@
 
 (deftest test-watchers
   (testing "Watchers trigger callback on state change"
-    (let [app-state*     (atom (state/init-state))
-          session-id     "test-session-4"
-          tab-id         "test-tab-4"
-          trigger-count  (atom 0)
+    (let [app-state*      (atom (state/init-state))
+          session-id      "test-session-4"
+          tab-id          "test-tab-4"
+          trigger-count   (atom 0)
           trigger-render! #(swap! trigger-count inc)
-          render-fn      (fn [_req]
-                           [:div "Count: " (get-in @app-state* [:tabs tab-id :data :count])])]
+          render-fn       (fn [_req]
+                            [:div "Count: " (get-in @app-state* [:tabs tab-id :data :count])])]
 
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
@@ -225,7 +224,7 @@
       (swap! app-state* assoc-in [:tabs tab-id :data :item-count] 3)
       ;; Render directly (watchers fire trigger-render! which in the real
       ;; system wakes the renderer thread, but here we call render-tab manually)
-      (render/render-tab app-state* session-id tab-id #'context/*request*)
+      (render/render-tab app-state* session-id tab-id)
 
       (let [tab-actions (fn []
                           (->> (:actions @app-state*)
@@ -236,7 +235,7 @@
 
         ;; Shrink to 1 item and re-render
         (swap! app-state* assoc-in [:tabs tab-id :data :item-count] 1)
-        (render/render-tab app-state* session-id tab-id #'context/*request*)
+        (render/render-tab app-state* session-id tab-id)
 
         (is (= 1 (tab-actions)) "Stale actions should be cleaned up, only 1 remaining"))
 
