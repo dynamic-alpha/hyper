@@ -26,6 +26,119 @@
       ;; Verify it's gone
       (is (nil? (render/get-sse-channel app-state* tab-id))))))
 
+(deftest test-send-sse-does-not-block-on-brotli
+  (testing "send-sse! should not invoke streaming brotli compression on the caller thread"
+    (let [executor   (java.util.concurrent.Executors/newSingleThreadExecutor)
+          app-state* (atom (assoc (state/init-state) :executor executor))
+          session-id "test-session-sse-async"
+          tab-id     "test-tab-sse-async"
+          channel    {:mock true}
+          allow      (promise)
+          sent       (java.util.concurrent.CountDownLatch. 1)]
+      (try
+        (state/get-or-create-tab! app-state* session-id tab-id)
+
+        (with-redefs [hyper.brotli/byte-array-out-stream (fn [] ::out)
+                      hyper.brotli/compress-out-stream   (fn [_out & _] ::stream)
+                      hyper.brotli/compress-stream       (fn [_out _stream _message]
+                                                         ;; Block until the test releases us.
+                                                           @allow
+                                                           (.getBytes "ok" "UTF-8"))
+                      org.httpkit.server/send!           (fn [_ch _data _close?]
+                                                           (.countDown sent)
+                                                           true)]
+          (render/register-sse-channel! app-state* tab-id channel true)
+
+          ;; If send-sse! calls brotli inline (current behavior), this future will block.
+          ;; Under the writer-actor implementation it should return immediately.
+          (let [f (future (render/send-sse! app-state* tab-id "hello"))]
+            (is (not= ::timeout (deref f 50 ::timeout))
+                "send-sse! blocked on brotli compression; expected it to enqueue and return")
+
+            ;; Always release the compressor so we don't leak a stuck thread if the assertion fails.
+            (deliver allow true)
+
+            ;; Drain should eventually send.
+            (is (.await sent 2 java.util.concurrent.TimeUnit/SECONDS)
+                "expected an SSE send after unblocking brotli")))
+        (finally
+          (render/unregister-sse-channel! app-state* tab-id)
+          (.shutdownNow executor))))))
+
+(deftest test-sse-brotli-stream-is-single-writer
+  (testing "streaming brotli compression must never be invoked concurrently for a tab"
+    (let [app-executor   (java.util.concurrent.Executors/newSingleThreadExecutor)
+          send-executor  (java.util.concurrent.Executors/newFixedThreadPool 2)
+          app-state*     (atom (assoc (state/init-state) :executor app-executor))
+          session-id     "test-session-sse-single-writer"
+          tab-id         "test-tab-sse-single-writer"
+          channel        {:mock true}
+          in-flight*     (atom 0)
+          max-in-flight* (atom 0)
+          sent*          (atom [])
+          sent-any       (java.util.concurrent.CountDownLatch. 1)
+          start          (java.util.concurrent.CountDownLatch. 1)
+          done           (java.util.concurrent.CountDownLatch. 2)]
+      (try
+        (state/get-or-create-tab! app-state* session-id tab-id)
+
+        (with-redefs [hyper.brotli/byte-array-out-stream (fn [] ::out)
+                      hyper.brotli/compress-out-stream   (fn [_out & _] ::stream)
+                      hyper.brotli/compress-stream       (fn [_out _stream message]
+                                                           (let [n (swap! in-flight* inc)]
+                                                             (swap! max-in-flight* max n)
+                                                            ;; Make the call long-lived so overlaps are detectable.
+                                                             (Thread/sleep 50)
+                                                             (swap! in-flight* dec))
+                                                           (.getBytes (str message) "UTF-8"))
+                      org.httpkit.server/send!           (fn [_ch data _close?]
+                                                           (let [payload (if (map? data) (:body data) data)
+                                                                 s       (if (bytes? payload)
+                                                                           (String. ^bytes payload "UTF-8")
+                                                                           (str payload))]
+                                                             (swap! sent* conj s))
+                                                           (.countDown sent-any)
+                                                           true)]
+          (render/register-sse-channel! app-state* tab-id channel true)
+
+          (doseq [i (range 2)]
+            (.submit send-executor
+                     ^Runnable
+                     (fn []
+                       (.await start)
+                       (render/send-sse! app-state* tab-id (str "msg-" i))
+                       (.countDown done))))
+
+          (.countDown start)
+
+          (is (.await done 2 java.util.concurrent.TimeUnit/SECONDS)
+              "timed out waiting for send-sse! calls to return")
+
+          ;; The actor may batch multiple messages into a single send.
+          (is (.await sent-any 2 java.util.concurrent.TimeUnit/SECONDS)
+              "timed out waiting for SSE sends")
+
+          ;; Wait until we observe both messages (either batched or separate).
+          (is (let [deadline (+ (System/currentTimeMillis) 2000)]
+                (loop []
+                  (let [combined (apply str @sent*)]
+                    (cond
+                      (and (.contains combined "msg-0")
+                           (.contains combined "msg-1")) true
+                      (< (System/currentTimeMillis) deadline) (do (Thread/sleep 10) (recur))
+                      :else false))))
+              "timed out waiting for both SSE messages to be sent")
+
+          (is (<= @max-in-flight* 1)
+              (str "brotli compress-stream was invoked concurrently (max in-flight = "
+                   @max-in-flight* ")"))
+
+          ;; Stop the actor so it doesn't leak a thread across the test suite.
+          (render/unregister-sse-channel! app-state* tab-id))
+        (finally
+          (.shutdownNow send-executor)
+          (.shutdownNow app-executor))))))
+
 (deftest test-render-fn-registration
   (testing "Render function registration and retrieval"
     (let [app-state* (atom (state/init-state))
@@ -122,7 +235,8 @@
         (is (>= (count @sent-messages) 3))
 
         ;; Clean up watchers
-        (render/remove-watchers! app-state* tab-id)))))
+        (render/remove-watchers! app-state* tab-id)
+        (render/unregister-sse-channel! app-state* tab-id)))))
 
 (deftest test-cleanup
   (testing "Cleanup removes all tab resources"
@@ -208,7 +322,9 @@
         ;; After throttle period, render succeeds
         (Thread/sleep 20)
         (render/throttled-render-and-send! app-state* session-id tab-id #'context/*request*)
-        (is (= 2 @render-count)))))
+        (is (= 2 @render-count)))
+
+      (render/unregister-sse-channel! app-state* tab-id)))
 
   (testing "cleanup removes last-render-ms tracking"
     (let [app-state* (atom (state/init-state))
@@ -307,4 +423,5 @@
 
           (is (= 1 (tab-actions)) "Stale actions should be cleaned up, only 1 remaining"))
 
-        (render/remove-watchers! app-state* tab-id)))))
+        (render/remove-watchers! app-state* tab-id)
+        (render/unregister-sse-channel! app-state* tab-id)))))

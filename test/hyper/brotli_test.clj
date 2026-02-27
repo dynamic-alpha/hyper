@@ -220,8 +220,9 @@
       (render/register-sse-channel! app-state* tab-id {:mock true} true)
 
       (let [tab-data (get-in @app-state* [:tabs tab-id])]
-        (is (some? (:br-out tab-data)))
-        (is (some? (:br-stream tab-data)))
+        (is (some? (:sse-writer tab-data)))
+        (is (some? (get-in tab-data [:sse-writer :br-out])))
+        (is (some? (get-in tab-data [:sse-writer :br-stream])))
         (is (= {:mock true} (:sse-channel tab-data))))
 
       (render/unregister-sse-channel! app-state* tab-id)))
@@ -233,8 +234,9 @@
       (render/register-sse-channel! app-state* tab-id {:mock true} false)
 
       (let [tab-data (get-in @app-state* [:tabs tab-id])]
-        (is (nil? (:br-out tab-data)))
-        (is (nil? (:br-stream tab-data)))
+        (is (some? (:sse-writer tab-data)))
+        (is (nil? (get-in tab-data [:sse-writer :br-out])))
+        (is (nil? (get-in tab-data [:sse-writer :br-stream])))
         (is (= {:mock true} (:sse-channel tab-data))))
 
       (render/unregister-sse-channel! app-state* tab-id)))
@@ -246,52 +248,66 @@
       (render/register-sse-channel! app-state* tab-id {:mock true} true)
 
       ;; Verify streams exist
-      (is (some? (get-in @app-state* [:tabs tab-id :br-stream])))
+      (is (some? (get-in @app-state* [:tabs tab-id :sse-writer :br-stream])))
 
       (render/unregister-sse-channel! app-state* tab-id)
 
-      (is (nil? (get-in @app-state* [:tabs tab-id :br-out])))
-      (is (nil? (get-in @app-state* [:tabs tab-id :br-stream]))))))
+      (is (nil? (get-in @app-state* [:tabs tab-id :sse-writer])))
+      (is (nil? (get-in @app-state* [:tabs tab-id :sse-channel]))))))
 
 (deftest test-send-sse-with-brotli
   (testing "send-sse! compresses when brotli streams are present"
     (let [app-state* (atom (state/init-state))
           tab-id     "test-br-send-1"
-          sent       (atom [])]
+          sent       (atom [])
+          sent-latch (java.util.concurrent.CountDownLatch. 1)]
       (state/get-or-create-tab! app-state* "sess" tab-id)
       (render/register-sse-channel! app-state* tab-id {:mock true} true)
 
       (with-redefs [org.httpkit.server/send! (fn [_ch data _close?]
                                                (swap! sent conj data)
+                                               (.countDown sent-latch)
                                                true)]
         (let [message "event: datastar-patch-elements\ndata: elements <div>Hello</div>\n\n"]
-          (render/send-sse! app-state* tab-id message)
+          (is (true? (render/send-sse! app-state* tab-id message)))
+
+          (is (.await sent-latch 2 java.util.concurrent.TimeUnit/SECONDS)
+              "timed out waiting for SSE send")
 
           (is (= 1 (count @sent)))
           (let [payload (first @sent)]
-                ;; Should be raw compressed bytes — the Content-Encoding header
-                ;; was set on the initial response, subsequent sends are just
-                ;; data frames in the same brotli stream.
-            (is (bytes? payload))
-            (is (pos? (alength ^bytes payload))))))
+            ;; First send initializes the SSE response, so it should be a map.
+            (is (map? payload))
+            (is (= "br" (get-in payload [:headers "Content-Encoding"])))
+            (is (= "text/event-stream" (get-in payload [:headers "Content-Type"])))
+            (is (bytes? (:body payload)))
+            (is (pos? (alength ^bytes (:body payload)))))))
 
       (render/unregister-sse-channel! app-state* tab-id)))
 
   (testing "send-sse! sends plain text when no brotli streams"
     (let [app-state* (atom (state/init-state))
           tab-id     "test-br-send-2"
-          sent       (atom [])]
+          sent       (atom [])
+          sent-latch (java.util.concurrent.CountDownLatch. 1)]
       (state/get-or-create-tab! app-state* "sess" tab-id)
       (render/register-sse-channel! app-state* tab-id {:mock true} false)
 
       (with-redefs [org.httpkit.server/send! (fn [_ch data _close?]
                                                (swap! sent conj data)
+                                               (.countDown sent-latch)
                                                true)]
         (let [message "event: datastar-patch-elements\ndata: elements <div>Hello</div>\n\n"]
-          (render/send-sse! app-state* tab-id message)
+          (is (true? (render/send-sse! app-state* tab-id message)))
+
+          (is (.await sent-latch 2 java.util.concurrent.TimeUnit/SECONDS)
+              "timed out waiting for SSE send")
 
           (is (= 1 (count @sent)))
-          ;; Should be the raw string, not a map
-          (is (= message (first @sent)))))
+          (let [payload (first @sent)]
+            ;; First send initializes the SSE response, so it should be a map.
+            (is (map? payload))
+            (is (= "text/event-stream" (get-in payload [:headers "Content-Type"])))
+            (is (= message (:body payload))))))
 
       (render/unregister-sse-channel! app-state* tab-id))))

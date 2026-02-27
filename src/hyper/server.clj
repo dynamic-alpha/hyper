@@ -79,6 +79,14 @@
                            {:on-open  (fn [channel]
                                         (state/get-or-create-tab! app-state* session-id tab-id)
                                         (render/register-sse-channel! app-state* tab-id channel compress?)
+
+                                        ;; Enqueue the initial connected event *before* any watchers can
+                                        ;; enqueue render output. The SSE writer actor owns sending headers
+                                        ;; (and brotli compression, if enabled).
+                                        (let [connected-msg (str "event: connected\n"
+                                                                 "data: {\"tab-id\":\"" tab-id "\"}\n\n")]
+                                          (render/send-sse! app-state* tab-id connected-msg))
+
                                         (render/setup-watchers! app-state* session-id tab-id request-var)
                     ;; Auto-watch the routes Var so title/route changes
                     ;; trigger re-renders for all connected tabs
@@ -86,30 +94,7 @@
                                           (when (var? routes-source)
                                             (render/watch-source! app-state* session-id tab-id request-var routes-source)))
                     ;; Set up route-level watches (:watches + Var :get handlers)
-                                        (render/setup-route-watches! app-state* session-id tab-id request-var)
-                                        (let [connected-msg (str "event: connected\n"
-                                                                 "data: {\"tab-id\":\"" tab-id "\"}\n\n")]
-                                          (if compress?
-                        ;; Brotli: send headers with the first chunk compressed
-                        ;; through the tab's streaming compressor so all bytes
-                        ;; on this connection form one contiguous brotli stream.
-                                            (let [tab-data   (get-in @app-state* [:tabs tab-id])
-                                                  compressed (br/compress-stream
-                                                               (:br-out tab-data)
-                                                               (:br-stream tab-data)
-                                                               connected-msg)]
-                                              (http-kit/send!
-                                                channel
-                                                {:headers {"Content-Type"     "text/event-stream"
-                                                           "Content-Encoding" "br"}
-                                                 :body    compressed}
-                                                false))
-                        ;; No compression: plain text
-                                            (http-kit/send!
-                                              channel
-                                              {:headers {"Content-Type" "text/event-stream"}
-                                               :body    connected-msg}
-                                              false))))
+                                        (render/setup-route-watches! app-state* session-id tab-id request-var))
 
                             :on-close (fn [_channel _status]
                                         (t/log! {:level :info
