@@ -294,7 +294,10 @@
        [[\"/\" {:name :home
                :get (fn [req] [:div [:h1 \"Home\"]])}]
         [\"/about\" {:name :about
-                    :get (fn [req] [:div [:h1 \"About\"]])}]])
+                    :get (fn [req] [:div [:h1 \"About\"]])}]
+        [\"/api/info\" {:name :api-info
+                       :hyper/disabled? true
+                       :get (fn [req] .. a json api endpoint ..)]])
 
      ;; Static routes
      (def handler (create-handler routes))

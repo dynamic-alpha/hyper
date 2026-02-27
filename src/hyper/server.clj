@@ -338,10 +338,9 @@
    Returns the compiled Ring handler (without outer middleware)."
   [user-routes app-state* page-wrapper system-routes]
   (let [wrapped-routes (mapv (fn [[path route-data]]
-                               [path (update route-data :get
-                                             (fn [handler]
-                                               (when handler
-                                                 (page-wrapper handler))))])
+                               (if (and (:get route-data) (not (:hyper/disabled? route-data)))
+                                 [path (update route-data :get (fn [handler] (page-wrapper handler)))]
+                                 [path route-data]))
                              user-routes)
         all-routes     (concat system-routes wrapped-routes)
         router         (ring/router all-routes

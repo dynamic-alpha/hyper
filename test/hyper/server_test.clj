@@ -233,6 +233,22 @@
       (is (= 302 (:status unauthed)))
       (is (= "/login" (get-in unauthed [:headers "Location"]))))))
 
+(testing "render fn can disable endpoint wrapping"
+  (let [app-state*  (atom (state/init-state))
+        json-result "{\"foo\":1}"
+        routes      [["/api/info" {:name            :api-info
+                                   :hyper/disabled? true
+                                   :get             (fn [_req]
+                                                      {:status  200
+                                                       :headers {"Content-Type" "application/json"}
+                                                       :body    "{\"foo\":1}"})}]]
+        request-var #'context/*request*
+        executor    (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+        handler     (server/create-handler routes app-state* executor request-var)
+        response    (handler {:uri "/api-info" :request-method :get})]
+    (is (= 200 (:status response)))
+    (is (= json-result (:body response)))))
+
 (deftest test-create-handler-with-global-watches
   (testing "Global :watches are stored in app-state"
     (let [app-state*  (atom (state/init-state))
