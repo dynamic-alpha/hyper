@@ -6,7 +6,8 @@
             [hyper.render :as render]
             [hyper.routes :as routes]
             [hyper.server :as server]
-            [hyper.state :as state]))
+            [hyper.state :as state]
+            [hyper.watch :as watch]))
 
 (deftest test-generate-session-id
   (testing "Session ID generation"
@@ -267,7 +268,7 @@
         (swap! app-state* assoc-in [:tabs tab-id :renderer]
                {:trigger-render! (fn [])
                 :stop!           #(swap! stopped conj tab-id)})
-        (render/setup-watchers! app-state* session-id tab-id (fn []))
+        (watch/setup-watchers! app-state* session-id tab-id (fn []))
         (actions/register-action! app-state* session-id tab-id
                                   (fn [_] (println "action")) (str "a-" tab-id "-0")))
 

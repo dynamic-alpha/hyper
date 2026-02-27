@@ -15,6 +15,7 @@
             [hyper.server :as server]
             [hyper.state :as state]
             [hyper.utils :as utils]
+            [hyper.watch :as watch]
             [reitit.core :as reitit]))
 
 (defn global-cursor
@@ -113,7 +114,7 @@
   (let [{:keys [tab-id app-state*]} (context/require-context! "watch!")
         trigger-render!             (get-in @app-state* [:tabs tab-id :renderer :trigger-render!])]
     (when trigger-render!
-      (render/watch-source! app-state* tab-id trigger-render! source))))
+      (watch/watch-source! app-state* tab-id trigger-render! source))))
 
 ;; ---------------------------------------------------------------------------
 ;; Client param support for actions

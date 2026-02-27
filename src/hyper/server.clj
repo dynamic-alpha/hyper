@@ -11,6 +11,7 @@
             [hyper.render :as render]
             [hyper.routes :as routes]
             [hyper.state :as state]
+            [hyper.watch :as watch]
             [org.httpkit.server :as http-kit]
             [reitit.coercion :as coercion]
             [reitit.coercion.malli :as malli]
@@ -60,8 +61,7 @@
                               default-render-throttle-ms))]
     (try
       ;; Send the connected event as the initial SSE response (headers + body).
-      (let [connected-msg (str "event: connected\n"
-                               "data: {\"tab-id\":\"" tab-id "\"}\n\n")
+      (let [connected-msg (render/format-connected-event tab-id)
             payload       (if br-stream
                             (br/compress-stream br-out br-stream connected-msg)
                             connected-msg)
@@ -163,6 +163,18 @@
   [:script {:type "module"
             :src  "https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js"}])
 
+(defn cleanup-tab!
+  "Clean up all resources for a tab: watchers, renderer thread, actions, and state."
+  [app-state* tab-id]
+  (watch/remove-watchers! app-state* tab-id)
+  (watch/remove-external-watches! app-state* tab-id)
+  (watch/teardown-route-watches! app-state* tab-id)
+  (when-let [stop! (get-in @app-state* [:tabs tab-id :renderer :stop!])]
+    (stop!))
+  (actions/cleanup-tab-actions! app-state* tab-id)
+  (state/cleanup-tab! app-state* tab-id)
+  nil)
+
 (defn sse-events-handler
   "Handler for SSE event stream.
    Starts a per-tab renderer thread that owns the channel and optional
@@ -184,21 +196,21 @@
                                                                 channel compress?)]
                                           (swap! app-state* assoc-in [:tabs tab-id :renderer] renderer)
 
-                                          (render/setup-watchers! app-state* session-id tab-id trigger-render!)
+                                          (watch/setup-watchers! app-state* session-id tab-id trigger-render!)
                                           ;; Auto-watch the routes Var so title/route changes
                                           ;; trigger re-renders for all connected tabs
                                           (when-let [routes-source (get @app-state* :routes-source)]
                                             (when (var? routes-source)
-                                              (render/watch-source! app-state* tab-id trigger-render! routes-source)))
+                                              (watch/watch-source! app-state* tab-id trigger-render! routes-source)))
                                           ;; Set up route-level watches (:watches + Var :get handlers)
-                                          (render/setup-route-watches! app-state* tab-id trigger-render!)))
+                                          (watch/setup-route-watches! app-state* tab-id trigger-render!)))
 
                             :on-close (fn [_channel _status]
                                         (t/log! {:level :info
                                                  :id    :hyper.event/tab-disconnect
                                                  :data  {:hyper/tab-id tab-id}
                                                  :msg   "Tab disconnected"})
-                                        (render/cleanup-tab! app-state* tab-id))}))))
+                                        (cleanup-tab! app-state* tab-id))}))))
 
 (defn- parse-client-params
   "Parse client params from a JSON request body, if present.
@@ -550,7 +562,7 @@
   (when app-state*
     (let [tab-ids (keys (:tabs @app-state*))]
       (doseq [tab-id tab-ids]
-        (render/cleanup-tab! app-state* tab-id))
+        (cleanup-tab! app-state* tab-id))
       (t/log! {:level :info
                :id    :hyper.event/server-stop
                :data  {:hyper/tab-count (count tab-ids)}
