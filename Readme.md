@@ -55,6 +55,17 @@ release.
 We're building in the open to share with the Clojure community. Feedback and
 contributions are welcome.
 
+## Installation
+
+We eventually intend to publish to Clojars, however while we are rapidly
+evolving the project we recommend to install via a :git/url instead. Make sure
+to grab the latest SHA.
+
+```clojure
+{dynamic-alpha/hyper {:git/url "https://github.com/dynamic-alpha/hyper"
+                      :git/sha "..."}}
+```
+
 ## Cursors
 
 Cursors are the primary way to read and write state in Hyper. They behave just
