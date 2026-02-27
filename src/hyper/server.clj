@@ -79,16 +79,16 @@
                             (actions/cleanup-tab-actions! app-state* tab-id)
                             (when-let [{:keys [title head body url]}
                                        (render/render-tab app-state* session-id tab-id)]
-                              (let [head-html    (some-> head c/html)
-                                    head-event   (render/format-head-update title head-html)
-                                    div-attrs    (cond-> {:id "hyper-app"}
-                                                   url (assoc :data-hyper-url url))
-                                    body-html    (c/html [:div div-attrs body])
-                                    body-event   (render/format-datastar-fragment body-html)
-                                    sse-payload  (str head-event body-event)
-                                    payload      (if br-stream
-                                                   (br/compress-stream br-out br-stream sse-payload)
-                                                   sse-payload)]
+                              (let [head-html   (some-> head c/html)
+                                    head-event  (render/format-head-update title head-html)
+                                    div-attrs   (cond-> {:id "hyper-app"}
+                                                  url (assoc :data-hyper-url url))
+                                    body-html   (c/html [:div div-attrs body])
+                                    body-event  (render/format-datastar-fragment body-html)
+                                    sse-payload (str head-event body-event)
+                                    payload     (if br-stream
+                                                  (br/compress-stream br-out br-stream sse-payload)
+                                                  sse-payload)]
                                 (boolean (http-kit/send! channel payload false))))
                             (catch Throwable e
                               (t/error! e {:id   :hyper.error/renderer
