@@ -110,9 +110,10 @@
      ;; Watch any Watchable source
      (watch! my-event-stream)"
   [source]
-  (let [{:keys [session-id tab-id app-state*]} (context/require-context! "watch!")
-        request-var                            (get @app-state* :request-var)]
-    (render/watch-source! app-state* session-id tab-id request-var source)))
+  (let [{:keys [tab-id app-state*]} (context/require-context! "watch!")
+        trigger-render!             (get-in @app-state* [:tabs tab-id :renderer :trigger-render!])]
+    (when trigger-render!
+      (render/watch-source! app-state* tab-id trigger-render! source))))
 
 ;; ---------------------------------------------------------------------------
 ;; Client param support for actions
@@ -280,8 +281,6 @@
 
    Options (keyword arguments):
    - :app-state         — Atom for application state (default: fresh atom)
-   - :executor          — java.util.concurrent.ExecutorService for render dispatch
-                          (default: virtual-thread-per-task executor)
    - :head              — Hiccup nodes appended to the HTML <head>, or (fn [req] ...) -> hiccup
    - :static-resources  — Classpath resource root(s) to serve as static assets
    - :static-dir        — Filesystem directory (or directories) to serve as static assets
@@ -308,16 +307,12 @@
                        :static-resources \"public\"
                        :head [[:link {:rel \"stylesheet\" :href \"/app.css\"}]]))
 
-     ;; Custom executor
-     (def handler (create-handler routes :executor my-executor))
-
      (def app (start! handler {:port 3000}))
      ;; Later...
      (stop! app)"
-  [routes & {:keys [app-state executor head static-resources static-dir watches]
-             :or   {app-state (atom (state/init-state))
-                    executor  (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)}}]
-  (server/create-handler routes app-state executor #'context/*request*
+  [routes & {:keys [app-state head static-resources static-dir watches]
+             :or   {app-state (atom (state/init-state))}}]
+  (server/create-handler routes app-state #'context/*request*
                          {:head             head
                           :static-resources static-resources
                           :static-dir       static-dir

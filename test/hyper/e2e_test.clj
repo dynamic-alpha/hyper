@@ -231,7 +231,7 @@
 (use-fixtures :each
   (fn [f]
     ;; Reset routes and app state before each test, preserving
-    ;; infrastructure keys (:executor, :request-var, :routes-source, etc.)
+    ;; infrastructure keys (:request-var, :routes-source, etc.)
     ;; that create-handler stored in the app-state atom.
     (alter-var-root #'*test-routes* (constantly (default-routes)))
     (when @test-state*
@@ -239,7 +239,7 @@
              (fn [old-state]
                (merge (state/init-state)
                       (select-keys old-state
-                                   [:executor :request-var :routes-source
+                                   [:request-var :routes-source
                                     :router :routes])))))
     (f)))
 

@@ -24,13 +24,109 @@
             [ring.middleware.not-modified :as not-modified]
             [ring.middleware.params :as params]
             [ring.middleware.resource :as resource]
-            [taoensso.telemere :as t]))
+            [taoensso.telemere :as t])
+  (:import (java.util.concurrent Semaphore)))
 
 (defn generate-session-id []
   (str "sess-" (java.util.UUID/randomUUID)))
 
 (defn generate-tab-id []
   (str "tab-" (java.util.UUID/randomUUID)))
+
+;; ---------------------------------------------------------------------------
+;; Per-tab renderer thread
+;; ---------------------------------------------------------------------------
+
+(def ^:private default-render-throttle-ms
+  "Minimum interval between renders for a single tab (~60fps)."
+  16)
+
+(defn- -renderer-loop!
+  "Virtual-thread render loop for a single tab.
+
+   Owns the http-kit AsyncChannel and (optional) streaming Brotli state,
+   guaranteeing single-writer semantics by construction.
+
+   Blocks on a Semaphore until signalled by a watcher, then renders the
+   latest state via render/render-tab, compresses (if enabled), and sends.
+   Exits when shutdown-renderer* is delivered."
+  [app-state* session-id tab-id channel compress? request-var
+   ^Semaphore semaphore shutdown-renderer*]
+  (let [br-out      (when compress? (br/byte-array-out-stream))
+        br-stream   (when br-out (br/compress-out-stream br-out :window-size 18))
+        headers     (cond-> {"Content-Type" "text/event-stream"}
+                      compress? (assoc "Content-Encoding" "br"))
+        throttle-ms (long (or (get @app-state* :render-throttle-ms)
+                              default-render-throttle-ms))]
+    (try
+      ;; Send the connected event as the initial SSE response (headers + body).
+      (let [connected-msg (str "event: connected\n"
+                               "data: {\"tab-id\":\"" tab-id "\"}\n\n")
+            payload       (if br-stream
+                            (br/compress-stream br-out br-stream connected-msg)
+                            connected-msg)
+            sent?         (boolean (http-kit/send! channel {:headers headers
+                                                            :body    payload}
+                                                   false))]
+        (when sent?
+          ;; Main render loop
+          (loop []
+            (.acquire semaphore)
+            (.drainPermits semaphore)
+            (when-not (realized? shutdown-renderer*)
+              (let [sent? (try
+                            (when-let [sse-payload (render/render-tab app-state* session-id
+                                                                     tab-id request-var)]
+                              (let [payload (if br-stream
+                                              (br/compress-stream br-out br-stream sse-payload)
+                                              sse-payload)]
+                                (boolean (http-kit/send! channel payload false))))
+                            (catch Throwable e
+                              (t/error! e {:id   :hyper.error/renderer
+                                           :data {:hyper/tab-id tab-id}})
+                              nil))]
+                ;; sent? is true (ok), nil (no render-fn or error), false (channel closed)
+                (when-not (false? sent?)
+                  ;; Throttle: sleep so triggers during this window accumulate
+                  ;; as semaphore permits, which drainPermits collapses into
+                  ;; a single render on the next iteration.
+                  (Thread/sleep throttle-ms)
+                  (recur)))))))
+      (catch Throwable e
+        (when-not (realized? shutdown-renderer*)
+          (t/error! e {:id   :hyper.error/renderer
+                       :data {:hyper/tab-id tab-id}})))
+      (finally
+        (br/close-stream br-stream)
+        (when (instance? org.httpkit.server.AsyncChannel channel)
+          (t/catch->error! :hyper.error/close-sse-channel
+                           (http-kit/close channel)))
+        (t/log! {:level :debug
+                 :id    :hyper.event/renderer-close
+                 :data  {:hyper/tab-id tab-id}
+                 :msg   "Tab renderer closed"})))))
+
+(defn- -start-renderer!
+  "Start a per-tab renderer on a virtual thread.
+
+   Returns a map with:
+   - :trigger-render! — zero-arg fn; call to signal a re-render
+   - :stop!           — zero-arg fn; call to shut down the renderer"
+  [app-state* session-id tab-id channel compress? request-var]
+  (let [semaphore          (Semaphore. 0)
+        shutdown-renderer* (promise)
+        trigger-render!    #(.release semaphore)
+        stop!              #(do (deliver shutdown-renderer* true)
+                                (.release semaphore))
+        thread             (-> (Thread/ofVirtual)
+                               (.name (str "hyper-renderer-" tab-id))
+                               (.start ^Runnable
+                                       #(-renderer-loop! app-state* session-id tab-id
+                                                         channel compress? request-var
+                                                         semaphore shutdown-renderer*)))]
+    {:trigger-render! trigger-render!
+     :stop!           stop!
+     :thread          thread}))
 
 (defn wrap-hyper-context
   "Middleware that adds session-id and tab-id to the request."
@@ -68,7 +164,9 @@
             :src  "https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js"}])
 
 (defn sse-events-handler
-  "Handler for SSE event stream."
+  "Handler for SSE event stream.
+   Starts a per-tab renderer thread that owns the channel and optional
+   brotli stream, then wires up watchers to trigger re-renders."
   [app-state* request-var]
   (fn [req]
     (let [session-id (:hyper/session-id req)
@@ -78,23 +176,22 @@
       (http-kit/as-channel req
                            {:on-open  (fn [channel]
                                         (state/get-or-create-tab! app-state* session-id tab-id)
-                                        (render/register-sse-channel! app-state* tab-id channel compress?)
 
-                                        ;; Enqueue the initial connected event *before* any watchers can
-                                        ;; enqueue render output. The SSE writer actor owns sending headers
-                                        ;; (and brotli compression, if enabled).
-                                        (let [connected-msg (str "event: connected\n"
-                                                                 "data: {\"tab-id\":\"" tab-id "\"}\n\n")]
-                                          (render/send-sse! app-state* tab-id connected-msg))
+                                        ;; Start the renderer — it sends the connected event
+                                        ;; and then blocks until triggered.
+                                        (let [{:keys [trigger-render!] :as renderer}
+                                              (-start-renderer! app-state* session-id tab-id
+                                                                channel compress? request-var)]
+                                          (swap! app-state* assoc-in [:tabs tab-id :renderer] renderer)
 
-                                        (render/setup-watchers! app-state* session-id tab-id request-var)
-                    ;; Auto-watch the routes Var so title/route changes
-                    ;; trigger re-renders for all connected tabs
-                                        (when-let [routes-source (get @app-state* :routes-source)]
-                                          (when (var? routes-source)
-                                            (render/watch-source! app-state* session-id tab-id request-var routes-source)))
-                    ;; Set up route-level watches (:watches + Var :get handlers)
-                                        (render/setup-route-watches! app-state* session-id tab-id request-var))
+                                          (render/setup-watchers! app-state* session-id tab-id trigger-render!)
+                                          ;; Auto-watch the routes Var so title/route changes
+                                          ;; trigger re-renders for all connected tabs
+                                          (when-let [routes-source (get @app-state* :routes-source)]
+                                            (when (var? routes-source)
+                                              (render/watch-source! app-state* tab-id trigger-render! routes-source)))
+                                          ;; Set up route-level watches (:watches + Var :get handlers)
+                                          (render/setup-route-watches! app-state* tab-id trigger-render!)))
 
                             :on-close (fn [_channel _status]
                                         (t/log! {:level :info
@@ -384,7 +481,6 @@
            When a Var is provided, route changes are picked up on the next request
            without restarting the server — ideal for REPL-driven development.
    app-state*: Atom containing application state
-   executor: ExecutorService for dispatching render tasks
    request-var: Dynamic var to bind request context (e.g., hyper.core/*request*)
 
    Options:
@@ -398,21 +494,20 @@
 
    Routes should use :get handlers that return hiccup (Chassis vectors).
    Hyper will wrap them to provide full HTML responses and SSE connections."
-  ([routes app-state* executor request-var]
-   (create-handler routes app-state* executor request-var {}))
-  ([routes app-state* executor request-var {:keys [watches head] :as opts}]
+  ([routes app-state* request-var]
+   (create-handler routes app-state* request-var {}))
+  ([routes app-state* request-var {:keys [watches head] :as opts}]
    (let [page-wrapper                             (page-handler app-state* request-var opts)
          system-routes                            [["/hyper/events" {:get (sse-events-handler app-state* request-var)}]
                                                    ["/hyper/actions" {:post (action-handler app-state* request-var)}]
                                                    ["/hyper/navigate" {:post (navigate-handler app-state* request-var)}]]
          ;; Store the routes source (Var or value) so title resolution can
          ;; always read the latest route metadata, even between router rebuilds.
-         ;; Store executor and request-var so render watches can access them.
+         ;; Store request-var so render can access it.
          ;; Store global :watches so find-route-watches can prepend them to
          ;; every page route's watch list.
          _                                        (swap! app-state* assoc
                                                          :routes-source routes
-                                                         :executor executor
                                                          :request-var request-var
                                                          :global-watches (vec watches)
                                                          :head head)
@@ -451,7 +546,7 @@
 
 (defn- -do-stop
   "Stop the HTTP server and clean up all tab resources.
-   Tears down all watchers, SSE channels, actions, and shuts down the executor."
+   Tears down all watchers, renderer threads, SSE channels, and actions."
   [server app-state*]
   (when server
     (server :timeout 100))
@@ -459,8 +554,6 @@
     (let [tab-ids (keys (:tabs @app-state*))]
       (doseq [tab-id tab-ids]
         (render/cleanup-tab! app-state* tab-id))
-      (when-let [^java.util.concurrent.ExecutorService executor (:executor @app-state*)]
-        (.shutdownNow executor))
       (t/log! {:level :info
                :id    :hyper.event/server-stop
                :data  {:hyper/tab-count (count tab-ids)}
@@ -473,7 +566,7 @@
    port: Port to run on (default: 3000)
 
    Returns a stop function. Call (stop-fn) or pass to stop! to shut down
-   the server and clean up all tab resources (watchers, SSE channels, actions)."
+   the server and clean up all tab resources (renderer threads, watchers, actions)."
   [handler {:keys [port] :or {port 3000}}]
   (let [server     (http-kit/run-server handler {:port port})
         app-state* (::app-state (meta handler))]
