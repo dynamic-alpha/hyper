@@ -75,11 +75,20 @@
             (.drainPermits semaphore)
             (when-not (realized? shutdown-renderer*)
               (let [sent? (try
-                            (when-let [sse-payload (render/render-tab app-state* session-id
-                                                                      tab-id)]
-                              (let [payload (if br-stream
-                                              (br/compress-stream br-out br-stream sse-payload)
-                                              sse-payload)]
+                            ;; Clean slate — remove stale actions before re-rendering
+                            (actions/cleanup-tab-actions! app-state* tab-id)
+                            (when-let [{:keys [title head body url]}
+                                       (render/render-tab app-state* session-id tab-id)]
+                              (let [head-html    (some-> head c/html)
+                                    head-event   (render/format-head-update title head-html)
+                                    div-attrs    (cond-> {:id "hyper-app"}
+                                                   url (assoc :data-hyper-url url))
+                                    body-html    (c/html [:div div-attrs body])
+                                    body-event   (render/format-datastar-fragment body-html)
+                                    sse-payload  (str head-event body-event)
+                                    payload      (if br-stream
+                                                   (br/compress-stream br-out br-stream sse-payload)
+                                                   sse-payload)]
                                 (boolean (http-kit/send! channel payload false))))
                             (catch Throwable e
                               (t/error! e {:id   :hyper.error/renderer
@@ -325,58 +334,47 @@
 
 (defn page-handler
   "Wrap a page render function to provide full HTML response.
-   Resolves :title from route metadata — supports static strings, functions,
-   and deref-able values (cursors/atoms).
+   Delegates rendering to render/render-tab so initial page loads share
+   the same render pipeline as SSE updates (error boundaries, live route
+   re-resolution, title/head resolution).
 
    Options:
    - :head Hiccup nodes to append into the <head>, or (fn [req] ...) -> hiccup.
            When head is a function, it is re-evaluated on each SSE render cycle
            and the full <head> is pushed to the client."
-  [app-state* {:keys [head]}]
+  [app-state* _opts]
   (fn [render-fn]
     (fn [req]
       (let [tab-id     (:hyper/tab-id req)
+            session-id (:hyper/session-id req)
             route-info (extract-route-info req)]
 
         (render/register-render-fn! app-state* tab-id render-fn)
         (state/set-tab-route! app-state* tab-id route-info)
-        (let [req-with-state (-> req
-                                 (assoc :hyper/app-state app-state*
-                                        :hyper/router (get @app-state* :router)
-                                        :hyper/route  route-info)
-                                 (dissoc :reitit.core/match))]
-          (push-thread-bindings {#'context/*request*    req-with-state
-                                 #'context/*action-idx* (atom 0)})
-          (try
-            (let [content (render-fn req-with-state)]
-              ;; If the render fn returns a Ring response map (e.g. a 302
-              ;; redirect), pass it through without wrapping in HTML.
-              (if (and (map? content) (:status content))
-                content
-                (let [route-name  (:name route-info)
-                      route-index (routes/live-route-index app-state*)
-                      title-spec  (routes/find-route-title route-index route-name)
-                      title       (or (routes/resolve-title title-spec req-with-state) "Hyper App")
-                      extra-head  (some-> (routes/resolve-head head req-with-state)
-                                          render/mark-head-elements)
-                      html        (c/html
-                                    [c/doctype-html5
-                                     [:html
-                                      [:head
-                                       [:meta {:charset "UTF-8"}]
-                                       [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
-                                       [:title title]
-                                       (datastar-script)
-                                       extra-head]
-                                      [:body
-                                       {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
-                                       [:div {:id "hyper-app"} content]
-                                       (hyper-scripts tab-id)]]])]
-                  {:status  200
-                   :headers {"Content-Type" "text/html; charset=utf-8"}
-                   :body    html})))
-            (finally
-              (pop-thread-bindings))))))))
+
+        (let [{:keys [title head body]} (render/render-tab app-state* session-id tab-id req)]
+          ;; If the render fn returns a Ring response map (e.g. a 302
+          ;; redirect), pass it through without wrapping in HTML.
+          (if (and (map? body) (:status body))
+            body
+            (let [title      (or title "Hyper App")
+                  extra-head (when head (c/html head))
+                  html       (c/html
+                               [c/doctype-html5
+                                [:html
+                                 [:head
+                                  [:meta {:charset "UTF-8"}]
+                                  [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
+                                  [:title title]
+                                  (datastar-script)
+                                  extra-head]
+                                 [:body
+                                  {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
+                                  [:div {:id "hyper-app"} body]
+                                  (hyper-scripts tab-id)]]])]
+              {:status  200
+               :headers {"Content-Type" "text/html; charset=utf-8"}
+               :body    html})))))))
 
 (defn- navigate-handler
   "Handler for popstate/navigation POST requests.

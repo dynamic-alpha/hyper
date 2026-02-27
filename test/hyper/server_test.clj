@@ -2,7 +2,6 @@
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
             [hyper.actions :as actions]
-            [hyper.core]
             [hyper.render :as render]
             [hyper.routes :as routes]
             [hyper.server :as server]

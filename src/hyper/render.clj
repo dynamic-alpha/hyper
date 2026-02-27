@@ -2,9 +2,7 @@
   "Rendering pipeline.
 
    Handles rendering hiccup to HTML and formatting Datastar SSE events."
-  (:require [dev.onionpancakes.chassis.core :as c]
-            [hyper.actions :as actions]
-            [hyper.context :as context]
+  (:require [hyper.context :as context]
             [hyper.routes :as routes]
             [hyper.state :as state]
             [hyper.utils :as utils]
@@ -96,14 +94,13 @@
          "data: elements <script data-effect=\"el.remove()\">" js "</script>\n\n")))
 
 (defn render-error-fragment
-  "Render an error message as a fragment."
+  "Render an error message as hiccup."
   [error]
-  (c/html
-    [:div {:style "padding: 20px; font-family: sans-serif; background: #fee; border: 1px solid #fcc; border-radius: 4px; margin: 20px;"}
-     [:h2 {:style "color: #c00; margin-top: 0;"} "Render Error"]
-     [:p "An error occurred while rendering this view:"]
-     [:pre {:style "background: #fff; padding: 10px; border-radius: 4px; overflow: auto;"}
-      (str error)]]))
+  [:div {:style "padding: 20px; font-family: sans-serif; background: #fee; border: 1px solid #fcc; border-radius: 4px; margin: 20px;"}
+   [:h2 {:style "color: #c00; margin-top: 0;"} "Render Error"]
+   [:p "An error occurred while rendering this view:"]
+   [:pre {:style "background: #fff; padding: 10px; border-radius: 4px; overflow: auto;"}
+    (str error)]])
 
 (defn safe-render
   "Safely render a view with error boundary."
@@ -115,10 +112,20 @@
       (render-error-fragment e))))
 
 (defn render-tab
-  "Render the current view for a tab and return the SSE payload string.
+  "Render the current view for a tab and return the rendered data.
 
-   Returns the SSE payload (head update + body fragment) as a string,
-   or nil if no render-fn is registered for the tab.
+   Returns a map with :title, :head, :body, and :url, or nil if no
+   render-fn is registered for the tab.
+
+   - :title — resolved page title string, or nil
+   - :head  — marked hiccup for user-provided <head> elements, or nil
+   - :body  — hiccup result from the render function (or a Ring response map)
+   - :url   — current route URL string, or nil
+
+   An optional base-req (Ring request map) can be provided for initial
+   page loads so the render function sees the full Ring request context
+   (headers, cookies, query-params, etc.).  On SSE re-renders, omit it
+   and a minimal synthetic request is built from app-state.
 
    On each render, re-resolves the render-fn from live routes so that:
    - Redefining the routes Var with new inline fns picks up the new function
@@ -127,60 +134,51 @@
    Title is resolved from route :title metadata via hyper.routes/resolve-title,
    supporting static strings, functions of the request, and deref-able values
    (cursors/atoms) so that title updates reactively with state changes."
-  [app-state* session-id tab-id]
-  (when-let [stored-render-fn (get-render-fn app-state* tab-id)]
-    (let [router      (get @app-state* :router)
-          route       (get-in @app-state* [:tabs tab-id :route])
-          ;; Re-resolve render-fn from live routes so route Var redefs
-          ;; and Var-based handlers always use the latest function.
-          route-index (routes/live-route-index app-state*)
-          render-fn   (if-let [route-name (:name route)]
-                        (let [fresh-fn (when (seq route-index)
-                                         (routes/find-render-fn route-index route-name))]
-                          (if fresh-fn
-                            (do
-                                   ;; Update stored render-fn so navigate/actions
-                                   ;; also use the latest
-                              (when (not= fresh-fn stored-render-fn)
-                                (register-render-fn! app-state* tab-id fresh-fn))
-                              fresh-fn)
-                            stored-render-fn))
-                        stored-render-fn)
-          current-url (when route
-                        (state/build-url (:path route) (:query-params route)))
-          req         (cond-> {:hyper/session-id session-id
-                               :hyper/tab-id     tab-id
-                               :hyper/app-state  app-state*}
-                        router (assoc :hyper/router router)
-                        route  (assoc :hyper/route route))]
-      ;; Clean slate — remove all actions for this tab before re-rendering
-      ;; so that structurally dynamic renders (shrinking lists, conditional
-      ;; branches) don't leave stale action closures behind.
-      (actions/cleanup-tab-actions! app-state* tab-id)
-      (push-thread-bindings {#'context/*request*    req
-                             #'context/*action-idx* (atom 0)})
-      (try
-        (let [hiccup-result   (safe-render render-fn req)
-              title-spec      (when (and (seq route-index) route)
-                                (routes/find-route-title route-index (:name route)))
-              title           (routes/resolve-title title-spec req)
-              ;; Resolve head content — only user-provided :head, not the
-              ;; static meta/viewport/datastar-script (those stay from
-              ;; the initial page load and never need updating).
-              head            (get @app-state* :head)
-              extra-head      (some-> (routes/resolve-head head req)
-                                      mark-head-elements)
-              extra-head-html (when extra-head
-                                (c/html extra-head))
-              head-event      (format-head-update title extra-head-html)
-              ;; Body fragment
-              div-attrs       (cond-> {:id "hyper-app"}
-                                current-url (assoc :data-hyper-url current-url))
-              html            (c/html [:div div-attrs hiccup-result])
-              body-fragment   (format-datastar-fragment html)]
-          (str head-event body-fragment))
-        (finally
-          (pop-thread-bindings))))))
+  ([app-state* session-id tab-id]
+   (render-tab app-state* session-id tab-id nil))
+  ([app-state* session-id tab-id base-req]
+   (when-let [stored-render-fn (get-render-fn app-state* tab-id)]
+     (let [router      (get @app-state* :router)
+           route       (get-in @app-state* [:tabs tab-id :route])
+           ;; Re-resolve render-fn from live routes so route Var redefs
+           ;; and Var-based handlers always use the latest function.
+           route-index (routes/live-route-index app-state*)
+           render-fn   (if-let [route-name (:name route)]
+                         (let [fresh-fn (when (seq route-index)
+                                          (routes/find-render-fn route-index route-name))]
+                           (if fresh-fn
+                             (do
+                                    ;; Update stored render-fn so navigate/actions
+                                    ;; also use the latest
+                               (when (not= fresh-fn stored-render-fn)
+                                 (register-render-fn! app-state* tab-id fresh-fn))
+                               fresh-fn)
+                             stored-render-fn))
+                         stored-render-fn)
+           url         (when route
+                         (state/build-url (:path route) (:query-params route)))
+           req         (cond-> (or base-req {})
+                         true   (assoc :hyper/session-id session-id
+                                       :hyper/tab-id     tab-id
+                                       :hyper/app-state  app-state*)
+                         router (assoc :hyper/router router)
+                         route  (assoc :hyper/route route)
+                         true   (dissoc :reitit.core/match))]
+       (push-thread-bindings {#'context/*request*    req
+                              #'context/*action-idx* (atom 0)})
+       (try
+         (let [body       (safe-render render-fn req)
+               title-spec (when (and (seq route-index) route)
+                            (routes/find-route-title route-index (:name route)))
+               title      (routes/resolve-title title-spec req)
+               head       (some-> (routes/resolve-head (get @app-state* :head) req)
+                                  mark-head-elements)]
+           {:title title
+            :head  head
+            :body  body
+            :url   url})
+         (finally
+           (pop-thread-bindings)))))))
 
 (defn format-connected-event
   "Format the initial SSE connected event for a tab."

@@ -1,6 +1,7 @@
 (ns hyper.render-test
   (:require [clojure.test :refer [deftest is testing]]
             [dev.onionpancakes.chassis.core :as c]
+            [hyper.actions :as actions]
             [hyper.core :as hy]
             [hyper.render :as render]
             [hyper.state :as state]
@@ -47,7 +48,7 @@
       (state/get-or-create-tab! app-state* session-id tab-id)
       (is (nil? (render/render-tab app-state* session-id tab-id)))))
 
-  (testing "render-tab returns SSE payload string when render-fn is registered"
+  (testing "render-tab returns data map when render-fn is registered"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-rt-2"
           tab-id     "test-tab-rt-2"
@@ -55,12 +56,12 @@
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
       (let [result (render/render-tab app-state* session-id tab-id)]
-        (is (string? result))
-        ;; Should contain head update event
-        (is (.contains result "document.title="))
-        ;; Should contain body fragment
-        (is (.contains result "event: datastar-patch-elements"))
-        (is (.contains result "Hello World")))))
+        (is (map? result))
+        (is (contains? result :title))
+        (is (contains? result :body))
+        (is (contains? result :head))
+        (is (contains? result :url))
+        (is (= [:div "Hello World"] (:body result))))))
 
   (testing "Renders and formats content correctly"
     (let [app-state* (atom (state/init-state))
@@ -84,8 +85,8 @@
           req               {:hyper/session-id "test-session"
                              :hyper/tab-id     "test-tab"}
           result            (render/safe-render failing-render-fn req)]
-      ;; Should return HTML string or hiccup, not throw
-      (is (or (string? result) (vector? result)))
+      ;; Should return hiccup, not throw
+      (is (vector? result))
       ;; Should contain error information
       (is (re-find #"Render Error" (str result)))))
 
@@ -159,8 +160,8 @@
 
       ;; Do an initial render with 3 items
       (swap! app-state* assoc-in [:tabs tab-id :data :item-count] 3)
-      ;; Render directly (watchers fire trigger-render! which in the real
-      ;; system wakes the renderer thread, but here we call render-tab manually)
+      ;; Simulate what the renderer loop does: cleanup actions then render
+      (actions/cleanup-tab-actions! app-state* tab-id)
       (render/render-tab app-state* session-id tab-id)
 
       (let [tab-actions (fn []
@@ -172,6 +173,7 @@
 
         ;; Shrink to 1 item and re-render
         (swap! app-state* assoc-in [:tabs tab-id :data :item-count] 1)
+        (actions/cleanup-tab-actions! app-state* tab-id)
         (render/render-tab app-state* session-id tab-id)
 
         (is (= 1 (tab-actions)) "Stale actions should be cleaned up, only 1 remaining"))
