@@ -5,7 +5,8 @@
    titles, and Var-based live reload of inline route handlers.
 
    Run with: clojure -M:test --focus :e2e"
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing use-fixtures]]
             [hyper.core :as h]
             [hyper.state :as state]
             [wally.main :as w])
@@ -129,11 +130,20 @@
 ;; ---------------------------------------------------------------------------
 
 (defn launch-browser
-  "Launch a headless Chromium browser. Returns {:playwright pw :browser browser}."
+  "Launch a headless Chromium browser. Returns {:playwright pw :browser browser}.
+
+   If PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH is set, we launch that Chromium
+   binary instead of Playwright's downloaded browser bundle."
   []
-  (let [pw      (Playwright/create)
-        browser (.. pw chromium (launch (doto (BrowserType$LaunchOptions.)
-                                          (.setHeadless true))))]
+  (let [pw              (Playwright/create)
+        executable-path (some-> (System/getenv "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
+                                (str/trim)
+                                (not-empty))
+        opts            (doto (BrowserType$LaunchOptions.)
+                          (.setHeadless true))
+        _               (when executable-path
+                          (.setExecutablePath opts (java.nio.file.Path/of executable-path (into-array String []))))
+        browser         (.. pw chromium (launch opts))]
     {:playwright pw :browser browser}))
 
 (defn new-context
