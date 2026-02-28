@@ -66,6 +66,17 @@ to grab the latest SHA.
                       :git/sha "..."}}
 ```
 
+## Requirements
+
+Hyper uses [virtual threads](https://openjdk.org/jeps/444) for its per-tab
+rendering loop — each connected browser tab gets its own lightweight virtual
+thread that blocks on a semaphore until state changes trigger a re-render. This
+means you need **JDK 21 or later**.
+
+Virtual threads were finalized in JDK 21 (JEP 444) and are available without
+any flags. On JDK 19 or 20 they are a preview feature and require the
+`--enable-preview` flag, but we recommend just using JDK 21+.
+
 ## Cursors
 
 Cursors are the primary way to read and write state in Hyper. They behave just
