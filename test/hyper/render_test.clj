@@ -1,7 +1,7 @@
 (ns hyper.render-test
   (:require [clojure.test :refer [deftest is testing]]
-            [dev.onionpancakes.chassis.core :as c]
             [hyper.actions :as actions]
+            [hyper.context]
             [hyper.core :as hy]
             [hyper.render :as render]
             [hyper.state :as state]
@@ -48,7 +48,7 @@
       (state/get-or-create-tab! app-state* session-id tab-id)
       (is (nil? (render/render-tab app-state* session-id tab-id)))))
 
-  (testing "render-tab returns data map when render-fn is registered"
+  (testing "render-tab returns render result with HTML strings"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-rt-2"
           tab-id     "test-tab-rt-2"
@@ -58,10 +58,11 @@
       (let [result (render/render-tab app-state* session-id tab-id)]
         (is (map? result))
         (is (contains? result :title))
-        (is (contains? result :body))
-        (is (contains? result :head))
+        (is (contains? result :body-html))
+        (is (contains? result :head-html))
         (is (contains? result :url))
-        (is (= [:div "Hello World"] (:body result))))))
+        (is (string? (:body-html result)))
+        (is (.contains (:body-html result) "Hello World")))))
 
   (testing "Renders and formats content correctly"
     (let [app-state* (atom (state/init-state))
@@ -72,12 +73,44 @@
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
 
-      ;; Manually test formatting since we can't actually send with mock
-      (let [hiccup-result (render-fn {})
-            html-str      (c/html hiccup-result)
-            fragment      (render/format-datastar-fragment html-str)]
+      (let [result   (render/render-tab app-state* session-id tab-id)
+            fragment (render/format-datastar-fragment (:body-html result))]
         (is (.contains fragment "event: datastar-patch-elements"))
-        (is (.contains fragment "Hello World"))))))
+        (is (.contains fragment "Hello World")))))
+
+  (testing "Ring response passthrough"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-ring"
+          tab-id     "test-tab-ring"
+          render-fn  (fn [_req] {:status 302 :headers {"Location" "/login"} :body ""})]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (render/register-render-fn! app-state* tab-id render-fn)
+      (let [result (render/render-tab app-state* session-id tab-id)]
+        (is (= 302 (:status result)))
+        (is (= "/login" (get-in result [:headers "Location"]))))))
+
+  (testing "Lazy sequences in hiccup see *request* bindings"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-lazy"
+          tab-id     "test-tab-lazy"
+          ;; A render fn that returns lazy seqs which read *request*
+          render-fn  (fn [_req]
+                       [:ul
+                        (for [i (range 3)]
+                          [:li (str "item-" i "-"
+                                    (:hyper/session-id hyper.context/*request*))])])]
+
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (render/register-render-fn! app-state* tab-id render-fn)
+
+      ;; render-tab serializes to HTML internally, so lazy seqs from `for`
+      ;; are realized while *request* bindings are still active.
+      (let [{:keys [body-html]} (render/render-tab app-state* session-id tab-id)]
+        (is (some? body-html))
+        (is (.contains body-html (str "item-0-" session-id))
+            "Lazy seq should see *request* bindings during serialization")
+        (is (.contains body-html (str "item-2-" session-id))
+            "All items in lazy seq should see *request* bindings")))))
 
 (deftest test-error-boundary
   (testing "safe-render catches errors and renders error fragment"

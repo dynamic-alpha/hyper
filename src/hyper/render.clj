@@ -2,7 +2,8 @@
   "Rendering pipeline.
 
    Handles rendering hiccup to HTML and formatting Datastar SSE events."
-  (:require [hyper.context :as context]
+  (:require [dev.onionpancakes.chassis.core :as c]
+            [hyper.context :as context]
             [hyper.routes :as routes]
             [hyper.state :as state]
             [hyper.utils :as utils]
@@ -114,13 +115,21 @@
 (defn render-tab
   "Render the current view for a tab and return the rendered data.
 
-   Returns a map with :title, :head, :body, and :url, or nil if no
-   render-fn is registered for the tab.
+   Returns nil when no render-fn is registered for the tab, or one of:
 
-   - :title — resolved page title string, or nil
-   - :head  — marked hiccup for user-provided <head> elements, or nil
-   - :body  — hiccup result from the render function (or a Ring response map)
-   - :url   — current route URL string, or nil
+   - A Ring response map (when the render-fn returns a map with :status),
+     passed through as-is for redirects, error responses, etc.
+
+   - A render result map with pre-serialized HTML strings:
+       :title     — resolved page title string, or nil
+       :head-html — HTML string of marked <head> elements, or nil
+       :body-html — HTML string of the rendered page body
+       :url       — current route URL string, or nil
+
+   Binds `context/*request*` and `context/*action-idx*` for the duration
+   of both rendering and HTML serialization, so lazy hiccup sequences
+   (from `for`, `map`, etc.) that read `*request*` see the correct
+   bindings when realized by Chassis.
 
    An optional base-req (Ring request map) can be provided for initial
    page loads so the render function sees the full Ring request context
@@ -140,16 +149,14 @@
    (when-let [stored-render-fn (get-render-fn app-state* tab-id)]
      (let [router      (get @app-state* :router)
            route       (get-in @app-state* [:tabs tab-id :route])
+           route-index (routes/live-route-index app-state*)
            ;; Re-resolve render-fn from live routes so route Var redefs
            ;; and Var-based handlers always use the latest function.
-           route-index (routes/live-route-index app-state*)
            render-fn   (if-let [route-name (:name route)]
                          (let [fresh-fn (when (seq route-index)
                                           (routes/find-render-fn route-index route-name))]
                            (if fresh-fn
                              (do
-                                    ;; Update stored render-fn so navigate/actions
-                                    ;; also use the latest
                                (when (not= fresh-fn stored-render-fn)
                                  (register-render-fn! app-state* tab-id fresh-fn))
                                fresh-fn)
@@ -167,16 +174,20 @@
        (push-thread-bindings {#'context/*request*    req
                               #'context/*action-idx* (atom 0)})
        (try
-         (let [body       (safe-render render-fn req)
-               title-spec (when (and (seq route-index) route)
-                            (routes/find-route-title route-index (:name route)))
-               title      (routes/resolve-title title-spec req)
-               head       (some-> (routes/resolve-head (get @app-state* :head) req)
-                                  mark-head-elements)]
-           {:title title
-            :head  head
-            :body  body
-            :url   url})
+         (let [body (safe-render render-fn req)]
+           ;; Ring response passthrough — render-fn returned a redirect,
+           ;; error, or other non-hiccup response; pass it through as-is.
+           (if (and (map? body) (:status body))
+             body
+             (let [title-spec (when (and (seq route-index) route)
+                                (routes/find-route-title route-index (:name route)))
+                   title      (routes/resolve-title title-spec req)
+                   head       (some-> (routes/resolve-head (get @app-state* :head) req)
+                                      mark-head-elements)]
+               {:title     title
+                :head-html (some-> head c/html)
+                :body-html (c/html body)
+                :url       url})))
          (finally
            (pop-thread-bindings)))))))
 

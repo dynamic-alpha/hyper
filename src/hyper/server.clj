@@ -77,18 +77,17 @@
               (let [sent? (try
                             ;; Clean slate — remove stale actions before re-rendering
                             (actions/cleanup-tab-actions! app-state* tab-id)
-                            (when-let [{:keys [title head body url]}
+                            (when-let [{:keys [title head-html body-html url]}
                                        (render/render-tab app-state* session-id tab-id)]
-                              (let [head-html   (some-> head c/html)
-                                    head-event  (render/format-head-update title head-html)
-                                    div-attrs   (cond-> {:id "hyper-app"}
-                                                  url (assoc :data-hyper-url url))
-                                    body-html   (c/html [:div div-attrs body])
-                                    body-event  (render/format-datastar-fragment body-html)
-                                    sse-payload (str head-event body-event)
-                                    payload     (if br-stream
-                                                  (br/compress-stream br-out br-stream sse-payload)
-                                                  sse-payload)]
+                              (let [head-event   (render/format-head-update title head-html)
+                                    div-attrs    (cond-> {:id "hyper-app"}
+                                                   url (assoc :data-hyper-url url))
+                                    wrapped-html (c/html [:div div-attrs (c/raw body-html)])
+                                    body-event   (render/format-datastar-fragment wrapped-html)
+                                    sse-payload  (str head-event body-event)
+                                    payload      (if br-stream
+                                                   (br/compress-stream br-out br-stream sse-payload)
+                                                   sse-payload)]
                                 (boolean (http-kit/send! channel payload false))))
                             (catch Throwable e
                               (t/error! e {:id   :hyper.error/renderer
@@ -352,26 +351,25 @@
         (render/register-render-fn! app-state* tab-id render-fn)
         (state/set-tab-route! app-state* tab-id route-info)
 
-        (let [{:keys [title head body]} (render/render-tab app-state* session-id tab-id req)]
-          ;; If the render fn returns a Ring response map (e.g. a 302
-          ;; redirect), pass it through without wrapping in HTML.
-          (if (and (map? body) (:status body))
-            body
-            (let [title      (or title "Hyper App")
-                  extra-head (when head (c/raw (c/html head)))
-                  html       (c/html
-                               [c/doctype-html5
-                                [:html
-                                 [:head
-                                  [:meta {:charset "UTF-8"}]
-                                  [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
-                                  [:title title]
-                                  (datastar-script)
-                                  extra-head]
-                                 [:body
-                                  {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
-                                  [:div {:id "hyper-app"} body]
-                                  (hyper-scripts tab-id)]]])]
+        (let [result (render/render-tab app-state* session-id tab-id req)]
+          ;; Ring response passthrough (e.g. a 302 redirect)
+          (if (:status result)
+            result
+            (let [{:keys [title head-html body-html]} result
+                  title                               (or title "Hyper App")
+                  html                                (c/html
+                                                        [c/doctype-html5
+                                                         [:html
+                                                          [:head
+                                                           [:meta {:charset "UTF-8"}]
+                                                           [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
+                                                           [:title title]
+                                                           (datastar-script)
+                                                           (when head-html (c/raw head-html))]
+                                                          [:body
+                                                           {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
+                                                           [:div {:id "hyper-app"} (c/raw body-html)]
+                                                           (hyper-scripts tab-id)]]])]
               {:status  200
                :headers {"Content-Type" "text/html; charset=utf-8"}
                :body    html})))))))
