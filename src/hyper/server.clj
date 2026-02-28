@@ -358,7 +358,7 @@
           (if (and (map? body) (:status body))
             body
             (let [title      (or title "Hyper App")
-                  extra-head (when head (c/html head))
+                  extra-head (when head (c/raw (c/html head)))
                   html       (c/html
                                [c/doctype-html5
                                 [:html

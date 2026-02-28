@@ -119,6 +119,24 @@
       (is (.contains (:body response) "data-hyper-head")
           "Head elements are marked for SSE management")))
 
+  (testing "Head elements render as HTML inside <head>, not as escaped text in <body>"
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*
+                                            {:head [:style "body { color: red; }"]})
+          response   (handler {:uri "/" :request-method :get})
+          html       (:body response)
+          head-end   (.indexOf html "</head>")
+          body-start (.indexOf html "<body")]
+      (is (= 200 (:status response)))
+      ;; The <style> tag must appear inside <head>, before </head>
+      (is (pos? (.indexOf (.substring html 0 head-end) "<style"))
+          "Style element should be inside <head>")
+      ;; The <style> tag must NOT appear as escaped text in the <body>
+      (is (neg? (.indexOf (.substring html body-start) "&lt;style"))
+          "Style element should not appear as escaped HTML text in <body>")))
+
   (testing "Serves static assets from :static-dir"
     (let [tmp-path   (java.nio.file.Files/createTempDirectory
                        "hyper-static-"
