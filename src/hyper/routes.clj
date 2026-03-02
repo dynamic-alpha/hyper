@@ -4,7 +4,7 @@
    Pure functions for looking up route metadata by name, resolving
    titles/head content, and reading the current routes (supporting
    live-reloading via Var indirection)."
-  (:require [reitit.core :as r]))
+  (:require [reitit.core :as reitit]))
 
 (defn index-routes
   "Build a {route-name → route-data} map from a routes vector for O(1) lookups."
@@ -15,8 +15,8 @@
                   [n data])))
         ;; Lookup Reitit's understanding of the routes.
         (-> routes
-            r/router
-            r/routes)))
+            reitit/router
+            reitit/routes)))
 
 (defn find-render-fn
   "Find the :get handler for a named route."
