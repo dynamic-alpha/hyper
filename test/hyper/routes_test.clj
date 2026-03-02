@@ -13,6 +13,19 @@
    ["/users/:id" {:name :user-profile
                   :get  (fn [_] [:div "User"])}]])
 
+(def denormalized-sample-routes 
+  [["" 
+    ["/" 
+     ["" {:name  :home
+          :get   (fn [_] [:div "Home"])
+          :title "Home"}]]
+    ["/about"
+     ["" {:name  :about
+          :get   (fn [_] [:div "About"])
+          :title (fn [_req] "About Us")}]]
+    ["/users/:id" {:name :user-profile
+                   :get  (fn [_] [:div "User"])}]]])
+
 (deftest index-routes-test
   (testing "builds name->data map"
     (let [idx (routes/index-routes sample-routes)]
@@ -30,7 +43,21 @@
 
   (testing "returns empty map for empty routes"
     (is (= {} (routes/index-routes [])))
-    (is (= {} (routes/index-routes nil)))))
+    (is (= {} (routes/index-routes nil))))
+  
+  (testing "normalizes route data"
+    (let [idx (routes/index-routes sample-routes)
+          normal-idx (routes/index-routes denormalized-sample-routes)]
+      ;; Strips out anonymous functions that would vary.
+      (is (= (-> idx :home
+                 (dissoc :get))
+             
+             (-> normal-idx :home
+                 (dissoc :get))))
+      (is (= (-> idx :user-profile 
+                 (dissoc :get))
+             (-> normal-idx :user-profile
+                 (dissoc :get)))))))
 
 (deftest find-render-fn-test
   (let [idx (routes/index-routes sample-routes)]
