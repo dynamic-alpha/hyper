@@ -232,6 +232,73 @@
       (is (= 302 (:status unauthed)))
       (is (= "/login" (get-in unauthed [:headers "Location"]))))))
 
+(deftest test-create-handler-with-denormalized-routes
+  (testing "Denormalized (nested) routes are served and receive hyper context"
+    (let [received-req (atom nil)
+          app-state*   (atom (state/init-state))
+          routes       [[""
+                         ["/"
+                          ["" {:name :home
+                               :get  (fn [req]
+                                       (reset! received-req req)
+                                       [:div "Home"])}]]
+                         ["/about"
+                          ["" {:name  :about
+                               :get   (fn [_] [:div "About"])
+                               :title "About Us"}]]
+                         ["/users/:id" {:name :user-profile
+                                        :get  (fn [_] [:div "User"])}]]]
+          handler      (server/create-handler routes app-state*)
+          response     (handler {:uri "/" :request-method :get})]
+      (is (= 200 (:status response))
+          "Nested home route should be served")
+      (is (.contains (:body response) "Home"))
+      (is (some? @received-req)
+          "Handler should have been called")
+      (is (string? (:hyper/session-id @received-req))
+          "Request should carry :hyper/session-id")
+      (is (string? (:hyper/tab-id @received-req))
+          "Request should carry :hyper/tab-id")
+      (is (= app-state* (:hyper/app-state @received-req))
+          "Request should carry :hyper/app-state")))
+
+  (testing "All sibling routes in a denormalized tree are reachable"
+    (let [app-state* (atom (state/init-state))
+          routes     [[""
+                       ["/"
+                        ["" {:name :home
+                             :get  (fn [_] [:div "Home"])}]]
+                       ["/about"
+                        ["" {:name  :about
+                             :get   (fn [_] [:div "About"])
+                             :title "About Us"}]]
+                       ["/users/:id" {:name :user-profile
+                                      :get  (fn [_] [:div "User"])}]]]
+          handler    (server/create-handler routes app-state*)]
+      (is (= 200 (:status (handler {:uri "/about" :request-method :get}))))
+      (is (.contains (:body (handler {:uri "/about" :request-method :get})) "About"))
+      (is (= 200 (:status (handler {:uri "/users/42" :request-method :get}))))
+      (is (.contains (:body (handler {:uri "/users/42" :request-method :get})) "User"))))
+
+  (testing "Denormalized routes are indexed correctly in app-state"
+    (let [app-state* (atom (state/init-state))
+          routes     [[""
+                       ["/"
+                        ["" {:name :home
+                             :get  (fn [_] [:div "Home"])}]]
+                       ["/about"
+                        ["" {:name  :about
+                             :get   (fn [_] [:div "About"])
+                             :title "About Us"}]]
+                       ["/users/:id" {:name :user-profile
+                                      :get  (fn [_] [:div "User"])}]]]
+          _handler   (server/create-handler routes app-state*)
+          route-idx  (routes/live-route-index app-state*)]
+      (is (contains? route-idx :home))
+      (is (contains? route-idx :about))
+      (is (contains? route-idx :user-profile))
+      (is (= "About Us" (routes/find-route-title route-idx :about))))))
+
 (deftest test-create-handler-with-hyper-disabled
   (testing "render fn can disable endpoint wrapping"
     (let [app-state*  (atom (state/init-state))

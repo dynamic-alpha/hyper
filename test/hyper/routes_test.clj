@@ -13,6 +13,19 @@
    ["/users/:id" {:name :user-profile
                   :get  (fn [_] [:div "User"])}]])
 
+(def denormalized-sample-routes
+  [[""
+    ["/"
+     ["" {:name  :home
+          :get   (fn [_] [:div "Home"])
+          :title "Home"}]]
+    ["/about"
+     ["" {:name  :about
+          :get   (fn [_] [:div "About"])
+          :title (fn [_req] "About Us")}]]
+    ["/users/:id" {:name :user-profile
+                   :get  (fn [_] [:div "User"])}]]])
+
 (deftest index-routes-test
   (testing "builds name->data map"
     (let [idx (routes/index-routes sample-routes)]
@@ -30,7 +43,20 @@
 
   (testing "returns empty map for empty routes"
     (is (= {} (routes/index-routes [])))
-    (is (= {} (routes/index-routes nil)))))
+    (is (= {} (routes/index-routes nil))))
+
+  (testing "handles nested/denormalized reitit-style route trees"
+    (let [idx (routes/index-routes denormalized-sample-routes)]
+      (is (= 3 (count idx)))
+      (is (contains? idx :home))
+      (is (contains? idx :about))
+      (is (contains? idx :user-profile))))
+
+  (testing "nested routes preserve route data"
+    (let [idx (routes/index-routes denormalized-sample-routes)]
+      (is (= "Home" (:title (idx :home))))
+      (is (fn? (:title (idx :about))))
+      (is (fn? (:get (idx :home)))))))
 
 (deftest find-render-fn-test
   (let [idx (routes/index-routes sample-routes)]

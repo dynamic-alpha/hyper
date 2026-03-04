@@ -427,20 +427,21 @@
    compiles the reitit router, and updates app-state with the current routes and router.
    Returns the compiled Ring handler (without outer middleware)."
   [user-routes app-state* page-wrapper system-routes]
-  (let [wrapped-routes (mapv (fn [[path route-data]]
+  (let [flat-routes    (-> user-routes reitit/router reitit/routes)
+        wrapped-routes (mapv (fn [[path route-data]]
                                (if (and (:get route-data) (not (:hyper/disabled? route-data)))
                                  [path (update route-data :get (fn [handler] (page-wrapper handler)))]
                                  [path route-data]))
-                             user-routes)
+                             flat-routes)
         all-routes     (concat system-routes wrapped-routes)
         router         (ring/router all-routes
                                     {:conflicts nil
                                      :data      {:coercion   malli/coercion
                                                  :middleware [ring-coercion/coerce-request-middleware]}})]
-    ;; Store routes and router in app-state for access during actions/renders/navigation
+    ;; Store the flattened routes and router in app-state for access during actions/renders/navigation
     (swap! app-state* assoc
            :router router
-           :routes user-routes)
+           :routes flat-routes)
     (ring/ring-handler router (ring/create-default-handler))))
 
 (defn- wrap-static
