@@ -438,6 +438,9 @@ and the `<title>` are all kept in sync reactively.
            [:script {:defer true :src "/app.js"}] ]))
 ```
 
+Pass `:head` as a Var (`#'my-head`) to enable live-reloading — when you
+redefine it at the REPL, all connected tabs automatically update their `<head>`.
+
 This is typically how you’d include your compiled Tailwind stylesheet.
 
 ## Brotli compression
@@ -515,5 +518,7 @@ The E2E suite covers:
   cursors propagate to exactly the right scope
 - **Title live reload** — redefining the routes Var updates `document.title`
   via SSE without a page refresh
+- **Head live reload** — redefining the `:head` Var hot-swaps `<head>` content
+  via SSE
 - **Content live reload** — redefining the routes Var with new inline handler
   functions hot-swaps the page content via SSE

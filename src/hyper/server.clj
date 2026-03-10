@@ -210,6 +210,11 @@
                                           (when-let [routes-source (get @app-state* :routes-source)]
                                             (when (var? routes-source)
                                               (watch/watch-source! app-state* tab-id trigger-render! routes-source)))
+                                          ;; Auto-watch the head Var so head content changes
+                                          ;; trigger re-renders for all connected tabs
+                                          (when-let [head (get @app-state* :head)]
+                                            (when (var? head)
+                                              (watch/watch-source! app-state* tab-id trigger-render! head)))
                                           ;; Set up route-level watches (:watches + Var :get handlers)
                                           (watch/setup-route-watches! app-state* tab-id trigger-render!)))
 
@@ -511,7 +516,7 @@
          ;; Store the routes source (Var or value) so title resolution can
          ;; always read the latest route metadata, even between router rebuilds.
          ;; Store global :watches so find-route-watches can prepend them to
-         ;; every page route's watch list.
+         ;; every page route's watch list. Auto-watch :head if it's a Var.
          _                                        (swap! app-state* assoc
                                                          :routes-source routes
                                                          :global-watches (vec watches)

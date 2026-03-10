@@ -76,6 +76,7 @@
 
    - If :head is a function, it is called with the Ring request (already enriched
      with Hyper context) and should return hiccup nodes.
+   - If :head is a Var, dereferences and calls the resulting function with req.
    - Otherwise, :head is treated as hiccup and used as-is.
 
    Intended for injecting stylesheets/scripts (e.g. Tailwind output CSS) without
@@ -83,5 +84,6 @@
   [head req]
   (cond
     (fn? head)   (head req)
+    (var? head)  (resolve-head @head req)
     (some? head) head
     :else        nil))
