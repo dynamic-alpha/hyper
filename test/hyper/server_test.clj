@@ -119,6 +119,21 @@
       (is (.contains (:body response) "data-hyper-head")
           "Head elements are marked for SSE management")))
 
+  (testing "Allows :head to be a Var containing a function"
+    (let [app-state* (atom (state/init-state))
+          head-var   (intern *ns* (gensym "head-")
+                             (fn [_req] [[:meta {:name "test-head" :content "from-var"}]]))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*
+                                            {:head head-var})
+          response   (handler {:uri "/" :request-method :get})]
+      (is (= 200 (:status response)))
+      (is (.contains (:body response) "name=\"test-head\""))
+      (is (.contains (:body response) "content=\"from-var\""))
+      (is (.contains (:body response) "data-hyper-head")
+          "Head elements are marked for SSE management")))
+
   (testing "Head elements render as HTML inside <head>, not as escaped text in <body>"
     (let [app-state* (atom (state/init-state))
           routes     [["/" {:name :home
@@ -331,7 +346,37 @@
           routes     [["/" {:name :home
                             :get  (fn [_req] [:div "Home"])}]]
           _handler   (server/create-handler routes app-state* {})]
-      (is (= [] (:global-watches @app-state*))))))
+      (is (= [] (:global-watches @app-state*)))))
+
+  (testing "Var-based :head is auto-added to global-watches"
+    (let [app-state* (atom (state/init-state))
+          head-var   (intern *ns* (gensym "head-")
+                             (fn [_req] [:style "body{}"]))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          _handler   (server/create-handler routes app-state*
+                                            {:head head-var})]
+      (is (= [head-var] (:global-watches @app-state*)))))
+
+  (testing "Non-Var :head does not add to global-watches"
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          _handler   (server/create-handler routes app-state*
+                                            {:head [:style "body{}"]})]
+      (is (= [] (:global-watches @app-state*)))))
+
+  (testing "Combining :watches and Var :head"
+    (let [app-state* (atom (state/init-state))
+          global-src (atom 0)
+          head-var   (intern *ns* (gensym "head-")
+                             (fn [_req] [:style "body{}"]))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          _handler   (server/create-handler routes app-state*
+                                            {:watches [global-src]
+                                             :head    head-var})]
+      (is (= [global-src head-var] (:global-watches @app-state*))))))
 
 (deftest test-server-lifecycle
   (testing "Server start and stop"

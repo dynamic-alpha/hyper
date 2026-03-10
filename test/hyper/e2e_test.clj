@@ -101,6 +101,11 @@
 
 (def ^:dynamic *test-routes* (default-routes))
 
+;; Head var for hot-reload testing
+(defn- test-head-var
+  [_]
+  [:style "v1"])
+
 ;; ---------------------------------------------------------------------------
 ;; Server lifecycle
 ;; ---------------------------------------------------------------------------
@@ -112,7 +117,7 @@
 
 (defn start-test-server! []
   (reset! test-state* (atom (state/init-state)))
-  (let [handler (h/create-handler #'*test-routes* :app-state @test-state*)]
+  (let [handler (h/create-handler #'*test-routes* :app-state @test-state* :head #'test-head-var)]
     (reset! test-server (h/start! handler {:port test-port}))))
 
 (defn stop-test-server! []
@@ -230,9 +235,9 @@
 
 (use-fixtures :each
   (fn [f]
-    ;; Reset routes and app state before each test, preserving
-    ;; infrastructure keys (:routes-source, etc.)
-    ;; that create-handler stored in the app-state atom.
+     ;; Reset routes and app state before each test, preserving
+     ;; infrastructure keys (:routes-source, :head, etc.)
+     ;; that create-handler stored in the app-state atom.
     (alter-var-root #'*test-routes* (constantly (default-routes)))
     (when @test-state*
       (swap! @test-state*
@@ -240,6 +245,7 @@
                (merge (state/init-state)
                       (select-keys old-state
                                    [:routes-source
+                                    :head
                                     :router :routes])))))
     (f)))
 
@@ -573,6 +579,38 @@
           (is (= "Live Reloaded!" (w/text-content "h1")))
           (is (= "This content was hot-swapped"
                  (w/text-content "#reloaded-marker")))))
+
+      (finally
+        (close-browser! browser-info)))))
+
+(deftest ^:e2e head-redef-test
+  (let [browser-info (launch-browser)
+        ctx          (new-context browser-info)
+        page         (new-page ctx)]
+    (try
+      (w/with-page page
+        (w/navigate (str base-url "/"))
+        (wait-for-sse)
+
+        ;; Verify initial head content
+        (testing "Initial head content present"
+          (Thread/sleep 500)
+          (is (= "v1" (w/text-content "style"))))
+
+        ;; Redefine head Var
+        (testing "Head updates after head Var is redefined"
+          (alter-var-root #'test-head-var (constantly (fn [_] [:style "v2"])))
+          (Thread/sleep 500)
+
+          ;; Wait for SSE to re-render
+          (let [deadline (+ (System/currentTimeMillis) 5000)]
+            (loop []
+              (let [content (w/text-content "style")]
+                (when (and (not= "v2" content)
+                           (< (System/currentTimeMillis) deadline))
+                  (Thread/sleep 100)
+                  (recur)))))
+          (is (= "v2" (w/text-content "style")))))
 
       (finally
         (close-browser! browser-info)))))

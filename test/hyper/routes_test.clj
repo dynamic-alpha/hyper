@@ -159,4 +159,10 @@
 
   (testing "static value returned as-is"
     (is (= [:style "body{}"]
-           (routes/resolve-head [:style "body{}"] {})))))
+           (routes/resolve-head [:style "body{}"] {}))))
+
+  (testing "Var is dereferenced and called with request"
+    (let [head-var (intern *ns* (gensym "head-")
+                           (fn [req] [:link {:href (:css req)}]))]
+      (is (= [:link {:href "/app.css"}]
+             (routes/resolve-head head-var {:css "/app.css"}))))))
