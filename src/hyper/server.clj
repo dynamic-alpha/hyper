@@ -205,16 +205,12 @@
                                           (swap! app-state* assoc-in [:tabs tab-id :renderer] renderer)
 
                                           (watch/setup-watchers! app-state* session-id tab-id trigger-render!)
-                                          ;; Auto-watch the routes Var so title/route changes
+                                          ;; Auto-watch any Var sources (routes, head) so re-defs
                                           ;; trigger re-renders for all connected tabs
-                                          (when-let [routes-source (get @app-state* :routes-source)]
-                                            (when (var? routes-source)
-                                              (watch/watch-source! app-state* tab-id trigger-render! routes-source)))
-                                          ;; Auto-watch the head Var so head content changes
-                                          ;; trigger re-renders for all connected tabs
-                                          (when-let [head (get @app-state* :head)]
-                                            (when (var? head)
-                                              (watch/watch-source! app-state* tab-id trigger-render! head)))
+                                          (let [{:keys [routes-source head]} @app-state*]
+                                            (doseq [source (->>  [routes-source head]
+                                                                 (filter var?))]
+                                              (watch/watch-source! app-state* tab-id trigger-render! source)))
                                           ;; Set up route-level watches (:watches + Var :get handlers)
                                           (watch/setup-route-watches! app-state* tab-id trigger-render!)))
 
