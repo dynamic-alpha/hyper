@@ -38,7 +38,24 @@
     (let [html     "<span>test</span>"
           fragment (render/format-datastar-fragment html)]
       (is (.contains fragment html))
-      (is (.startsWith fragment "event: datastar-patch-elements\n")))))
+      (is (.startsWith fragment "event: datastar-patch-elements\n"))))
+
+  (testing "HTML with 2 newlines emits multiple data lines"
+    (let [html     "<pre>code\nwith\nnewline</pre>"
+          fragment (render/format-datastar-fragment html)]
+      (is (= 3 (count (re-seq #"data: elements" fragment))))
+      (is (.contains fragment "<pre>code"))
+      (is (.contains fragment "with"))
+      (is (.contains fragment "newline</pre>"))
+      (is (.endsWith fragment "\n\n"))))
+
+  (testing "HTML with double newlines emits multiple data lines"
+    (let [html     "<textarea>line1\n\nline2</textarea>"
+          fragment (render/format-datastar-fragment html)]
+      (is (= 3 (count (re-seq #"data: elements" fragment))))
+      (is (.contains fragment "<textarea>line1"))
+      (is (.contains fragment "line2</textarea>"))
+      (is (.endsWith fragment "\n\n")))))
 
 (deftest test-render-tab
   (testing "render-tab returns nil when no render-fn is registered"

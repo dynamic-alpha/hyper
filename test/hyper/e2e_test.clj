@@ -578,8 +578,22 @@
 
           (is (= "Live Reloaded!" (w/text-content "h1")))
           (is (= "This content was hot-swapped"
-                 (w/text-content "#reloaded-marker")))))
+                 (w/text-content "#reloaded-marker"))))
 
+        ;; Test that content with newlines renders correctly
+        (testing "Content with newlines preserved in route handler"
+          (alter-var-root #'*test-routes*
+                          (constantly
+                            [["/" {:name  :home
+                                   :title "Newlines Test"
+                                   :get   (fn [_]
+                                            [:div
+                                             [:textarea#newline-content "line1\nline2"]
+                                             [:pre#pre-content "code\nwith\n\nnew\n\nlines\n\n"]])}]]))
+          (w/navigate (str base-url "/"))
+          (wait-for-sse)
+          (is (= "line1\nline2" (w/text-content "#newline-content")))
+          (is (= "code\nwith\n\nnew\n\nlines\n\n" (w/text-content "#pre-content")))))
       (finally
         (close-browser! browser-info)))))
 
