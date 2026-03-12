@@ -2,7 +2,8 @@
   "Rendering pipeline.
 
    Handles rendering hiccup to HTML and formatting Datastar SSE events."
-  (:require [dev.onionpancakes.chassis.core :as c]
+  (:require [clojure.string :as string]
+            [dev.onionpancakes.chassis.core :as c]
             [hyper.context :as context]
             [hyper.routes :as routes]
             [hyper.state :as state]
@@ -27,10 +28,16 @@
    event: datastar-patch-elements
    data: elements <html content>
 
-   (blank line to end event)"
+   For multi-line HTML content, emits multiple 'data: elements' lines
+   that Datastar will concatenate. This prevents \n in HTML from
+   prematurely terminating the SSE event."
   [html]
-  (str "event: datastar-patch-elements\n"
-       "data: elements " html "\n\n"))
+  (let [lines (string/split-lines html)]
+    (str "event: datastar-patch-elements\n"
+         (->> lines
+              (map (fn [line] (str "data: elements " line "\n")))
+              (apply str))
+         "\n")))
 
 (defn mark-head-elements
   "Add `{:data-hyper-head true}` to each top-level hiccup element in a
