@@ -1,6 +1,9 @@
 (ns hyper.server-test
   (:require [clojure.java.io :as io]
+            [clojure.string :as string]
             [clojure.test :refer [deftest is testing]]
+            [matcher-combinators.test :refer [match?]]
+            [matcher-combinators.matchers :as m]
             [hyper.actions :as actions]
             [hyper.render :as render]
             [hyper.routes :as routes]
@@ -71,13 +74,14 @@
 
       (is (.contains (:body response) "tab: tab-from-query")))))
 
-(deftest test-datastar-script
+(deftest test-default-datastar-script
   (testing "Datastar script tag generation"
-    (let [script (server/datastar-script)]
+    (let [script (server/default-datastar-script)]
       (is (vector? script))
-      (is (= :script (first script)))
-      (is (contains? (second script) :src))
-      (is (.contains (get (second script) :src) "datastar")))))
+      (is (match?
+            [:script {:src  #".*datastar.*"
+                      :type "module"}]
+            script)))))
 
 (deftest test-create-handler
   (testing "Creates a working ring handler"
@@ -118,6 +122,36 @@
       (is (.contains (:body response) "content=\"ok\""))
       (is (.contains (:body response) "data-hyper-head")
           "Head elements are marked for SSE management")))
+
+  (testing "Datastar script override"
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*
+                                            {:head            (fn [_req]
+                                                                [[:meta {:name "test" :content "ok"}]])
+                                             :datastar-script [:script {:src "something-else.js"}]})
+          response   (handler {:uri "/" :request-method :get})]
+      (is (match?
+            {:status 200
+             :body   (m/pred #(string/includes? % "<script src=\"something-else.js\">"))}
+            response))
+      (is (= 200 (:status response)))))
+
+  (testing "Datastar script suppress"
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*
+                                            {:head            (fn [_req]
+                                                                [[:meta {:name "test" :content "ok"}]])
+                                             :datastar-script nil})
+          response   (handler {:uri "/" :request-method :get})]
+      (is (match?
+            {:status 200
+             :body   (m/pred #(not (string/includes? % "<script src=")))}
+            response))
+      (is (= 200 (:status response)))))
 
   (testing "Allows :head to be a Var containing a function"
     (let [app-state* (atom (state/init-state))

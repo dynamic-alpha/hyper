@@ -165,8 +165,8 @@
                          :max-age   (* 60 60 24 7)}) ;; 7 days
               response)))))))
 
-(defn datastar-script
-  "Returns the Datastar CDN script tag."
+(defn default-datastar-script
+  "Returns the default Datastar CDN script tag."
   []
   [:script {:type "module"
             :src  "https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js"}])
@@ -339,10 +339,8 @@
    re-resolution, title/head resolution).
 
    Options:
-   - :head Hiccup nodes to append into the <head>, or (fn [req] ...) -> hiccup.
-           When head is a function, it is re-evaluated on each SSE render cycle
-           and the full <head> is pushed to the client."
-  [app-state* _opts]
+   - :datastar-script - Hiccup content for Datastar script added to document head, or nil."
+  [app-state* {:keys [datastar-script]}]
   (fn [render-fn]
     (fn [req]
       (let [tab-id     (:hyper/tab-id req)
@@ -365,7 +363,7 @@
                                                            [:meta {:charset "UTF-8"}]
                                                            [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
                                                            [:title title]
-                                                           (datastar-script)
+                                                           datastar-script
                                                            (when head-html (c/raw head-html))]
                                                           [:body
                                                            {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
@@ -494,6 +492,7 @@
    Options:
    - :head              Hiccup nodes appended to the <head> (e.g. stylesheet <link>),
                         or (fn [req] ...) -> hiccup nodes appended to the <head>
+   - :datastar-script   Hiccup nodes for the Datastar script (or nil to suppress)                           
    - :static-resources  Classpath resource root(s) to serve as static assets
    - :static-dir        Filesystem directory (or directories) to serve as static assets
    - :watches           Vector of Watchable sources added to every page route.
@@ -503,7 +502,7 @@
    Routes should use :get handlers that return hiccup (Chassis vectors).
    Hyper will wrap them to provide full HTML responses and SSE connections."
   ([routes app-state*]
-   (create-handler routes app-state* {}))
+   (create-handler routes app-state* {:datastar-script (default-datastar-script)}))
   ([routes app-state* {:keys [watches head] :as opts}]
    (let [page-wrapper                             (page-handler app-state* opts)
          system-routes                            [["/hyper/events" {:get (sse-events-handler app-state*)}]
