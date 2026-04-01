@@ -316,7 +316,7 @@
      ;; Later...
      (stop! app)"
   [routes & {:keys [app-state head static-resources static-dir watches datastar-script]
-             :or   {app-state (atom (state/init-state))
+             :or   {app-state       (atom (state/init-state))
                     datastar-script server/default-datastar-script}}]
   (server/create-handler routes app-state
                          {:head             head
