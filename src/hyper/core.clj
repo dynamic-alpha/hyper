@@ -282,6 +282,7 @@
 
    Options (keyword arguments):
    - :app-state         — Atom for application state (default: fresh atom)
+   - :datastar-script   - Override of the default datastar script (as Hiccup) or nil to suppress
    - :head              — Hiccup nodes appended to the HTML <head>, or (fn [req] ...) -> hiccup
    - :static-resources  — Classpath resource root(s) to serve as static assets
    - :static-dir        — Filesystem directory (or directories) to serve as static assets
@@ -314,10 +315,12 @@
      (def app (start! handler {:port 3000}))
      ;; Later...
      (stop! app)"
-  [routes & {:keys [app-state head static-resources static-dir watches]
-             :or   {app-state (atom (state/init-state))}}]
+  [routes & {:keys [app-state head static-resources static-dir watches datastar-script]
+             :or   {app-state (atom (state/init-state))
+                    datastar-script server/default-datastar-script}}]
   (server/create-handler routes app-state
                          {:head             head
+                          :datastar-script  datastar-script
                           :static-resources static-resources
                           :static-dir       static-dir
                           :watches          watches}))
