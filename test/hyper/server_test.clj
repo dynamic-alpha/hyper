@@ -2,14 +2,14 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
             [clojure.test :refer [deftest is testing]]
-            [matcher-combinators.test :refer [match?]]
-            [matcher-combinators.matchers :as m]
             [hyper.actions :as actions]
             [hyper.render :as render]
             [hyper.routes :as routes]
             [hyper.server :as server]
             [hyper.state :as state]
-            [hyper.watch :as watch]))
+            [hyper.watch :as watch]
+            [matcher-combinators.matchers :as m]
+            [matcher-combinators.test :refer [match?]]))
 
 (deftest test-generate-session-id
   (testing "Session ID generation"
@@ -135,8 +135,7 @@
       (is (match?
             {:status 200
              :body   (m/pred #(string/includes? % "<script src=\"something-else.js\">"))}
-            response))
-      (is (= 200 (:status response)))))
+            response))))
 
   (testing "Datastar script suppress"
     (let [app-state* (atom (state/init-state))
@@ -150,8 +149,7 @@
       (is (match?
             {:status 200
              :body   (m/pred #(not (string/includes? % "<script src=")))}
-            response))
-      (is (= 200 (:status response)))))
+            response))))
 
   (testing "Allows :head to be a Var containing a function"
     (let [app-state* (atom (state/init-state))
