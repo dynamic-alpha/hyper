@@ -154,6 +154,31 @@
            "',{method:'POST',headers:{'Content-Type':'application/json'}"
            ",body:JSON.stringify({" json-entries "})})"))))
 
+(defn set-cookie!
+  "Set a cookie on the HTTP response for the current action.
+   Must be called from within an action handler (i.e. inside an `action` body).
+
+   name:  Cookie name string
+   value: Cookie value string
+   opts:  Map of Ring cookie options — any subset of:
+     :http-only  — boolean, prevents JS access (recommended: true)
+     :secure     — boolean, HTTPS-only (recommended: true in production)
+     :max-age    — integer seconds until expiry
+     :path       — string (default \"/\")
+     :same-site  — :strict, :lax, or :none
+     :domain     — string
+
+   Example:
+     (action
+       (when-let [user (authenticate! $form-data)]
+         (reset! (session-cursor :user) user)
+         (set-cookie! \"auth-token\" (:jwt user)
+                      {:http-only true :secure true :max-age (* 60 60 24 30)})))"
+  [name value opts]
+  (if context/*pending-cookies*
+    (swap! context/*pending-cookies* assoc name (assoc opts :value value))
+    (throw (ex-info "set-cookie! called outside an action context" {:cookie-name name}))))
+
 (defmacro action
   "Create a server action expression for use in Datastar event attributes.
    Returns a Datastar expression string that can be bound to any event.
@@ -289,6 +314,10 @@
    - :watches           — Vector of Watchable sources added to every page route.
                           Useful for top-level atoms that should trigger a re-render
                           on any page (e.g. a global config or feature-flags atom).
+   - :before-render     — (fn [req] ...) called on every initial page load before the
+                          route's render function runs, with the request context bound.
+                          Use this to restore session state from long-lived cookies
+                          (e.g. a JWT auth token). Has full access to cursor functions.
 
    Example:
      (def routes
@@ -315,7 +344,7 @@
      (def app (start! handler {:port 3000}))
      ;; Later...
      (stop! app)"
-  [routes & {:keys [app-state head static-resources static-dir watches datastar-script]
+  [routes & {:keys [app-state head static-resources static-dir watches datastar-script before-render]
              :or   {app-state       (atom (state/init-state))
                     datastar-script server/default-datastar-script}}]
   (server/create-handler routes app-state
@@ -323,7 +352,8 @@
                           :datastar-script  datastar-script
                           :static-resources static-resources
                           :static-dir       static-dir
-                          :watches          watches}))
+                          :watches          watches
+                          :before-render    before-render}))
 
 (defn start!
   "Start the hyper application server.

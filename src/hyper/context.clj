@@ -12,6 +12,10 @@
 ;; enabling effective brotli streaming compression.
 (def ^:dynamic *action-idx* nil)
 
+;; Atom accumulating cookies to be set on the action HTTP response.
+;; Bound to a fresh atom before each action execution; nil outside actions.
+(def ^:dynamic *pending-cookies* nil)
+
 (defn require-context!
   "Extract and validate the request context from *request*.
    Throws if called outside a request context or if required keys are missing.
