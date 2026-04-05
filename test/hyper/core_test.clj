@@ -173,6 +173,33 @@
           ;; Render fn should be swapped
           (is (= about-fn (get-in @app-state* [:tabs tab-id :render-fn]))))))))
 
+(deftest test-set-cookie
+  (testing "throws when called outside an action context"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"outside an action context"
+                          (hy/set-cookie! "foo" "bar" {}))))
+
+  (testing "accumulates a cookie into *pending-cookies*"
+    (binding [context/*pending-cookies* (atom {})]
+      (hy/set-cookie! "auth-token" "my-jwt" {:http-only true :max-age 86400 :path "/"})
+      (is (= {"auth-token" {:value "my-jwt" :http-only true :max-age 86400 :path "/"}}
+             @context/*pending-cookies*))))
+
+  (testing "multiple calls accumulate all cookies"
+    (binding [context/*pending-cookies* (atom {})]
+      (hy/set-cookie! "auth-token" "jwt-value" {:http-only true})
+      (hy/set-cookie! "theme" "dark" {:max-age (* 60 60 24 365)})
+      (is (= 2 (count @context/*pending-cookies*)))
+      (is (= "jwt-value" (get-in @context/*pending-cookies* ["auth-token" :value])))
+      (is (= "dark" (get-in @context/*pending-cookies* ["theme" :value])))))
+
+  (testing "later call overwrites earlier call for the same cookie name"
+    (binding [context/*pending-cookies* (atom {})]
+      (hy/set-cookie! "auth-token" "first" {:max-age 100})
+      (hy/set-cookie! "auth-token" "second" {:max-age 200})
+      (is (= 1 (count @context/*pending-cookies*)))
+      (is (= "second" (get-in @context/*pending-cookies* ["auth-token" :value])))
+      (is (= 200 (get-in @context/*pending-cookies* ["auth-token" :max-age]))))))
+
 (deftest test-create-handler
   (testing "creates handler with default app-state"
     (let [routes  [["/" {:name :home

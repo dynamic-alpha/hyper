@@ -3,6 +3,7 @@
             [clojure.string :as string]
             [clojure.test :refer [deftest is testing]]
             [hyper.actions :as actions]
+            [hyper.core :as hy]
             [hyper.render :as render]
             [hyper.routes :as routes]
             [hyper.server :as server]
@@ -515,3 +516,78 @@
           response   (handler {:uri "/" :request-method :get})]
       (is (= 200 (:status response)))
       (is (.contains (:body response) "Static")))))
+
+(deftest test-action-handler-set-cookie
+  (testing "action calling set-cookie! returns :cookies in response"
+    (let [app-state* (atom (state/init-state))
+          action-fn  (fn [_]
+                       (hy/set-cookie! "auth-token" "my-jwt"
+                                       {:http-only true :secure true
+                                       :max-age   86400 :path "/"}))
+          action-id  (actions/register-action! app-state* "s1" "t1" action-fn "set-cookie-action")
+          handler    (server/action-handler app-state*)
+          response   (handler {:query-params {"action-id" action-id}})]
+      (is (= 200 (:status response)))
+      (is (contains? (:cookies response) "auth-token"))
+      (is (= "my-jwt" (get-in response [:cookies "auth-token" :value])))
+      (is (true? (get-in response [:cookies "auth-token" :http-only])))
+      (is (= 86400 (get-in response [:cookies "auth-token" :max-age])))))
+
+  (testing "action with no set-cookie! call returns no :cookies key"
+    (let [app-state* (atom (state/init-state))
+          action-fn  (fn [_] nil)
+          action-id  (actions/register-action! app-state* "s1" "t1" action-fn "no-cookie-action")
+          handler    (server/action-handler app-state*)
+          response   (handler {:query-params {"action-id" action-id}})]
+      (is (= 200 (:status response)))
+      (is (nil? (seq (:cookies response))))))
+
+  (testing "multiple set-cookie! calls in one action all appear in response"
+    (let [app-state* (atom (state/init-state))
+          action-fn  (fn [_]
+                       (hy/set-cookie! "auth-token" "jwt-abc" {:http-only true :max-age 86400})
+                       (hy/set-cookie! "theme" "dark" {:max-age (* 60 60 24 365)}))
+          action-id  (actions/register-action! app-state* "s1" "t1" action-fn "multi-cookie-action")
+          handler    (server/action-handler app-state*)
+          response   (handler {:query-params {"action-id" action-id}})]
+      (is (= 200 (:status response)))
+      (is (= "jwt-abc" (get-in response [:cookies "auth-token" :value])))
+      (is (= "dark" (get-in response [:cookies "theme" :value]))))))
+
+(deftest test-before-render
+  (testing "before-render fn is called on initial page load"
+    (let [called?    (atom false)
+          app-state* (atom (state/init-state))
+          routes     [["/" {:name :home :get (fn [_] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*
+                                            {:before-render (fn [_req] (reset! called? true))})]
+      (handler {:uri "/" :request-method :get})
+      (is @called?)))
+
+  (testing "before-render receives the full ring request including parsed cookies"
+    (let [received-req (atom nil)
+          app-state*   (atom (state/init-state))
+          routes       [["/" {:name :home :get (fn [_] [:div "Home"])}]]
+          handler      (server/create-handler routes app-state*
+                                              {:before-render (fn [req] (reset! received-req req))})]
+      (handler {:uri            "/"
+                :request-method :get
+                :headers        {"cookie" "auth-token=my-jwt"}})
+      (is (some? @received-req))
+      (is (= "my-jwt" (get-in @received-req [:cookies "auth-token" :value])))))
+
+  (testing "before-render can use cursor functions to restore session state from a cookie"
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home :get (fn [_] [:div "Home"])}]]
+          handler    (server/create-handler
+                       routes app-state*
+                       {:before-render (fn [req]
+                                         (when-let [jwt (get-in req [:cookies "auth-token" :value])]
+                                           (reset! (hy/session-cursor :user) {:token jwt})))})]
+      (handler {:uri            "/"
+                :request-method :get
+                :headers        {"cookie" "auth-token=test-token-123"}})
+      (let [session-id (first (keys (:sessions @app-state*)))]
+        (is (some? session-id))
+        (is (= {:token "test-token-123"}
+               (get-in @app-state* [:sessions session-id :data :user])))))))
