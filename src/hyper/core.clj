@@ -158,6 +158,8 @@
   "Set a cookie on the HTTP response for the current action.
    Must be called from within an action handler (i.e. inside an `action` body).
 
+   Un-set a cookie by setting :max-age to 0 and the same :path as the original.
+
    name:  Cookie name string
    value: Cookie value string
    opts:  Map of Ring cookie options — any subset of:

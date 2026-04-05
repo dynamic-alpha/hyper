@@ -191,6 +191,34 @@ Example usage:
 
 When `$` symbols appear in the action body, the macro automatically generates a `fetch()` call instead of `@post()`, sending the extracted values as a JSON body. On the server, the action function receives these values bound to the corresponding `$` symbols.
 
+### Cookies (Experimental!)
+
+Cookies can be set from inside your action handler by calling the `h/set-cookie!` function:
+
+```clojure
+(h/set-cookie! "my-auth-token" my-token
+  {:http-only true
+   :secure    true
+   :path      "/"
+   :max-age   (* 60 60 24 30)})
+```
+
+Setting the same named token to max-age 0 with a matching path string will un-set the cookie:
+```clojure
+(h/set-cookie! "my-auth-token" "anything"
+  {:path      "/"
+   :max-age   0})
+```
+### Receiving cookie values
+
+When constructing your Hyper handler, add the parameter `:before-render` and supply a function which receives the Ring request when the browser first requests the page.
+
+You can read the cookie value `(get-in req [:cookies "my-auth-token" :value])`, check against existing cursors, and if needed, perform initialisation.
+
+For example, if you have a login action handler which sets a session cursor `:me`, you can check if it has a nil value in your before-render handler, and if your cookie is present, use this to identify the user and re-init session level values.
+
+You could use JWTs, or any other type of token to provide a "remember me" type of login flow, with the usual caveat that the cookie should have some signing/encryption to prevent tampering.
+
 ## Navigation
 
 Hyper uses [Reitit](https://github.com/metosin/reitit) for routing. Routes are
