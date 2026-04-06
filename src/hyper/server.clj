@@ -245,17 +245,21 @@
          :headers {"Content-Type" "application/json"}
          :body    "{\"error\": \"Missing action-id\"}"}
 
-        (let [req-with-state (assoc req
-                                    :hyper/app-state app-state*
-                                    :hyper/router (get @app-state* :router))
-              client-params  (parse-client-params req)]
-          (push-thread-bindings {#'context/*request* req-with-state})
+        (let [req-with-state  (assoc req
+                                     :hyper/app-state app-state*
+                                     :hyper/router (get @app-state* :router))
+              client-params   (parse-client-params req)
+              pending-cookies* (atom {})]
+          (push-thread-bindings {#'context/*request*         req-with-state
+                                 #'context/*pending-cookies* pending-cookies*})
           (try
             (actions/execute-action! app-state* action-id client-params)
-
-            {:status  200
-             :headers {"Content-Type" "application/json"}
-             :body    "{\"success\": true}"}
+            (let [base {:status  200
+                        :headers {"Content-Type" "application/json"}
+                        :body    "{\"success\": true}"}]
+              (if (seq @pending-cookies*)
+                (update base :cookies merge @pending-cookies*)
+                base))
 
             (catch Exception e
               (t/error! e
@@ -339,8 +343,12 @@
    re-resolution, title/head resolution).
 
    Options:
-   - :datastar-script - Hiccup content for Datastar script added to document head, or nil."
-  [app-state* {:keys [datastar-script]}]
+   - :datastar-script - Hiccup content for Datastar script added to document head, or nil.
+   - :before-render   - (fn [req] ...) called on every initial page load before the route's
+                        render function runs, with context/*request* bound. Use this to
+                        restore session state from long-lived cookies (e.g. a JWT auth token).
+                        Has full access to cursor functions (session-cursor, tab-cursor, etc.)."
+  [app-state* {:keys [datastar-script before-render]}]
   (fn [render-fn]
     (fn [req]
       (let [tab-id     (:hyper/tab-id req)
@@ -349,6 +357,10 @@
 
         (render/register-render-fn! app-state* tab-id render-fn)
         (state/set-tab-route! app-state* tab-id route-info)
+
+        (when before-render
+          (binding [context/*request* req]
+            (before-render req)))
 
         (let [result (render/render-tab app-state* session-id tab-id req)]
           ;; Ring response passthrough (e.g. a 302 redirect)
@@ -492,12 +504,16 @@
    Options:
    - :head              Hiccup nodes appended to the <head> (e.g. stylesheet <link>),
                         or (fn [req] ...) -> hiccup nodes appended to the <head>
-   - :datastar-script   Hiccup nodes for the Datastar script (or nil to suppress)                           
+   - :datastar-script   Hiccup nodes for the Datastar script (or nil to suppress)
    - :static-resources  Classpath resource root(s) to serve as static assets
    - :static-dir        Filesystem directory (or directories) to serve as static assets
    - :watches           Vector of Watchable sources added to every page route.
                         Useful for top-level atoms that should trigger a re-render
                         on any page (e.g. a global config or feature-flags atom).
+   - :before-render     (fn [req] ...) called on every initial page load before the
+                        route's render function runs. Use this to restore session state
+                        from long-lived cookies (e.g. a JWT auth token). Has full access
+                        to cursor functions (session-cursor, tab-cursor, etc.).
 
    Routes should use :get handlers that return hiccup (Chassis vectors).
    Hyper will wrap them to provide full HTML responses and SSE connections."
