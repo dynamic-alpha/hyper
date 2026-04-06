@@ -200,6 +200,13 @@
       (is (= "second" (get-in @context/*pending-cookies* ["auth-token" :value])))
       (is (= 200 (get-in @context/*pending-cookies* ["auth-token" :max-age]))))))
 
+(deftest test-delete-cookie
+  (testing "accumulates a cookie with max-age 0 into *pending-cookies*"
+    (binding [context/*pending-cookies* (atom {})]
+      (hy/delete-cookie! "auth-token")
+      (is (= {"auth-token" {:max-age 0 :path "/" :value ""}}
+             @context/*pending-cookies*)))))
+
 (deftest test-create-handler
   (testing "creates handler with default app-state"
     (let [routes  [["/" {:name :home

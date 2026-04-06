@@ -158,8 +158,6 @@
   "Set a cookie on the HTTP response for the current action.
    Must be called from within an action handler (i.e. inside an `action` body).
 
-   Un-set a cookie by setting :max-age to 0 and the same :path as the original.
-
    name:  Cookie name string
    value: Cookie value string
    opts:  Map of Ring cookie options — any subset of:
@@ -180,6 +178,14 @@
   (if context/*pending-cookies*
     (swap! context/*pending-cookies* assoc name (assoc opts :value value))
     (throw (ex-info "set-cookie! called outside an action context" {:cookie-name name}))))
+
+(defn delete-cookie!
+  "Delete a cookie by setting :max-age to 0. You must use the same path as the original cookie has."
+  ([name] (delete-cookie! name "/"))
+  ([name path]
+   (if context/*pending-cookies*
+     (swap! context/*pending-cookies* assoc name {:value "" :max-age 0 :path path})
+     (throw (ex-info "delete-cookie! called outside an action context" {:cookie-name name})))))
 
 (defmacro action
   "Create a server action expression for use in Datastar event attributes.

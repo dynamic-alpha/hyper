@@ -191,7 +191,7 @@ Example usage:
 
 When `$` symbols appear in the action body, the macro automatically generates a `fetch()` call instead of `@post()`, sending the extracted values as a JSON body. On the server, the action function receives these values bound to the corresponding `$` symbols.
 
-### Cookies (Experimental!)
+### Cookies
 
 Cookies can be set from inside your action handler by calling the `h/set-cookie!` function:
 
@@ -203,12 +203,12 @@ Cookies can be set from inside your action handler by calling the `h/set-cookie!
    :max-age   (* 60 60 24 30)})
 ```
 
-Setting the same named token to max-age 0 with a matching path string will un-set the cookie:
+Deleting a cookie can be done with `h/delete-cookie!`. It sets the cookie again but with max-age 0. You must use the same path as you used to set it in the first place:
 ```clojure
-(h/set-cookie! "my-auth-token" "anything"
-  {:path      "/"
-   :max-age   0})
+(h/delete-cookie! "my-auth-token" "/")
 ```
+You can omit the path parameter to default in "/".
+
 ### Receiving cookie values
 
 When constructing your Hyper handler, add the parameter `:before-render` and supply a function which receives the Ring request when the browser first requests the page.
