@@ -191,6 +191,8 @@ Example usage:
 
 When `$` symbols appear in the action body, the macro automatically generates a `fetch()` call instead of `@post()`, sending the extracted values as a JSON body. On the server, the action function receives these values bound to the corresponding `$` symbols.
 
+Additional symbols can be defined by extending the `hyper.client-params/client-param` multimethod.
+
 ## Navigation
 
 Hyper uses [Reitit](https://github.com/metosin/reitit) for routing. Routes are

@@ -9,6 +9,7 @@
    - create-handler for building ring handlers"
   (:require [clojure.string :as str]
             [hyper.actions :as actions]
+            [hyper.client-params :as client-params]
             [hyper.context :as context :refer [*request* *action-idx*]]
             [hyper.render :as render]
             [hyper.routes :as routes]
@@ -120,22 +121,18 @@
 ;; Client param support for actions
 ;; ---------------------------------------------------------------------------
 
-(def ^:private client-param-registry
-  "Maps special $ symbols to their JavaScript extraction expression and
-   JSON key name. When these symbols appear in an action body, the macro
-   generates a fetch() call that sends the values as a JSON POST body."
-  {'$value     {:js "evt.target.value" :key "value"}
-   '$checked   {:js "evt.target.checked" :key "checked"}
-   '$key       {:js "evt.key" :key "key"}
-   '$form-data {:js  "Object.fromEntries(new FormData(evt.target.closest('form')))"
-                :key "formData"}})
-
 (defn- find-client-params
-  "Walk the action body forms and return the subset of client-param-registry
-   entries whose symbols appear in the body."
+  "Walk the action body forms and return the subset of the defined client-params
+   whose symbols appear in the body.
+   
+   Returns a map of symbols (that appear in the body) to their definition."
   [body]
   (let [all-syms (set (filter symbol? (tree-seq coll? seq body)))]
-    (into {} (filter (fn [[sym _]] (all-syms sym))) client-param-registry)))
+    (->> (client-params/defined-client-params)
+         (filter all-syms)
+         (reduce (fn [m sym]
+                   (assoc m sym (client-params/client-param sym)))
+                 {}))))
 
 (defn build-action-expr
   "Build the Datastar/JS expression string for an action.
@@ -186,7 +183,10 @@
      ;; Form submission
      [:form {:data-on:submit__prevent (action (save-user! $form-data))}
       [:input {:name \"email\"}]
-      [:button \"Save\"]]"
+      [:button \"Save\"]]
+      
+     Applications may define additional client parameters by extending
+     the hyper.client-params/client-param multi-method."
   [& body]
   (let [used-params (find-client-params body)
         param-syms  (keys used-params)
@@ -197,7 +197,7 @@
             router#     :router}    (context/require-context! "action")
            action-fn#               (fn [~cp-sym]
                                       (let [~@(mapcat (fn [sym]
-                                                        (let [k (keyword (:key (get client-param-registry sym)))]
+                                                        (let [k (keyword (:key (client-params/client-param sym)))]
                                                           [sym (list `get cp-sym k)]))
                                                       param-syms)]
                                         (binding [context/*request* {:hyper/session-id session-id#

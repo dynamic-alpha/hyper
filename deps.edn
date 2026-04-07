@@ -39,4 +39,4 @@
          :exec-fn     kaocha.runner/exec-fn
          :exec-args   {:randomize? false
                        :fail-fast? true}}
-  :dev  {:extra-deps {}}}}
+  :dev  {:extra-deps {io.github.tonsky/clj-reload {:mvn/version "1.0.0"}}}}}
