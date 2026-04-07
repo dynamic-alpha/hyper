@@ -193,6 +193,24 @@ When `$` symbols appear in the action body, the macro automatically generates a 
 
 Additional symbols can be defined by extending the `hyper.client-params/client-param` multimethod.
 
+For example, if you were handling mouse events, you might want to create support for tracking
+the x and y offset.
+
+```clojure
+(defmethod hyper.client-params/client-param '$mouse-offset
+  [_]
+  {:js "{x:evt.offsetX, y:evt.offsetY}"
+   :key "mouseOffset"})
+```
+
+The :js key is the JavaScript that executes in the client browser to collect
+the data, and the :key is key used in the JSON payload for the data, sent from
+the browser to the hyper application.
+
+With this in place, your `h/action` code can reference symbol `$mouse-offset`, which will be
+an EDN map with keys :x and :y.
+
+
 ## Navigation
 
 Hyper uses [Reitit](https://github.com/metosin/reitit) for routing. Routes are
