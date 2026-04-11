@@ -517,3 +517,7 @@ The E2E suite covers:
   via SSE
 - **Content live reload** — redefining the routes Var with new inline handler
   functions hot-swaps the page content via SSE
+
+## Contributing
+
+PRs and ideas welcome! Please follow the [angular commit guidelines](https://github.com/angular/angular/blob/main/contributing-docs/commit-message-guidelines.md) with your messages.
