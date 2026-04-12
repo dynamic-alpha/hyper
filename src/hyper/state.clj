@@ -211,12 +211,16 @@
 
 (defn build-url
   "Build a URL string from a path and query params map.
-   Returns path if no query params."
+   Omits query params with nil values.
+   Returns path if no query params remain."
   [path query-params]
-  (if (or (nil? query-params) (empty? query-params))
-    path
-    (let [query-string (->> query-params
-                            (map (fn [[k v]]
-                                   (str (name k) "=" (java.net.URLEncoder/encode (str v) "UTF-8"))))
-                            (clojure.string/join "&"))]
-      (str path "?" query-string))))
+  (let [non-nil-query-params (into {}
+                                   (remove (comp nil? val))
+                                   query-params)]
+    (if (empty? non-nil-query-params)
+      path
+      (let [query-string (->> non-nil-query-params
+                              (map (fn [[k v]]
+                                     (str (name k) "=" (java.net.URLEncoder/encode (str v) "UTF-8"))))
+                              (clojure.string/join "&"))]
+        (str path "?" query-string)))))
