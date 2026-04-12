@@ -282,3 +282,17 @@
         (swap! cursor-b + 5)
         (is (= 6 @cursor-a))
         (is (= 6 @cursor-b))))))
+
+(deftest build-url-test
+  (testing "returns path when query params are nil or empty"
+    (is (= "/search" (state/build-url "/search" nil)))
+    (is (= "/search" (state/build-url "/search" {}))))
+
+  (testing "omits query params with nil values"
+    (is (= "/search" (state/build-url "/search" {:q nil})))
+    (is (= "/search?q=clojure"
+           (state/build-url "/search" {:q "clojure" :page nil}))))
+
+  (testing "preserves empty query param values"
+    (is (= "/search?q="
+           (state/build-url "/search" {:q ""})))))
