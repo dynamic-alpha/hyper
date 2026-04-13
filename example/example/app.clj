@@ -67,6 +67,7 @@
           (result [label content]
             [:p label [:strong content]])]
     (let [text*    (h/tab-cursor :text "")
+          value*   (h/tab-cursor :value "")
           checked* (h/tab-cursor :dark-mode false)
           key*     (h/tab-cursor :last-key "")
           select*  (h/tab-cursor :color "red")
@@ -111,6 +112,13 @@
                        :placeholder     "Press a key…"
                        :data-on:keydown (h/action (reset! (h/tab-cursor :last-key) $key))}]
               (result "Last key: " (if (seq @key*) @key* "none yet")))
+
+        (card "Javascript injection — client side await for Enter keystroke"
+              "Await the Enter keystroke to send the input value to the server."
+              [:input {:type            "text"
+                       :placeholder     "Type something…"
+                       :data-on:keydown (h/action {:when "evt.key === 'Enter'"} (reset! (h/tab-cursor :value) $value))}]
+              (result "Server sees: " (if (seq @value*) @value* "nothing yet")))
 
         ;; $form-data — form submission
         (card "$form-data — Form Submission"

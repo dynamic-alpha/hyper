@@ -138,18 +138,22 @@
   "Build the Datastar/JS expression string for an action.
    When no client params are needed, returns a simple @post expression.
    When client params are present, returns a fetch() call that sends
-   the extracted DOM values as a JSON POST body."
-  [action-id used-params]
-  (if (empty? used-params)
-    (str "@post('/hyper/actions?action-id=" action-id "')")
-    (let [json-entries (->> used-params
-                            vals
-                            (map (fn [{:keys [js key]}]
-                                   (str key ":" js)))
-                            (str/join ","))]
-      (str "fetch('/hyper/actions?action-id=" action-id
-           "',{method:'POST',headers:{'Content-Type':'application/json'}"
-           ",body:JSON.stringify({" json-entries "})})"))))
+   the extracted DOM values as a JSON POST body.
+   Optionally injects custom Datastar expression to conditionally prevent post/fetch.
+   "
+  [action-id used-params js]
+  (let [js-injection (when js (str js " && "))]
+    (if (empty? used-params)
+      (str js-injection "@post('/hyper/actions?action-id=" action-id "')")
+      (let [json-entries (->> used-params
+                              vals
+                              (map (fn [{:keys [js key]}]
+                                     (str key ":" js)))
+                              (str/join ","))]
+        (str js-injection
+             "fetch('/hyper/actions?action-id=" action-id
+             "',{method:'POST',headers:{'Content-Type':'application/json'}"
+             ",body:JSON.stringify({" json-entries "})})")))))
 
 (defmacro action
   "Create a server action expression for use in Datastar event attributes.
@@ -174,7 +178,12 @@
      [:input {:data-on:change (action (reset! (tab-cursor :query) $value))}]
 
      ;; Keyboard shortcut
-     [:input {:data-on:keydown (action (when (= $key \"Enter\") (search!)))}]
+     [:input {:data-on:keydown (action (when (= $key \"Enter\")
+                                 (search!)))}]
+
+     ;; ... with client side check
+     [:input {:data-on:keydown (action {:when \"evt.key === 'Enter'\"}
+                                 (search!))}]
 
      ;; Checkbox
      [:input {:type \"checkbox\"
@@ -187,10 +196,18 @@
       
      Applications may define additional client parameters by extending
      the hyper.client-params/client-param multi-method."
-  [& body]
-  (let [used-params (find-client-params body)
-        param-syms  (keys used-params)
-        cp-sym      (gensym "client-params")]
+  [& args]
+  (let [[maybe-opts & body] args
+        [js body]           (if-let [guard (:when maybe-opts)]
+                              [(if (and (string? guard)
+                                        (not (str/blank? guard)))
+                                 guard
+                                 nil)
+                               body]
+                              [nil args])
+        used-params         (find-client-params body)
+        param-syms          (keys used-params)
+        cp-sym              (gensym "client-params")]
     `(let [{session-id# :session-id
             tab-id#     :tab-id
             app-state*# :app-state*
@@ -208,7 +225,7 @@
            idx#                     (if context/*action-idx* (swap! context/*action-idx* inc) (hash action-fn#))
            action-id#               (str "a-" tab-id# "-" idx#)
            _#                       (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#)]
-       (build-action-expr action-id# '~used-params))))
+       (build-action-expr action-id# '~used-params ~js))))
 
 (defn navigate
   "Create a navigation link using reitit named routes.
