@@ -397,4 +397,39 @@
                                          (reset! (hy/tab-cursor :k) $key)))]
           (is (.contains action-expr "fetch("))
           (is (.contains action-expr "value:evt.target.value"))
-          (is (.contains action-expr "key:evt.key")))))))
+          (is (.contains action-expr "key:evt.key"))))))
+
+  (testing "JS string with client params injects guard before fetch"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-js"
+          tab-id     "test-tab-js"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
+        (let [action-expr (hy/action {:when "evt.key === 'Enter'"}
+                                     (reset! (hy/tab-cursor :val) $value))]
+          (is (string? action-expr))
+          (is (.contains action-expr "evt.key === 'Enter'"))
+          (is (.contains action-expr "fetch("))
+          (is (.contains action-expr "value:evt.target.value"))
+          (is (not (.contains action-expr "@post")))
+          (is (.startsWith action-expr "evt.key === 'Enter' && "))
+          ;; Verify action executes correctly with client params
+          (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
+            (is (some? action-id))
+            ((get-in @app-state* [:actions action-id :fn]) {:value "hello"})
+            (is (= "hello" (get-in @app-state* [:tabs tab-id :data :val]))))))))
+
+  (testing "empty :when string treated as no JS injection"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-js"
+          tab-id     "test-tab-js"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (binding [context/*request* {:hyper/session-id session-id
+                                   :hyper/tab-id     tab-id
+                                   :hyper/app-state  app-state*}]
+        (let [action-expr (hy/action {:when ""} (reset! (hy/tab-cursor :val) $value))]
+          (is (.contains action-expr "fetch("))
+          (is (.contains action-expr "value:evt.target.value"))
+          (is (not (.contains action-expr " && "))))))))

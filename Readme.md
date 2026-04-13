@@ -210,6 +210,17 @@ the browser to the hyper application.
 With this in place, your `h/action` code can reference symbol `$mouse-offset`, which will be
 an EDN map with keys :x and :y.
 
+### Client-side guards
+
+Pass a `:when` option to `action` to inject a client-side Datastar expression. 
+The guard runs before the action fires, letting you filter events at the browser level without a server round-trip.
+
+```clojure
+;; Only POST when Enter is pressed — no network traffic on other keystrokes
+[:input {:type "text"
+         :data-on:keydown (h/action {:when "evt.key === 'Enter'"}
+                           (reset! (h/tab-cursor :value) $value))}]
+```
 
 ## Navigation
 
