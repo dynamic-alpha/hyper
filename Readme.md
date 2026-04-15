@@ -611,6 +611,22 @@ redefine it at the REPL, all connected tabs automatically update their `<head>`.
 
 This is typically how you’d include your compiled Tailwind stylesheet.
 
+## SSE connection behavior
+
+By default, Hyper keeps the SSE connection open even when the browser tab is
+hidden (e.g. the user switches to another tab). This ensures state updates are
+delivered immediately without waiting for the tab to become visible again.
+
+If you'd prefer Datastar's default behavior — closing the connection when the
+tab is hidden and reopening it when visible — pass `:open-when-hidden? false`:
+
+```clojure
+(def handler
+  (h/create-handler
+    #'routes
+    :open-when-hidden? false))
+```
+
 ## Brotli compression
 
 Hyper uses [brotli4j](https://github.com/hyperxpro/Brotli4j) to compress both

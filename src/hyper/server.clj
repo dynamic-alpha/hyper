@@ -394,7 +394,7 @@
 
    Options:
    - :datastar-script - Hiccup content for Datastar script added to document head, or nil."
-  [app-state* {:keys [datastar-script]}]
+  [app-state* {:keys [datastar-script open-when-hidden?] :or {open-when-hidden? true}}]
   (fn [render-fn]
     (fn [req]
       (let [tab-id     (:hyper/tab-id req)
@@ -423,7 +423,9 @@
                                                            datastar-script
                                                            (when head-html (c/raw head-html))]
                                                           [:body
-                                                           {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
+                                                           {:data-init (str "@get('/hyper/events?tab-id=" tab-id "'"
+                                                                              (when open-when-hidden? ", {openWhenHidden: true}")
+                                                                              ")")}
                                                            [:div div-attrs (c/raw body-html)]
                                                            (hyper-scripts tab-id)]]])]
               {:status  200
@@ -550,6 +552,9 @@
    - :head              Hiccup nodes appended to the <head> (e.g. stylesheet <link>),
                         or (fn [req] ...) -> hiccup nodes appended to the <head>
    - :datastar-script   Hiccup nodes for the Datastar script (or nil to suppress)                           
+   - :open-when-hidden? Keep the SSE connection open when the browser tab is hidden
+                        (default true). When false, Datastar closes the connection
+                        on tab hide and reopens it when the tab becomes visible.
    - :static-resources  Classpath resource root(s) to serve as static assets
    - :static-dir        Filesystem directory (or directories) to serve as static assets
    - :watches           Vector of Watchable sources added to every page route.

@@ -238,6 +238,36 @@
       (is (= 200 (:status response)))
       (is (= "static-ok\n" (slurp (:body response)))))))
 
+(deftest test-open-when-hidden
+  (testing "Default includes openWhenHidden: true in data-init"
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*)
+          response   (handler {:uri "/" :request-method :get})]
+      (is (= 200 (:status response)))
+      (is (string/includes? (:body response) "openWhenHidden: true"))))
+
+  (testing "Explicit true includes openWhenHidden: true in data-init"
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*
+                                            {:open-when-hidden? true})
+          response   (handler {:uri "/" :request-method :get})]
+      (is (= 200 (:status response)))
+      (is (string/includes? (:body response) "openWhenHidden: true"))))
+
+  (testing "false omits openWhenHidden from data-init"
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*
+                                            {:open-when-hidden? false})
+          response   (handler {:uri "/" :request-method :get})]
+      (is (= 200 (:status response)))
+      (is (not (string/includes? (:body response) "openWhenHidden"))))))
+
 (deftest test-ring-response-passthrough
   (testing "render fn returning a Ring response map is passed through as-is"
     (let [app-state* (atom (state/init-state))
