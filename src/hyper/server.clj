@@ -337,6 +337,8 @@
    - MutationObserver on #hyper-app watches data-hyper-url attribute changes
      and syncs the browser URL bar via replaceState. Title syncing is handled
      server-side by re-rendering the full <head> (including <title>) via SSE.
+   - pageshow listener reloads restored documents so stale tab/action state
+     does not survive browser history restoration.
    - popstate listener handles browser back/forward by posting to /hyper/navigate
      and restoring document.title from history state.
 
@@ -374,6 +376,12 @@
     });
     observer.observe(appEl, { attributes: true, attributeFilter: ['data-hyper-url'] });
   }
+  window.addEventListener('pageshow', function(event) {
+    var nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
+    if (event.persisted || (nav && nav.type === 'back_forward')) {
+      window.location.reload();
+    }
+  });
   window.addEventListener('popstate', function(e) {
     if (e.state && e.state.title) {
       document.title = e.state.title;

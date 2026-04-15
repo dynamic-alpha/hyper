@@ -536,6 +536,50 @@
         (close-browser! browser-info)))))
 
 ;; ---------------------------------------------------------------------------
+;; Test 5: History restore reloads stale documents
+;; ---------------------------------------------------------------------------
+
+(deftest ^:e2e history-restore-reload-test
+  (let [browser-info (launch-browser)
+        ctx          (new-context browser-info)
+        page         (new-page ctx)]
+    (try
+      (w/with-page page
+        (w/navigate (str base-url "/counters"))
+        (wait-for-sse)
+        (wait-for-text "#counter-Session h2" "Session: 0")
+
+        (let [initial-action (eval-js "document.querySelector('#counter-Session .inc').getAttribute('data-on:click')")]
+          (click-counter-button "Session" ".inc")
+          (wait-for-text "#counter-Session h2" "Session: 1")
+
+          ;; Leave the Hyper document, then use browser history to return.
+          (.navigate page "data:text/html,<title>Away</title><h1>Away</h1>")
+          (is (= "Away" (w/text-content "h1")))
+          (.goBack page)
+
+          ;; The restored document should reload and register fresh actions.
+          (let [deadline (+ (System/currentTimeMillis) 10000)]
+            (loop []
+              (let [current-action (try (eval-js "document.querySelector('#counter-Session .inc') && document.querySelector('#counter-Session .inc').getAttribute('data-on:click')")
+                                        (catch Exception _ nil))]
+                (if (and current-action (not= initial-action current-action))
+                  (is true)
+                  (if (> (System/currentTimeMillis) deadline)
+                    (is (and current-action (not= initial-action current-action))
+                        (str "Expected Session increment action to change after history restore, but still saw " (pr-str current-action)))
+                    (do (Thread/sleep 100)
+                        (recur)))))))
+
+          (w/wait-for "#hyper-app" {:state :visible :timeout 10000})
+          (wait-for-text "#counter-Session h2" "Session: 1")
+          (click-counter-button "Session" ".inc")
+          (wait-for-text "#counter-Session h2" "Session: 2")))
+
+      (finally
+        (close-browser! browser-info)))))
+
+;; ---------------------------------------------------------------------------
 ;; Test 2: Title changes when route Var is redefined
 ;; ---------------------------------------------------------------------------
 
