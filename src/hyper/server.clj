@@ -10,6 +10,7 @@
             [hyper.context :as context]
             [hyper.render :as render]
             [hyper.routes :as routes]
+            [hyper.signal :as signal]
             [hyper.state :as state]
             [hyper.watch :as watch]
             [org.httpkit.server :as http-kit]
@@ -69,22 +70,31 @@
                                                             :body    payload}
                                                    false))]
         (when sent?
-          ;; Main render loop
-          (loop []
+          ;; Main render loop — tracks the last-sent signal snapshot so
+          ;; we only emit datastar-patch-signals for actual changes.
+          (loop [last-sent-signals nil]
             (.acquire semaphore)
             (.drainPermits semaphore)
             (when-not (realized? shutdown-renderer*)
-              (let [sent? (try
+              (let [current-signals (get-in @app-state* [:tabs tab-id :signals])
+                    sig-patches     (when (and current-signals
+                                               (not= current-signals last-sent-signals))
+                                     (signal/changed-signals last-sent-signals current-signals))
+                    sent? (try
                             ;; Clean slate — remove stale actions before re-rendering
                             (actions/cleanup-tab-actions! app-state* tab-id)
-                            (when-let [{:keys [title head-html body-html url]}
+                            (when-let [{:keys [title head-html body-html url declared-signals]}
                                        (render/render-tab app-state* session-id tab-id)]
                               (let [head-event   (render/format-head-update title head-html)
+                                    sig-attrs    (signal/format-signal-attrs declared-signals)
                                     div-attrs    (cond-> {:id "hyper-app"}
-                                                   url (assoc :data-hyper-url url))
+                                                   url       (assoc :data-hyper-url url)
+                                                   sig-attrs (merge sig-attrs))
                                     wrapped-html (c/html [:div div-attrs (c/raw body-html)])
                                     body-event   (render/format-datastar-fragment wrapped-html)
-                                    sse-payload  (str head-event body-event)
+                                    sig-event    (when (seq sig-patches)
+                                                   (signal/format-patch-signals-event sig-patches))
+                                    sse-payload  (str head-event body-event sig-event)
                                     payload      (if br-stream
                                                    (br/compress-stream br-out br-stream sse-payload)
                                                    sse-payload)]
@@ -99,7 +109,7 @@
                   ;; as semaphore permits, which drainPermits collapses into
                   ;; a single render on the next iteration.
                   (Thread/sleep throttle-ms)
-                  (recur)))))))
+                  (recur (or current-signals last-sent-signals))))))))
       (catch Throwable e
         (when-not (realized? shutdown-renderer*)
           (t/error! e {:id   :hyper.error/renderer
@@ -221,21 +231,37 @@
                                                  :msg   "Tab disconnected"})
                                         (cleanup-tab! app-state* tab-id))}))))
 
-(defn- parse-client-params
-  "Parse client params from a JSON request body, if present.
-   Returns a keyword-keyed map or nil."
+(defn- parse-client-query-params
+  "Extract client params from URL query parameters, JSON-decoding each
+   value.  Skips the `action-id` key (which is a hyper routing param,
+   not a client param).  Returns a keyword-keyed map, or nil when no
+   client params are present.
+
+   Values are JSON-encoded on the client by `hyper.encodeClientParams`, so a
+   round-trip through `JSON.stringify` → URL-encode → URL-decode →
+   `json/parse-string` preserves booleans, numbers, objects, etc."
   [req]
-  (try
-    (when-let [body (:body req)]
-      (let [s (if (string? body) body (slurp body))]
-        (when-not (clojure.string/blank? s)
-          (json/parse-string s true))))
-    (catch Exception _ nil)))
+  (let [qp (get req :query-params {})]
+    (when (> (count qp) 1)                 ;; more than just action-id
+      (reduce-kv (fn [acc k v]
+                   (if (= k "action-id")
+                     acc
+                     (assoc acc (keyword k)
+                            (try (json/parse-string v)
+                                 (catch Exception _ v)))))
+                 {}
+                 qp))))
 
 (defn action-handler
   "Handler for action POST requests.
-   Parses an optional JSON body for client params ($value, $checked, $key,
-   $form-data) and passes them to the action function."
+
+   All actions use Datastar's `@post()`, which sends all non-underscore
+   signals as a JSON body.  Client params ($value, $checked, etc.) are
+   passed as URL query parameters.
+
+   - Parses the body as signal values and binds them to `context/*signals*`
+   - Extracts client params from URL query parameters (JSON-decoded)
+   - Returns 204 to prevent Datastar from merging the response into signals"
   [app-state*]
   (fn [req]
     (let [action-id (get-in req [:query-params "action-id"])]
@@ -248,14 +274,30 @@
         (let [req-with-state (assoc req
                                     :hyper/app-state app-state*
                                     :hyper/router (get @app-state* :router))
-              client-params  (parse-client-params req)]
-          (push-thread-bindings {#'context/*request* req-with-state})
+              raw-body       (try
+                               (when-let [body (:body req)]
+                                 (let [s (if (string? body) body (slurp body))]
+                                   (when-not (clojure.string/blank? s) s)))
+                               (catch Exception _ nil))
+              signals        (when raw-body
+                               (signal/parse-signals raw-body))
+              client-params  (parse-client-query-params req)
+              ;; Sync client signal values into server state so the
+              ;; render loop can detect changes (e.g. when a user types
+              ;; into a data-bind input, the server needs to know the
+              ;; latest value for changed-signals diffing).
+              tab-id         (get-in @app-state* [:actions action-id :tab-id])]
+          (when (and signals tab-id)
+            (swap! app-state* update-in [:tabs tab-id :signals]
+                   (fn [server-sigs]
+                     (merge server-sigs signals))))
+          (push-thread-bindings {#'context/*request* req-with-state
+                                 #'context/*signals* signals})
           (try
             (actions/execute-action! app-state* action-id client-params)
 
-            {:status  200
-             :headers {"Content-Type" "application/json"}
-             :body    "{\"success\": true}"}
+            ;; 204 prevents Datastar from merging the response into signals
+            {:status 204}
 
             (catch Exception e
               (t/error! e
@@ -289,7 +331,9 @@
      :query-params (or coerced-query-params raw-query-params {})}))
 
 (defn- hyper-scripts
-  "JavaScript for SPA navigation support:
+  "JavaScript for SPA navigation support and client param encoding:
+   - hyper.encodeClientParams(obj): URL-encodes an object of client params as a
+     query string fragment (e.g. \"value=hello&checked=true\") for use in @post() URLs.
    - MutationObserver on #hyper-app watches data-hyper-url attribute changes
      and syncs the browser URL bar via replaceState. Title syncing is handled
      server-side by re-rendering the full <head> (including <title>) via SSE.
@@ -303,6 +347,16 @@
    (c/raw
      (str "
 (function() {
+  window.hyper = window.hyper || {};
+  window.hyper.encodeClientParams = function(o) {
+    var p = [];
+    for (var k in o) {
+      if (o.hasOwnProperty(k) && o[k] !== undefined) {
+        p.push(encodeURIComponent(k) + '=' + encodeURIComponent(JSON.stringify(o[k])));
+      }
+    }
+    return p.join('&');
+  };
   var appEl = document.getElementById('hyper-app');
   if (appEl) {
     // Seed the initial history entry with the current title so back-navigation restores it
@@ -354,8 +408,11 @@
           ;; Ring response passthrough (e.g. a 302 redirect)
           (if (:status result)
             result
-            (let [{:keys [title head-html body-html]} result
+            (let [{:keys [title head-html body-html declared-signals]} result
                   title                               (or title "Hyper App")
+                  sig-attrs                           (signal/format-signal-attrs declared-signals)
+                  div-attrs                           (cond-> {:id "hyper-app"}
+                                                       sig-attrs (merge sig-attrs))
                   html                                (c/html
                                                         [c/doctype-html5
                                                          [:html
@@ -367,7 +424,7 @@
                                                            (when head-html (c/raw head-html))]
                                                           [:body
                                                            {:data-init (str "@get('/hyper/events?tab-id=" tab-id "', {openWhenHidden: true})")}
-                                                           [:div {:id "hyper-app"} (c/raw body-html)]
+                                                           [:div div-attrs (c/raw body-html)]
                                                            (hyper-scripts tab-id)]]])]
               {:status  200
                :headers {"Content-Type" "text/html; charset=utf-8"}

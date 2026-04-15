@@ -128,10 +128,11 @@
      passed through as-is for redirects, error responses, etc.
 
    - A render result map with pre-serialized HTML strings:
-       :title     — resolved page title string, or nil
-       :head-html — HTML string of marked <head> elements, or nil
-       :body-html — HTML string of the rendered page body
-       :url       — current route URL string, or nil
+       :title             — resolved page title string, or nil
+       :head-html         — HTML string of marked <head> elements, or nil
+       :body-html         — HTML string of the rendered page body
+       :url               — current route URL string, or nil
+       :declared-signals  — vector of signal declaration maps for HTML injection
 
    Binds `context/*request*` and `context/*action-idx*` for the duration
    of both rendering and HTML serialization, so lazy hiccup sequences
@@ -178,8 +179,9 @@
                          router (assoc :hyper/router router)
                          route  (assoc :hyper/route route)
                          true   (dissoc :reitit.core/match))]
-       (push-thread-bindings {#'context/*request*    req
-                              #'context/*action-idx* (atom 0)})
+       (push-thread-bindings {#'context/*request*          req
+                              #'context/*action-idx*       (atom 0)
+                              #'context/*declared-signals* (atom [])})
        (try
          (let [body (safe-render render-fn req)]
            ;; Ring response passthrough — render-fn returned a redirect,
@@ -190,11 +192,13 @@
                                 (routes/find-route-title route-index (:name route)))
                    title      (routes/resolve-title title-spec req)
                    head       (some-> (routes/resolve-head (get @app-state* :head) req)
-                                      mark-head-elements)]
-               {:title     title
-                :head-html (some-> head c/html)
-                :body-html (c/html body)
-                :url       url})))
+                                      mark-head-elements)
+                   declared   @context/*declared-signals*]
+               {:title             title
+                :head-html         (some-> head c/html)
+                :body-html         (c/html body)
+                :url               url
+                :declared-signals  declared})))
          (finally
            (pop-thread-bindings)))))))
 

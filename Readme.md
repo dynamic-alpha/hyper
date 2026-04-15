@@ -212,7 +212,7 @@ an EDN map with keys :x and :y.
 
 ### Client-side guards
 
-Pass a `:when` option to `action` to inject a client-side Datastar expression. 
+Pass a `:when` option to `action` to inject a client-side Datastar expression.
 The guard runs before the action fires, letting you filter events at the browser level without a server round-trip.
 
 ```clojure
@@ -221,6 +221,143 @@ The guard runs before the action fires, letting you filter events at the browser
          :data-on:keydown (h/action {:when "evt.key === 'Enter'"}
                            (reset! (h/tab-cursor :value) $value))}]
 ```
+
+## Signals
+
+Signals are client-side reactive variables backed by
+[Datastar's signal system](https://data-star.dev/guide/reactive_signals). They
+let you keep ephemeral UI state in the browser — input values, toggle states,
+form drafts — without a server round-trip on every change, while still being
+readable and writable from server-side actions.
+
+```clojure
+(defn user-form [req]
+  (let [name*    (h/signal :user-name "")
+        enabled* (h/local-signal :enabled false)]
+    [:div
+     [:input {:data-bind name*}]
+     [:label
+      [:input {:type "checkbox" :data-bind enabled*}]
+      "Enable"]
+     [:p {:data-show @enabled*} "Name: " [:span {:data-text @name*}]]
+     [:button {:data-on:click (h/action
+                                (create-user! {:name @name*})
+                                (reset! name* ""))}
+      "Submit"]]))
+```
+
+### `signal`
+
+`(h/signal path)` or `(h/signal path default-value)` creates a Datastar signal
+that syncs between the browser and server.
+
+Path can be a keyword or a vector of keywords for nested signals:
+
+```clojure
+(h/signal :name "")               ;; → $name
+(h/signal :user-name "")          ;; → $userName  (Datastar camelCase conversion)
+(h/signal [:user :name] "")       ;; → $user.name (Datastar dot-notation nesting)
+```
+
+#### Dereferencing signals
+
+`@signal*` behaves differently depending on the context:
+
+**During render**, `@signal*` returns the Datastar expression string (e.g.
+`"$userName"`). This is the `$`-prefixed signal name that Datastar evaluates
+client-side — suitable for use in `data-text`, `data-show`, and any other
+Datastar attribute that expects an expression:
+
+```clojure
+[:span {:data-text @name*}]                 ;; → data-text="$userName"
+[:div {:data-show @enabled*} "Visible"]     ;; → data-show="$enabled"
+```
+
+Because `@signal*` is just a string in render context, you can use it to build
+Datastar expressions with normal string operations:
+
+```clojure
+[:span {:data-text (str @name* ".toUpperCase()")}]   ;; → data-text="$userName.toUpperCase()"
+[:div {:data-show (str @name* " !== ''")} "Has name"] ;; → data-show="$userName !== ''"
+```
+
+The signal itself **without deref** renders as the raw signal name (no `$`
+prefix), which is the correct format for `data-bind`:
+
+```clojure
+[:input {:data-bind name*}]                 ;; → data-bind="userName"
+```
+
+**During action execution**, `@signal*` returns the live value sent by
+Datastar in the `@post()` request body. Datastar automatically sends all
+non-underscore signals with every backend request, so your action code can
+read the current client-side value:
+
+```clojure
+[:button {:data-on:click (h/action
+                           (println "Current name:" @name*)
+                           (save-to-db! @name*))}
+ "Save"]
+```
+
+`reset!` and `swap!` update the signal value on the server, which triggers a
+`datastar-patch-signals` SSE event to push the new value to the client:
+
+```clojure
+(h/action
+  (reset! name* "")              ;; clear the input
+  (swap! counter* inc))          ;; increment a counter
+```
+
+### `local-signal`
+
+`(h/local-signal path default-value)` creates a local Datastar signal
+(underscore-prefixed). Local signals are **client-only** — Datastar does not
+send them to the server.
+
+#### Dereferencing local signals
+
+Local signals follow the same deref pattern as regular signals:
+
+**During render**, `@local*` returns the Datastar expression string (e.g.
+`"$_open"`) — suitable for `data-show`, `data-text`, and building expressions.
+Without deref, the signal renders as the raw name (e.g. `"_open"`) for
+`data-bind`.
+
+**During action execution**, `@local*` **throws** — local signals are
+underscore-prefixed, and Datastar does not include them in requests to the
+server. `reset!` and `swap!` are also not supported.
+
+Use local signals for ephemeral UI state that doesn't need server processing —
+dropdown visibility, accordion state, modal toggles:
+
+```clojure
+(let [open?* (h/local-signal :open false)]
+  [:div
+   ;; Build a toggle expression using deref
+   [:button {:data-on:click (str @open?* " = !" @open?*)} "Toggle"]
+   ;; data-show needs the expression form (@)
+   [:div {:data-show @open?*} "Collapsible content"]])
+```
+
+### How signals work
+
+Under the hood, `h/signal` does three things:
+
+1. **Declares** the signal in the rendered HTML via a
+   `data-signals:NAME__ifmissing` attribute on the wrapper div, so Datastar
+   creates the signal on page load without overwriting it on re-renders.
+
+2. **Tracks** the signal value in server-side tab state, so `reset!`/`swap!`
+   in actions can push updates to the client via `datastar-patch-signals` SSE
+   events.
+
+3. **Reads** signal values from the `@post()` request body during action
+   execution, so `@signal*` returns the live client-side value.
+
+All actions use Datastar's `@post()` under the hood, so signal values are
+always available — even in actions that also use client params like `$value`,
+`$key`, etc.
 
 ## Navigation
 

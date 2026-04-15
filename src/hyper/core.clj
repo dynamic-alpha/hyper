@@ -13,6 +13,7 @@
             [hyper.context :as context :refer [*request* *action-idx*]]
             [hyper.render :as render]
             [hyper.routes :as routes]
+            [hyper.signal :as signal]
             [hyper.server :as server]
             [hyper.state :as state]
             [hyper.utils :as utils]
@@ -118,6 +119,62 @@
       (watch/watch-source! app-state* tab-id trigger-render! source))))
 
 ;; ---------------------------------------------------------------------------
+;; Signals
+;; ---------------------------------------------------------------------------
+
+(defn signal
+  "Create a Datastar signal — a reactive client-side variable that syncs
+   between the browser and server.
+
+   During render, `@signal*` returns the Datastar expression string (e.g.
+   `\"$userName\"`), suitable for use in `data-text`, `data-show`, etc.
+   During action execution, `@signal*` returns the live value sent by
+   Datastar in the `@post()` request body.
+
+   `reset!` and `swap!` update the signal value on the server, which
+   triggers a `datastar-patch-signals` SSE event to push the new value
+   to the client.
+
+   Path can be a keyword or a vector of keywords:
+     (signal :name)                ;; → $name
+     (signal :user-name \"default\") ;; → $userName
+     (signal [:user :name] \"\")     ;; → $user.name
+
+   Example:
+     (let [name* (signal :name \"\")]
+       [:div
+        [:input (bind name*)]
+        [:p {:data-text @name*} \"\"]])"
+  ([path]
+   (signal path nil))
+  ([path default-value]
+   (let [{:keys [tab-id app-state*]} (context/require-context! "signal")]
+     (signal/create-signal app-state* tab-id path default-value))))
+
+(defn local-signal
+  "Create a local Datastar signal (underscore-prefixed).  Local signals
+   are client-only: Datastar does not send them to the server, so
+   `reset!` and `swap!` are not supported and `deref` in an action throws.
+
+   During render, `@local*` returns the Datastar expression string
+   (e.g. `\"$_open\"`), suitable for `data-show`, `data-text`, etc.
+   The signal itself (without deref) can be used as a `data-bind` value.
+
+   Path can be a keyword or a vector of keywords:
+     (local-signal :open? false)   ;; → $_open
+     (local-signal :show-menu false)  ;; → $_showMenu
+
+   Example:
+     (let [open?* (local-signal :open false)]
+       [:div
+        [:button {:data-on:click (str @open?* \" = !\" @open?*)} \"Toggle\"]
+        [:div {:data-show @open?*} \"Content\"]])"
+  ([path]
+   (local-signal path nil))
+  ([path default-value]
+   (signal/create-local-signal path default-value)))
+
+;; ---------------------------------------------------------------------------
 ;; Client param support for actions
 ;; ---------------------------------------------------------------------------
 
@@ -136,24 +193,23 @@
 
 (defn build-action-expr
   "Build the Datastar/JS expression string for an action.
-   When no client params are needed, returns a simple @post expression.
-   When client params are present, returns a fetch() call that sends
-   the extracted DOM values as a JSON POST body.
-   Optionally injects custom Datastar expression to conditionally prevent post/fetch.
-   "
+   Always uses Datastar's @post() so that all non-underscore signals are
+   automatically sent in the request body.  When client params are present,
+   they are URL-encoded into the query string via the hyper.encodeClientParams helper
+   so the server can read them from query-params.
+   Optionally injects a custom Datastar expression to conditionally prevent the post."
   [action-id used-params js]
   (let [js-injection (when js (str js " && "))]
     (if (empty? used-params)
       (str js-injection "@post('/hyper/actions?action-id=" action-id "')")
-      (let [json-entries (->> used-params
-                              vals
-                              (map (fn [{:keys [js key]}]
-                                     (str key ":" js)))
-                              (str/join ","))]
+      (let [obj-entries (->> used-params
+                             vals
+                             (map (fn [{:keys [js key]}]
+                                    (str key ":" js)))
+                             (str/join ","))]
         (str js-injection
-             "fetch('/hyper/actions?action-id=" action-id
-             "',{method:'POST',headers:{'Content-Type':'application/json'}"
-             ",body:JSON.stringify({" json-entries "})})")))))
+             "@post('/hyper/actions?action-id=" action-id
+             "&' + hyper.encodeClientParams({" obj-entries "}))")))))
 
 (defmacro action
   "Create a server action expression for use in Datastar event attributes.

@@ -88,7 +88,8 @@
         global-path  [:global]
         session-path [:sessions session-id :data]
         tab-path     [:tabs tab-id :data]
-        route-path   [:tabs tab-id :route]]
+        route-path   [:tabs tab-id :route]
+        signals-path [:tabs tab-id :signals]]
     (add-watch app-state* watch-key
                (fn [_k _r old-state new-state]
                  (let [route-changed? (let [old-route (get-in old-state route-path)
@@ -100,14 +101,16 @@
                            new-name (get-in new-state (conj route-path :name))]
                        (when (not= old-name new-name)
                          (setup-route-watches! app-state* tab-id trigger-render!))))
-                   ;; Re-render if any watched path changed
+                   ;; Re-render if any watched path changed (including signals)
                    (when (or route-changed?
                              (not= (get-in old-state global-path)
                                    (get-in new-state global-path))
                              (not= (get-in old-state session-path)
                                    (get-in new-state session-path))
                              (not= (get-in old-state tab-path)
-                                   (get-in new-state tab-path)))
+                                   (get-in new-state tab-path))
+                             (not= (get-in old-state signals-path)
+                                   (get-in new-state signals-path)))
                      (trigger-render!))))))
   nil)
 

@@ -12,6 +12,18 @@
 ;; enabling effective brotli streaming compression.
 (def ^:dynamic *action-idx* nil)
 
+;; Datastar signal values parsed from the @post() request body during
+;; action execution.  Bound to a keyword-keyed map by the action handler
+;; so that Signal/deref can return the live client-side value.  nil
+;; outside of an action context (i.e. during render).
+(def ^:dynamic *signals* nil)
+
+;; Accumulator for signal declarations emitted during a render pass.
+;; Bound to (atom []) before each render so that (h/signal ...) and
+;; (h/local-signal ...) can register themselves for HTML injection.
+;; Each entry is a map with :html-name, :default-val, and :local? keys.
+(def ^:dynamic *declared-signals* nil)
+
 (defn require-context!
   "Extract and validate the request context from *request*.
    Throws if called outside a request context or if required keys are missing.

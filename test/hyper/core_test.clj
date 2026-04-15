@@ -309,7 +309,7 @@
           (is (= 11 @cursor)))))))
 
 (deftest test-action-with-client-params
-  (testing "$value client param generates fetch expression"
+  (testing "$value client param generates @post expression with hyper.encodeClientParams"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-cp"
           tab-id     "test-tab-cp"]
@@ -319,15 +319,15 @@
                                    :hyper/app-state  app-state*}]
         (let [action-expr (hy/action (reset! (hy/tab-cursor :query) $value))]
           (is (string? action-expr))
-          (is (.contains action-expr "fetch("))
+          (is (.contains action-expr "@post("))
+          (is (.contains action-expr "hyper.encodeClientParams"))
           (is (.contains action-expr "value:evt.target.value"))
-          (is (not (.contains action-expr "@post")))
           (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
             (is (some? action-id))
             ((get-in @app-state* [:actions action-id :fn]) {:value "hello"})
             (is (= "hello" (get-in @app-state* [:tabs tab-id :data :query]))))))))
 
-  (testing "$checked client param generates fetch expression"
+  (testing "$checked client param generates @post expression"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-cp"
           tab-id     "test-tab-cp"]
@@ -342,7 +342,7 @@
             ((get-in @app-state* [:actions action-id :fn]) {:checked true})
             (is (= true (get-in @app-state* [:tabs tab-id :data :dark?]))))))))
 
-  (testing "$key client param generates fetch expression"
+  (testing "$key client param generates @post expression"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-cp"
           tab-id     "test-tab-cp"]
@@ -357,7 +357,7 @@
             ((get-in @app-state* [:actions action-id :fn]) {:key "Enter"})
             (is (= "Enter" (get-in @app-state* [:tabs tab-id :data :last-key]))))))))
 
-  (testing "$form-data client param generates fetch expression"
+  (testing "$form-data client param generates @post expression"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-cp"
           tab-id     "test-tab-cp"]
@@ -373,7 +373,7 @@
             (is (= {:email "a@b.com" :name "Alice"}
                    (get-in @app-state* [:tabs tab-id :data :form]))))))))
 
-  (testing "no client params uses @post expression"
+  (testing "no client params uses simple @post expression"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-cp"
           tab-id     "test-tab-cp"]
@@ -383,7 +383,7 @@
                                    :hyper/app-state  app-state*}]
         (let [action-expr (hy/action (swap! (hy/tab-cursor :count 0) inc))]
           (is (.contains action-expr "@post("))
-          (is (not (.contains action-expr "fetch(")))))))
+          (is (not (.contains action-expr "hyper.encodeClientParams")))))))
 
   (testing "multiple client params in single action"
     (let [app-state* (atom (state/init-state))
@@ -395,11 +395,12 @@
                                    :hyper/app-state  app-state*}]
         (let [action-expr (hy/action (do (reset! (hy/tab-cursor :val) $value)
                                          (reset! (hy/tab-cursor :k) $key)))]
-          (is (.contains action-expr "fetch("))
+          (is (.contains action-expr "@post("))
+          (is (.contains action-expr "hyper.encodeClientParams"))
           (is (.contains action-expr "value:evt.target.value"))
           (is (.contains action-expr "key:evt.key"))))))
 
-  (testing "JS string with client params injects guard before fetch"
+  (testing "JS string with client params injects guard before @post"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-js"
           tab-id     "test-tab-js"]
@@ -411,9 +412,9 @@
                                      (reset! (hy/tab-cursor :val) $value))]
           (is (string? action-expr))
           (is (.contains action-expr "evt.key === 'Enter'"))
-          (is (.contains action-expr "fetch("))
+          (is (.contains action-expr "@post("))
+          (is (.contains action-expr "hyper.encodeClientParams"))
           (is (.contains action-expr "value:evt.target.value"))
-          (is (not (.contains action-expr "@post")))
           (is (.startsWith action-expr "evt.key === 'Enter' && "))
           ;; Verify action executes correctly with client params
           (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
@@ -430,6 +431,7 @@
                                    :hyper/tab-id     tab-id
                                    :hyper/app-state  app-state*}]
         (let [action-expr (hy/action {:when ""} (reset! (hy/tab-cursor :val) $value))]
-          (is (.contains action-expr "fetch("))
+          (is (.contains action-expr "@post("))
+          (is (.contains action-expr "hyper.encodeClientParams"))
           (is (.contains action-expr "value:evt.target.value"))
           (is (not (.contains action-expr " && "))))))))

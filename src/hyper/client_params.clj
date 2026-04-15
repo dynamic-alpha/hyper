@@ -19,7 +19,7 @@
   Each definition is a map with two keys:
   
   :js - (string) JavaScript run in the handler to extract the value
-  :key - (string) JSON key used in the JSON POST body.
+  :key - (string) Key used in the URL query string to send the value to the server.
   
   Applications may provide methods for additional such symbols.
   Note that such methods must be provided before actions that make

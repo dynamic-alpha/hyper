@@ -82,6 +82,49 @@
       (when @form*
         [:pre#form-result (pr-str @form*)])]]))
 
+(defn signals-get [_]
+  (let [name*    (h/signal :user-name "")
+        saved*   (h/tab-cursor :saved-name "")]
+    [:div
+     [:h1 "Test Signals"]
+
+     ;; data-bind + data-text — client-side reactivity
+     [:div#bind-demo
+      [:input#name-input {:data-bind name* :placeholder "Name"}]
+      [:span#name-display {:data-text (str "$" (str name*))} ""]]
+
+     ;; Read signal in action
+     [:div#read-demo
+      [:button#save-btn {:data-on:click (h/action
+                                          (reset! (h/tab-cursor :saved-name) @name*))}
+       "Save"]
+      [:span#saved-result (if (seq @saved*) @saved* "empty")]]
+
+     ;; Signal + client params together
+     [:div#combined-demo
+      [:input#combined-input {:type          "text"
+                              :data-on:change
+                              (h/action
+                                (reset! (h/tab-cursor :saved-name)
+                                        (str "signal=" @name* ",input=" $value)))}]
+      [:span#combined-result (if (seq @saved*) @saved* "empty")]]
+
+     ;; Reset signal from server
+     [:div#reset-demo
+      [:button#clear-btn {:data-on:click (h/action (reset! name* ""))} "Clear"]
+      [:span#reset-display {:data-text (str "$" (str name*))} ""]]
+
+     ;; Async signal update — works outside action handlers
+     [:div#async-demo
+      [:button#async-btn {:data-on:click
+                          (h/action
+                            (let [n name*]
+                              (future
+                                (Thread/sleep 500)
+                                (reset! n "async-update"))))}
+       "Start"]
+      [:span#async-display {:data-text (str "$" (str name*))} ""]]]))
+
 (defn default-routes []
   [["/" {:name  :home
          :title "Home"
@@ -97,7 +140,11 @@
    ["/forms"
     {:name  :forms
      :title "Forms"
-     :get   #'forms-get}]])
+     :get   #'forms-get}]
+   ["/signals"
+    {:name  :signals
+     :title "Signals"
+     :get   #'signals-get}]])
 
 (def ^:dynamic *test-routes* (default-routes))
 
@@ -480,9 +527,9 @@
           (w/click "#form-submit")
           (w/wait-for "#form-result" {:state :visible :timeout 5000})
           (let [result (w/text-content "#form-result")]
-            (is (.contains result ":name"))
+            (is (.contains result "name"))
             (is (.contains result "Alice"))
-            (is (.contains result ":email"))
+            (is (.contains result "email"))
             (is (.contains result "alice@example.com")))))
 
       (finally
@@ -625,6 +672,85 @@
                   (Thread/sleep 100)
                   (recur)))))
           (is (= "v2" (w/text-content "style")))))
+
+      (finally
+        (close-browser! browser-info)))))
+
+;; ---------------------------------------------------------------------------
+;; Test 5: Signals — declaration, binding, action reads, reset, client params
+;; ---------------------------------------------------------------------------
+
+(deftest ^:e2e signals-test
+  (let [browser-info (launch-browser)
+        ctx          (new-context browser-info)
+        page         (new-page ctx)]
+    (try
+      (w/with-page page
+        (w/navigate (str base-url "/signals"))
+        (wait-for-sse)
+
+        (testing "Initial state"
+          (is (= "Test Signals" (w/text-content "h1")))
+          (is (= "" (w/text-content "#name-display")))
+          (is (= "empty" (w/text-content "#saved-result"))))
+
+        (testing "Signal declaration renders data-signals attribute"
+          (let [app-html (eval-js "document.getElementById('hyper-app').outerHTML")]
+            (is (.contains app-html "data-signals"))
+            (is (.contains app-html "ifmissing"))))
+
+        ;; ----------------------------------------------------------------
+        ;; data-bind: typing updates the signal client-side via data-text
+        ;; ----------------------------------------------------------------
+        (testing "data-bind updates signal, data-text reflects it"
+          (w/fill "#name-input" "Alice")
+          ;; data-text is pure client-side reactivity — should be instant
+          (wait-for-text "#name-display" "Alice"))
+
+        ;; ----------------------------------------------------------------
+        ;; Reading signal in action: server receives the signal value
+        ;; ----------------------------------------------------------------
+        (testing "Action reads signal value from @post body"
+          (w/click "#save-btn")
+          (wait-for-text "#saved-result" "Alice"))
+
+        ;; ----------------------------------------------------------------
+        ;; Server reset: reset! signal pushes update to client
+        ;; ----------------------------------------------------------------
+        (testing "Server reset! pushes signal update to client"
+          ;; First re-type the name after morph may have cleared it
+          (w/fill "#name-input" "Bob")
+          (wait-for-text "#name-display" "Bob")
+          (w/click "#clear-btn")
+          ;; The server resets the signal → SSE pushes datastar-patch-signals
+          ;; → client signal updates → data-text re-evaluates
+          (wait-for-text "#reset-display" "")
+          ;; The name input should also be cleared since it's data-bind'd
+          (wait-for-text "#name-display" ""))
+
+        ;; ----------------------------------------------------------------
+        ;; Signal + client params: both available in the same action
+        ;; ----------------------------------------------------------------
+        (testing "Signals and client params work together in same action"
+          ;; Type a fresh name so we know the signal value
+          (w/fill "#name-input" "Eve")
+          (wait-for-text "#name-display" "Eve")
+          ;; Type in the separate input and trigger change event
+          (w/fill "#combined-input" "typed-val")
+          (w/keyboard-press "Tab")
+          (wait-for-text "#combined-result" "signal=Eve,input=typed-val"))
+
+        ;; ----------------------------------------------------------------
+        ;; Async update: reset! from a background thread (outside action)
+        ;; ----------------------------------------------------------------
+        (testing "Signal reset! from background thread pushes update to client"
+          ;; Clear signal first so we can detect the async update
+          (w/fill "#name-input" "")
+          (wait-for-text "#async-display" "")
+          (w/click "#async-btn")
+          ;; The action kicks off a future that sleeps 500ms then resets.
+          ;; Wait up to 3s for the update to arrive via SSE.
+          (wait-for-text "#async-display" "async-update" :timeout 3000)))
 
       (finally
         (close-browser! browser-info)))))
