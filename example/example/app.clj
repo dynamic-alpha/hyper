@@ -147,9 +147,9 @@
             [:div.card [:h3 title] [:p.muted desc] children])
           (result [label content]
             [:p label [:strong content]])]
-    (let [name*    (h/signal :user-name "")
-          open?*   (h/local-signal :open false)
-          saved*   (h/tab-cursor :saved-name "")]
+    (let [name*  (h/signal :user-name "")
+          open?* (h/local-signal :open false)
+          saved* (h/tab-cursor :saved-name "")]
       (layout
         "Signals"
         [:p "Signals are client-side reactive state managed by Datastar. "
@@ -172,8 +172,8 @@
         ;; Reading signal in action with client params — both work together
         (card "Signals + client params"
               "Client params ($value) and signals work together in the same action."
-              [:input {:type          "text"
-                       :placeholder   "Type and tab away…"
+              [:input {:type        "text"
+                       :placeholder "Type and tab away…"
                        :data-on:change
                        (h/action
                          (reset! (h/tab-cursor :saved-name)

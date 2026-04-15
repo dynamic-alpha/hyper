@@ -79,30 +79,30 @@
               (let [current-signals (get-in @app-state* [:tabs tab-id :signals])
                     sig-patches     (when (and current-signals
                                                (not= current-signals last-sent-signals))
-                                     (signal/changed-signals last-sent-signals current-signals))
-                    sent? (try
+                                      (signal/changed-signals last-sent-signals current-signals))
+                    sent?           (try
                             ;; Clean slate — remove stale actions before re-rendering
-                            (actions/cleanup-tab-actions! app-state* tab-id)
-                            (when-let [{:keys [title head-html body-html url declared-signals]}
-                                       (render/render-tab app-state* session-id tab-id)]
-                              (let [head-event   (render/format-head-update title head-html)
-                                    sig-attrs    (signal/format-signal-attrs declared-signals)
-                                    div-attrs    (cond-> {:id "hyper-app"}
-                                                   url       (assoc :data-hyper-url url)
-                                                   sig-attrs (merge sig-attrs))
-                                    wrapped-html (c/html [:div div-attrs (c/raw body-html)])
-                                    body-event   (render/format-datastar-fragment wrapped-html)
-                                    sig-event    (when (seq sig-patches)
-                                                   (signal/format-patch-signals-event sig-patches))
-                                    sse-payload  (str head-event body-event sig-event)
-                                    payload      (if br-stream
-                                                   (br/compress-stream br-out br-stream sse-payload)
-                                                   sse-payload)]
-                                (boolean (http-kit/send! channel payload false))))
-                            (catch Throwable e
-                              (t/error! e {:id   :hyper.error/renderer
-                                           :data {:hyper/tab-id tab-id}})
-                              nil))]
+                                      (actions/cleanup-tab-actions! app-state* tab-id)
+                                      (when-let [{:keys [title head-html body-html url declared-signals]}
+                                                 (render/render-tab app-state* session-id tab-id)]
+                                        (let [head-event   (render/format-head-update title head-html)
+                                              sig-attrs    (signal/format-signal-attrs declared-signals)
+                                              div-attrs    (cond-> {:id "hyper-app"}
+                                                             url       (assoc :data-hyper-url url)
+                                                             sig-attrs (merge sig-attrs))
+                                              wrapped-html (c/html [:div div-attrs (c/raw body-html)])
+                                              body-event   (render/format-datastar-fragment wrapped-html)
+                                              sig-event    (when (seq sig-patches)
+                                                             (signal/format-patch-signals-event sig-patches))
+                                              sse-payload  (str head-event body-event sig-event)
+                                              payload      (if br-stream
+                                                             (br/compress-stream br-out br-stream sse-payload)
+                                                             sse-payload)]
+                                          (boolean (http-kit/send! channel payload false))))
+                                      (catch Throwable e
+                                        (t/error! e {:id   :hyper.error/renderer
+                                                     :data {:hyper/tab-id tab-id}})
+                                        nil))]
                 ;; sent? is true (ok), nil (no render-fn or error), false (channel closed)
                 (when-not (false? sent?)
                   ;; Throttle: sleep so triggers during this window accumulate
@@ -417,25 +417,25 @@
           (if (:status result)
             result
             (let [{:keys [title head-html body-html declared-signals]} result
-                  title                               (or title "Hyper App")
-                  sig-attrs                           (signal/format-signal-attrs declared-signals)
-                  div-attrs                           (cond-> {:id "hyper-app"}
-                                                       sig-attrs (merge sig-attrs))
-                  html                                (c/html
-                                                        [c/doctype-html5
-                                                         [:html
-                                                          [:head
-                                                           [:meta {:charset "UTF-8"}]
-                                                           [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
-                                                           [:title title]
-                                                           datastar-script
-                                                           (when head-html (c/raw head-html))]
-                                                          [:body
-                                                           {:data-init (str "@get('/hyper/events?tab-id=" tab-id "'"
-                                                                              (when open-when-hidden? ", {openWhenHidden: true}")
-                                                                              ")")}
-                                                           [:div div-attrs (c/raw body-html)]
-                                                           (hyper-scripts tab-id)]]])]
+                  title                                                (or title "Hyper App")
+                  sig-attrs                                            (signal/format-signal-attrs declared-signals)
+                  div-attrs                                            (cond-> {:id "hyper-app"}
+                                                                         sig-attrs (merge sig-attrs))
+                  html                                                 (c/html
+                                                                         [c/doctype-html5
+                                                                          [:html
+                                                                           [:head
+                                                                            [:meta {:charset "UTF-8"}]
+                                                                            [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
+                                                                            [:title title]
+                                                                            datastar-script
+                                                                            (when head-html (c/raw head-html))]
+                                                                           [:body
+                                                                            {:data-init (str "@get('/hyper/events?tab-id=" tab-id "'"
+                                                                                             (when open-when-hidden? ", {openWhenHidden: true}")
+                                                                                             ")")}
+                                                                            [:div div-attrs (c/raw body-html)]
+                                                                            (hyper-scripts tab-id)]]])]
               {:status  200
                :headers {"Content-Type" "text/html; charset=utf-8"}
                :body    html})))))))
@@ -559,7 +559,7 @@
    Options:
    - :head              Hiccup nodes appended to the <head> (e.g. stylesheet <link>),
                         or (fn [req] ...) -> hiccup nodes appended to the <head>
-   - :datastar-script   Hiccup nodes for the Datastar script (or nil to suppress)                           
+   - :datastar-script   Hiccup nodes for the Datastar script (or nil to suppress)
    - :open-when-hidden? Keep the SSE connection open when the browser tab is hidden
                         (default true). When false, Datastar closes the connection
                         on tab hide and reopens it when the tab becomes visible.
@@ -574,39 +574,39 @@
   ([routes app-state*]
    (create-handler routes app-state* {:datastar-script (default-datastar-script)}))
   ([routes app-state* {:keys [watches head] :as opts}]
-   (let [page-wrapper                             (page-handler app-state* opts)
-         system-routes                            [["/hyper/events" {:get (sse-events-handler app-state*)}]
-                                                   ["/hyper/actions" {:post (action-handler app-state*)}]
-                                                   ["/hyper/navigate" {:post (navigate-handler app-state*)}]]
+   (let [page-wrapper    (page-handler app-state* opts)
+         system-routes   [["/hyper/events" {:get (sse-events-handler app-state*)}]
+                          ["/hyper/actions" {:post (action-handler app-state*)}]
+                          ["/hyper/navigate" {:post (navigate-handler app-state*)}]]
          ;; Store the routes source (Var or value) so title resolution can
          ;; always read the latest route metadata, even between router rebuilds.
          ;; Store global :watches so find-route-watches can prepend them to
          ;; every page route's watch list. Auto-watch :head if it's a Var.
-         _                                        (swap! app-state* assoc
-                                                         :routes-source routes
-                                                         :global-watches (vec watches)
-                                                         :head head)
-         initial-routes                           (if (var? routes) @routes routes)
-         initial-handler                          (build-ring-handler initial-routes app-state* page-wrapper system-routes)
-         handler                                  (if (var? routes)
-                   ;; Dynamic: rebuild router when the routes Var is redefined.
-                   ;; Uses identical? since a re-def always creates a new object,
-                   ;; avoiding deep equality checks on every request.
-                                                    (let [cached (atom {:routes  initial-routes
-                                                                        :handler initial-handler})]
-                                                      (fn [req]
-                                                        (let [current-routes @routes]
+         _               (swap! app-state* assoc
+                                :routes-source routes
+                                :global-watches (vec watches)
+                                :head head)
+         initial-routes  (if (var? routes) @routes routes)
+         initial-handler (build-ring-handler initial-routes app-state* page-wrapper system-routes)
+         handler         (if (var? routes)
+                           ;; Dynamic: rebuild router when the routes Var is redefined.
+                           ;; Uses identical? since a re-def always creates a new object,
+                           ;; avoiding deep equality checks on every request.
+                           (let [cached (atom {:routes  initial-routes
+                                               :handler initial-handler})]
+                             (fn [req]
+                               (let [current-routes @routes]
 
-                                                          (when-not (identical? current-routes (:routes @cached))
-                                                            (t/log! {:level :info
-                                                                     :id    :hyper.event/routes-reload
-                                                                     :msg   "Routes changed, rebuilding router"})
-                                                            (let [h (build-ring-handler current-routes app-state*
-                                                                                        page-wrapper system-routes)]
-                                                              (reset! cached {:routes current-routes :handler h})))
-                                                          ((:handler @cached) req))))
-                   ;; Static: use the compiled handler directly
-                                                    initial-handler)
+                                 (when-not (identical? current-routes (:routes @cached))
+                                   (t/log! {:level :info
+                                            :id    :hyper.event/routes-reload
+                                            :msg   "Routes changed, rebuilding router"})
+                                   (let [h (build-ring-handler current-routes app-state*
+                                                               page-wrapper system-routes)]
+                                     (reset! cached {:routes current-routes :handler h})))
+                                 ((:handler @cached) req))))
+                           ;; Static: use the compiled handler directly
+                           initial-handler)
          handler-with-mw
          (-> handler
              ((wrap-hyper-context app-state*))

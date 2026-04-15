@@ -194,11 +194,11 @@
                    head       (some-> (routes/resolve-head (get @app-state* :head) req)
                                       mark-head-elements)
                    declared   @context/*declared-signals*]
-               {:title             title
-                :head-html         (some-> head c/html)
-                :body-html         (c/html body)
-                :url               url
-                :declared-signals  declared})))
+               {:title            title
+                :head-html        (some-> head c/html)
+                :body-html        (c/html body)
+                :url              url
+                :declared-signals declared})))
          (finally
            (pop-thread-bindings)))))))
 

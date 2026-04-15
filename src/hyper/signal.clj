@@ -90,10 +90,10 @@
     (string? v)  (str "'" (escape-js-single-quote v) "'")
     (keyword? v) (str "'" (name v) "'")
     (map? v)     (str "{" (str/join ", "
-                           (map (fn [[k v']]
-                                  (str (if (keyword? k) (name k) k)
-                                       ": " (clj->js-literal v')))
-                                v)) "}")
+                                    (map (fn [[k v']]
+                                           (str (if (keyword? k) (name k) k)
+                                                ": " (clj->js-literal v')))
+                                         v)) "}")
     (coll? v)    (str "[" (str/join ", " (map clj->js-literal v)) "]")
     :else        (str "'" (escape-js-single-quote (str v)) "'")))
 
@@ -155,7 +155,6 @@
   Object
   (toString [_] sig-name))
 
-
 (deftype LocalSignal [sig-name   ;; JS name e.g. "_enabled"
                       html-name  ;; HTML attr suffix e.g. "_enabled"
                       default-val]
@@ -170,7 +169,6 @@
 
   Object
   (toString [_] sig-name))
-
 
 ;; ---------------------------------------------------------------------------
 ;; Chassis protocol extensions
@@ -192,7 +190,6 @@
   (attribute-value-fragment [this]
     (.-sig-name this)))
 
-
 ;; ---------------------------------------------------------------------------
 ;; Signal construction
 ;; ---------------------------------------------------------------------------
@@ -201,10 +198,10 @@
   "Create a Signal for the given path and register it in tab state and
    the render-time declaration accumulator."
   [app-state* tab-id path default-val]
-  (let [js-name    (signal-js-name path)
-        html-nm    (signal-html-name path)
-        st-path    (signal-store-path path)
-        signal     (->Signal js-name html-nm st-path app-state* tab-id default-val)]
+  (let [js-name (signal-js-name path)
+        html-nm (signal-html-name path)
+        st-path (signal-store-path path)
+        signal  (->Signal js-name html-nm st-path app-state* tab-id default-val)]
     ;; Initialise the server-side value if not already set
     (when (nil? (get-in @app-state* (into [:tabs tab-id :signals] st-path)))
       (swap! app-state* assoc-in (into [:tabs tab-id :signals] st-path) default-val))
@@ -220,9 +217,9 @@
    (underscore-prefixed in Datastar) and cannot be read or written from
    the server."
   [path default-val]
-  (let [js-name  (str "_" (signal-js-name path))
-        html-nm  (str "_" (signal-html-name path))
-        signal   (->LocalSignal js-name html-nm default-val)]
+  (let [js-name (str "_" (signal-js-name path))
+        html-nm (str "_" (signal-html-name path))
+        signal  (->LocalSignal js-name html-nm default-val)]
     ;; During render, register for HTML declaration
     (when-let [acc context/*declared-signals*]
       (swap! acc conj {:html-name   html-nm

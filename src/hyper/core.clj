@@ -13,8 +13,8 @@
             [hyper.context :as context :refer [*request* *action-idx*]]
             [hyper.render :as render]
             [hyper.routes :as routes]
-            [hyper.signal :as signal]
             [hyper.server :as server]
+            [hyper.signal :as signal]
             [hyper.state :as state]
             [hyper.utils :as utils]
             [hyper.watch :as watch]
@@ -339,7 +339,7 @@
                                                      (str "a-" tab-id "-" nav-idx))
              escaped-title (or (utils/escape-js-string title) "")
              escaped-href  (utils/escape-js-string href)]
-         {:href                                                                                   href
+         {:href href
           :data-on:click__prevent
           (str "@post('/hyper/actions?action-id=" action-id "');"
                " window.history.pushState({title: '" escaped-title "'}, '', '" escaped-href "');"

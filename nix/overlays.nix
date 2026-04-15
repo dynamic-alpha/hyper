@@ -7,10 +7,10 @@ self: super:
   };
 
   cljfmt = super.cljfmt.overrideAttrs (_old: rec {
-    version = "0.16.0";
+    version = "0.16.4";
     src     = super.fetchurl {
       url = "https://github.com/weavejester/cljfmt/releases/download/${version}/cljfmt-${version}-standalone.jar";
-      hash = "sha256-56llKSnJJzjv9mf33ir7b3gk8Jp+jxyuax6vEXj0xDk=";
+      hash = "sha256-6GTK/QH0z7Qox5JFGWu4hacGiLvBVmJQHvw0K2sMMAw=";
     };
   });
 }

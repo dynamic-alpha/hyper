@@ -83,8 +83,8 @@
         [:pre#form-result (pr-str @form*)])]]))
 
 (defn signals-get [_]
-  (let [name*    (h/signal :user-name "")
-        saved*   (h/tab-cursor :saved-name "")]
+  (let [name*  (h/signal :user-name "")
+        saved* (h/tab-cursor :saved-name "")]
     [:div
      [:h1 "Test Signals"]
 
@@ -102,7 +102,7 @@
 
      ;; Signal + client params together
      [:div#combined-demo
-      [:input#combined-input {:type          "text"
+      [:input#combined-input {:type "text"
                               :data-on:change
                               (h/action
                                 (reset! (h/tab-cursor :saved-name)
