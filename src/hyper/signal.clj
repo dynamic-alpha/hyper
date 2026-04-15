@@ -13,7 +13,9 @@
 
    Local signals (prefixed with underscore in Datastar) are client-only:
    they cannot be read or written from the server."
-  (:require [cheshire.core :as json]
+  (:require [camel-snake-kebab.core :as csk]
+            [cheshire.core :as json]
+            [clojure.core.memoize :as m]
             [clojure.string :as str]
             [dev.onionpancakes.chassis.core :as c]
             [hyper.context :as context]))
@@ -22,20 +24,11 @@
 ;; Name conversion
 ;; ---------------------------------------------------------------------------
 
-(defn- kebab->camel
-  "Convert a kebab-case string to camelCase.
-   \"user-name\" → \"userName\""
-  [s]
-  (let [parts (str/split s #"-")]
-    (apply str (first parts) (map str/capitalize (rest parts)))))
+(def ^:private -memoized->camelCaseString
+  (m/fifo csk/->camelCaseString {} :fifo/threshold 1024))
 
-(defn- camel->kebab
-  "Convert a camelCase string to kebab-case.
-   \"userName\" → \"user-name\""
-  [s]
-  (-> s
-      (str/replace #"([a-z0-9])([A-Z])" "$1-$2")
-      str/lower-case))
+(def ^:private -memoized->kebab-case-string
+  (m/fifo csk/->kebab-case-string {} :fifo/threshold 1024))
 
 (defn signal-js-name
   "Convert a keyword or keyword vector path to the Datastar signal JS name.
@@ -44,8 +37,8 @@
    [:user-profile :first-name] → \"userProfile.firstName\""
   [path]
   (if (keyword? path)
-    (kebab->camel (name path))
-    (str/join "." (map (comp kebab->camel name) path))))
+    (-memoized->camelCaseString (name path))
+    (str/join "." (map (comp -memoized->camelCaseString name) path))))
 
 (defn signal-html-name
   "Convert a keyword or keyword vector path to the HTML attribute suffix
@@ -237,7 +230,7 @@
    keyword-keyed map or nil."
   [json-str]
   (when (and json-str (not (str/blank? json-str)))
-    (json/parse-string json-str (fn [k] (keyword (camel->kebab k))))))
+    (json/parse-string json-str (fn [k] (keyword (-memoized->kebab-case-string k))))))
 
 ;; ---------------------------------------------------------------------------
 ;; HTML signal attribute generation
@@ -268,7 +261,7 @@
    JSON null (Datastar removes signals set to null)."
   [signal-patches]
   (let [json-str (json/generate-string signal-patches
-                                       {:key-fn (fn [k] (kebab->camel (name k)))})]
+                                       {:key-fn (comp -memoized->camelCaseString name)})]
     (str "event: datastar-patch-signals\n"
          "data: signals " json-str "\n\n")))
 

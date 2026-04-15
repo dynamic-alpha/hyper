@@ -20,7 +20,9 @@
   ;; Server-sent events support
   http-kit/http-kit                   {:mvn/version "2.9.0-beta3"}
 
-  ;; Utilities
+ ;; Utilities
+  org.clojure/core.memoize            {:mvn/version "1.2.281"}
+  camel-snake-kebab/camel-snake-kebab {:mvn/version "0.4.3"}
   ring/ring-defaults                  {:mvn/version "0.7.0"}
 
   ;; JSON

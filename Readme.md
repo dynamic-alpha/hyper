@@ -115,6 +115,12 @@ Mutating any cursor triggers a re-render for every tab that depends on that
 scope — global changes re-render all tabs, session changes re-render tabs in
 that session, and so on.
 
+Renders are throttled at `~60fps` (`16 ms` intervals). Multiple cursor mutations
+within the same frame window are batched into a single render. Mutations
+spread across different frame windows produce one render per window.
+For example: a sequence of mutations over 48 ms will result in roughly 3 renders, 
+each reflecting the latest state at that moment.
+
 ## Actions
 
 Actions are server-side functions triggered by user interactions. The `action`
