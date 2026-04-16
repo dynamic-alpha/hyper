@@ -200,7 +200,8 @@
       (swap! app-state* assoc-in (into [:tabs tab-id :signals] st-path) default-val))
     ;; During render, register for HTML declaration
     (when-let [acc context/*declared-signals*]
-      (swap! acc conj {:html-name   html-nm
+      (swap! acc conj {:path        path
+                       :html-name   html-nm
                        :default-val default-val
                        :local?      false}))
     signal))
@@ -215,7 +216,8 @@
         signal  (->LocalSignal js-name html-nm default-val)]
     ;; During render, register for HTML declaration
     (when-let [acc context/*declared-signals*]
-      (swap! acc conj {:html-name   html-nm
+      (swap! acc conj {:path        path
+                       :html-name   html-nm
                        :default-val default-val
                        :local?      true}))
     signal))

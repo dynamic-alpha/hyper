@@ -9,17 +9,24 @@
    Stores in app-state under [:actions action-id].
 
    When action-id is provided it is used as-is (deterministic actions).
-   When omitted a random UUID is generated (legacy / dynamic actions)."
+   When omitted a random UUID is generated (legacy / dynamic actions).
+
+   opts may include:
+   - :as  — a human-readable name for the action, useful for testing"
   ([app-state* session-id tab-id action-fn]
    (register-action! app-state* session-id tab-id action-fn
-                     (str "action-" (java.util.UUID/randomUUID))))
+                     (str "action-" (java.util.UUID/randomUUID))
+                     nil))
   ([app-state* session-id tab-id action-fn action-id]
+   (register-action! app-state* session-id tab-id action-fn action-id nil))
+  ([app-state* session-id tab-id action-fn action-id opts]
    (swap! app-state* (fn [state]
                        (-> state
                            (assoc-in [:actions action-id]
-                                     {:fn         action-fn
-                                      :session-id session-id
-                                      :tab-id     tab-id})
+                                     (cond-> {:fn         action-fn
+                                              :session-id session-id
+                                              :tab-id     tab-id}
+                                       (:as opts) (assoc :as (:as opts))))
                            (update-in [:actions-by-tab tab-id]
                                       (fnil conj #{}) action-id))))
    action-id))

@@ -1,5 +1,6 @@
 (ns hyper.signal-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string]
+            [clojure.test :refer [deftest is testing]]
             [dev.onionpancakes.chassis.core :as c]
             [hyper.context :as context]
             [hyper.core :as h]
@@ -216,9 +217,9 @@
         (h/local-signal :open false)
         (let [declared @context/*declared-signals*]
           (is (= 2 (count declared)))
-          (is (= {:html-name "name" :default-val "" :local? false}
+          (is (= {:path :name :html-name "name" :default-val "" :local? false}
                  (first declared)))
-          (is (= {:html-name "_open" :default-val false :local? true}
+          (is (= {:path :open :html-name "_open" :default-val false :local? true}
                  (second declared))))))))
 
 ;; ---------------------------------------------------------------------------

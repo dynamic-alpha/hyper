@@ -118,7 +118,7 @@ that session, and so on.
 Renders are throttled at `~60fps` (`16 ms` intervals). Multiple cursor mutations
 within the same frame window are batched into a single render. Mutations
 spread across different frame windows produce one render per window.
-For example: a sequence of mutations over 48 ms will result in roughly 3 renders, 
+For example: a sequence of mutations over 48 ms will result in roughly 3 renders,
 each reflecting the latest state at that moment.
 
 ## Actions
@@ -647,6 +647,131 @@ clj-kondo --copy-configs --dependencies --lint "$(clojure -Spath)"
 ```
 
 ## Testing
+
+The `hyper.test` namespace provides `test-page` and `test-action` for testing
+page handlers in isolation — no server, no browser, no SSE. Render a page,
+inspect the output and effects, simulate user interactions, and re-render to
+verify state changes.
+
+```clojure
+(require '[hyper.test :as ht])
+(require '[hyper.core :as h])
+```
+
+### `test-page`
+
+`test-page` renders a page handler and returns a map describing everything that
+happened:
+
+```clojure
+(defn counter-page [req]
+  (let [count* (h/tab-cursor :count 0)]
+    [:div
+     [:h1 "Count: " @count*]
+     [:button {:data-on:click (h/action {:as "increment"}
+                                (swap! (h/tab-cursor :count) inc))}
+      "+1"]
+     [:button {:data-on:click (h/action {:as "decrement"}
+                                (swap! (h/tab-cursor :count) dec))}
+      "-1"]]))
+
+(ht/test-page counter-page)
+;; => {:body      [:div [:h1 "Count: " 0] [:button {...} "+1"] ...]
+;;     :body-html "<div><h1>Count: 0</h1>..."
+;;     :actions   {"increment" {:fn #fn}, "decrement" {:fn #fn}}
+;;     :cursors   {:global {}, :session {}, :tab {:count 0}, :route {...}}
+;;     :signals   {:count {:html-name "count" :default-val 0 :local? false}}
+;;     :watches   [#<Atom@...>]
+;;     :app-state #<Atom@...>}
+```
+
+Pass options to customize the test context:
+
+```clojure
+;; Seed cursor state so the handler sees pre-existing values
+(ht/test-page my-page {:cursors {:tab     {:count 10}
+                                 :session {:user "alice"}
+                                 :global  {:theme "dark"}}})
+
+;; Simulate a specific route
+(ht/test-page my-page {:route {:name         :user
+                               :path         "/user/42"
+                               :path-params  {:id "42"}
+                               :query-params {}}})
+```
+
+Seeded `:cursors` values take precedence over defaults — if your handler calls
+`(h/tab-cursor :count 0)` but you seed `{:tab {:count 10}}`, the cursor will
+read `10`.
+
+### Naming actions with `:as`
+
+The `action` macro accepts an `:as` option that gives the action a
+human-readable name. `test-page` uses this as the key in the `:actions` map,
+making it easy to find and invoke specific actions in tests:
+
+```clojure
+;; In your page handler
+(h/action {:as "save-form"} (save! $form-data))
+
+;; In your test
+(get-in result [:actions "save-form" :fn])
+```
+
+Without `:as`, actions are keyed by their auto-generated action ID. `:as` can
+be combined with `:when`:
+
+```clojure
+(h/action {:as "search" :when "evt.key === 'Enter'"} (search! $value))
+```
+
+### `test-action`
+
+`test-action` executes an action from a `test-page` result and returns a
+snapshot of cursor state after execution:
+
+```clojure
+(let [result (ht/test-page counter-page)]
+  (ht/test-action result "increment"))
+;; => {:cursors   {:global {}, :session {}, :tab {:count 1}, :route {...}}
+;;     :app-state #<Atom@...>}
+```
+
+Pass client params to simulate `$value`, `$checked`, `$key`, or `$form-data`:
+
+```clojure
+(ht/test-action result "search" {:value "clojure"})
+```
+
+### Full workflow
+
+Chain `test-page` → `test-action` → `test-page` to verify the full
+render–interact–re-render cycle. Thread `:app-state` to preserve state across
+calls:
+
+```clojure
+(deftest test-counter-page
+  (let [;; Initial render
+        r1 (ht/test-page counter-page)]
+    (is (str/includes? (:body-html r1) "Count: 0"))
+
+    ;; Simulate two clicks
+    (ht/test-action r1 "increment")
+    (ht/test-action r1 "increment")
+
+    ;; Re-render with the same state
+    (let [r2 (ht/test-page counter-page {:app-state (:app-state r1)})]
+      (is (str/includes? (:body-html r2) "Count: 2"))
+      (is (= 2 (get-in r2 [:cursors :tab :count])))
+
+      ;; Decrement
+      (ht/test-action r2 "decrement")
+
+      (let [r3 (ht/test-page counter-page {:app-state (:app-state r2)})]
+        (is (str/includes? (:body-html r3) "Count: 1"))))))
+```
+
+## Developing
 
 Tests are run with [Kaocha](https://github.com/lambdaisland/kaocha) via the
 `:test` alias. There are two test suites: `:unit` for fast in-process tests and

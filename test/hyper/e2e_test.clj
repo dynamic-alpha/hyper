@@ -91,7 +91,7 @@
      ;; data-bind + data-text — client-side reactivity
      [:div#bind-demo
       [:input#name-input {:data-bind name* :placeholder "Name"}]
-      [:span#name-display {:data-text (str "$" (str name*))} ""]]
+      [:span#name-display {:data-text (str "$" name*)} ""]]
 
      ;; Read signal in action
      [:div#read-demo
@@ -112,7 +112,7 @@
      ;; Reset signal from server
      [:div#reset-demo
       [:button#clear-btn {:data-on:click (h/action (reset! name* ""))} "Clear"]
-      [:span#reset-display {:data-text (str "$" (str name*))} ""]]
+      [:span#reset-display {:data-text (str "$" name*)} ""]]
 
      ;; Async signal update — works outside action handlers
      [:div#async-demo
@@ -123,7 +123,7 @@
                                 (Thread/sleep 500)
                                 (reset! n "async-update"))))}
        "Start"]
-      [:span#async-display {:data-text (str "$" (str name*))} ""]]]))
+      [:span#async-display {:data-text (str "$" name*)} ""]]]))
 
 ;; Shared atom for testing watch! bootstrap — mutated from test code
 ;; to verify that server-side changes trigger SSE re-renders.

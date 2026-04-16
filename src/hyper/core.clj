@@ -243,6 +243,12 @@
      [:input {:data-on:keydown (action {:when \"evt.key === 'Enter'\"}
                                  (search!))}]
 
+     ;; Named action for testing — :as gives the action a human-readable name
+     ;; that hyper.test/test-page uses as the key in its :actions map
+     [:button {:data-on:click (action {:as \"increment\"}
+                                (swap! (tab-cursor :count) inc))}
+      \"Increment\"]
+
      ;; Checkbox
      [:input {:type \"checkbox\"
               :data-on:change (action (reset! (tab-cursor :dark?) $checked))}]
@@ -256,13 +262,15 @@
      the hyper.client-params/client-param multi-method."
   [& args]
   (let [[maybe-opts & body] args
-        [js body]           (if-let [guard (:when maybe-opts)]
-                              [(if (and (string? guard)
-                                        (not (str/blank? guard)))
-                                 guard
-                                 nil)
-                               body]
-                              [nil args])
+        opts-map?           (and (map? maybe-opts)
+                                 (some #{:when :as} (keys maybe-opts)))
+        [js as-name body]   (if opts-map?
+                              (let [guard (:when maybe-opts)
+                                    js    (when (and (string? guard)
+                                                     (not (str/blank? guard)))
+                                            guard)]
+                                [js (:as maybe-opts) body])
+                              [nil nil args])
         used-params         (find-client-params body)
         param-syms          (keys used-params)
         cp-sym              (gensym "client-params")]
@@ -282,7 +290,8 @@
                                           ~@body)))
            idx#                     (if context/*action-idx* (swap! context/*action-idx* inc) (hash action-fn#))
            action-id#               (str "a-" tab-id# "-" idx#)
-           _#                       (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#)]
+           _#                       (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#
+                                                              ~(when as-name {:as as-name}))]
        (build-action-expr action-id# '~used-params ~js))))
 
 (defn navigate
