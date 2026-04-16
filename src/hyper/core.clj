@@ -289,7 +289,7 @@
                                                                      :hyper/router     router#}]
                                           ~@body)))
            idx#                     (if context/*action-idx* (swap! context/*action-idx* inc) (hash action-fn#))
-           action-id#               (str "a-" tab-id# "-" idx#)
+           action-id#               (str "a_" tab-id# "_" idx#)
            _#                       (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#
                                                               ~(when as-name {:as as-name}))]
        (build-action-expr action-id# '~used-params ~js))))
@@ -347,7 +347,7 @@
                                                       :query-params (or query-params {})})))
              nav-idx       (if *action-idx* (swap! *action-idx* inc) (hash nav-fn))
              action-id     (actions/register-action! app-state* session-id tab-id nav-fn
-                                                     (str "a-" tab-id "-" nav-idx))
+                                                     (str "a_" tab-id "_" nav-idx))
              escaped-title (or (utils/escape-js-string title) "")
              escaped-href  (utils/escape-js-string href)]
          {:href href

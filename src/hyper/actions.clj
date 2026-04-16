@@ -2,7 +2,8 @@
   "Action handling for hyper applications.
 
    Actions are server-side functions triggered by client interactions."
-  (:require [taoensso.telemere :as t]))
+  (:require [compact-uuids.core :as uuid]
+            [taoensso.telemere :as t]))
 
 (defn register-action!
   "Register an action function and return its ID.
@@ -15,7 +16,7 @@
    - :as  — a human-readable name for the action, useful for testing"
   ([app-state* session-id tab-id action-fn]
    (register-action! app-state* session-id tab-id action-fn
-                     (str "action-" (java.util.UUID/randomUUID))
+                     (str "action-" (uuid/str (java.util.UUID/randomUUID)))
                      nil))
   ([app-state* session-id tab-id action-fn action-id]
    (register-action! app-state* session-id tab-id action-fn action-id nil))
