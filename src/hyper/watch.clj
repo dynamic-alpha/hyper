@@ -34,6 +34,11 @@
     (swap! app-state* update-in [:tabs tab-id] dissoc state-key))
   nil)
 
+(defn- watch-key-for
+  "Compute the dedup watch key for an external source and tab."
+  [tab-id source prefix]
+  (keyword (str prefix tab-id "-" (System/identityHashCode source))))
+
 (defn watch-source!
   "Watch an external Watchable source for a specific tab. When the source
    changes, signals the tab's renderer to re-render. The watch key
@@ -41,6 +46,29 @@
    Idempotent — calling with the same source and tab is safe."
   [app-state* tab-id trigger-render! source]
   (add-external-watch! app-state* tab-id trigger-render! source "hyper-ext-" :watches))
+
+(defn stash-pending-watch!
+  "Stash a source under :pending-watches for later promotion when SSE connects.
+   Called by watch! during the initial HTTP render when no trigger-render! is
+   available yet. Uses the same identity-hash key as watch-source! for dedup."
+  [app-state* tab-id source]
+  (let [wk (watch-key-for tab-id source "hyper-ext-")]
+    (swap! app-state* update-in [:tabs tab-id :pending-watches]
+           (fnil assoc {}) wk source))
+  nil)
+
+(defn promote-pending-watches!
+  "Promote any pending watches for a tab into real watches. Called from the
+   SSE on-open callback after the renderer is started. For each stashed
+   source, registers a real watch via watch-source!, then clears the
+   :pending-watches map from the tab state."
+  [app-state* tab-id trigger-render!]
+  (let [pending (get-in @app-state* [:tabs tab-id :pending-watches])]
+    (when (seq pending)
+      (doseq [[_watch-key source] pending]
+        (watch-source! app-state* tab-id trigger-render! source))
+      (swap! app-state* update-in [:tabs tab-id] dissoc :pending-watches)))
+  nil)
 
 (defn remove-external-watches!
   "Remove all external watches for a tab."

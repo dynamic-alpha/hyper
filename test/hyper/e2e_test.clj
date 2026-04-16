@@ -125,6 +125,16 @@
        "Start"]
       [:span#async-display {:data-text (str "$" (str name*))} ""]]]))
 
+;; Shared atom for testing watch! bootstrap — mutated from test code
+;; to verify that server-side changes trigger SSE re-renders.
+(def ^:private watch-test-atom (atom "initial"))
+
+(defn- watch-bootstrap-get [_]
+  (h/watch! watch-test-atom)
+  [:div
+   [:h1 "Watch Bootstrap"]
+   [:span#watch-value @watch-test-atom]])
+
 (defn default-routes []
   [["/" {:name  :home
          :title "Home"
@@ -144,7 +154,11 @@
    ["/signals"
     {:name  :signals
      :title "Signals"
-     :get   #'signals-get}]])
+     :get   #'signals-get}]
+   ["/watch-bootstrap"
+    {:name  :watch-bootstrap
+     :title "Watch Bootstrap"
+     :get   #'watch-bootstrap-get}]])
 
 (def ^:dynamic *test-routes* (default-routes))
 
@@ -286,6 +300,7 @@
      ;; infrastructure keys (:routes-source, :head, etc.)
      ;; that create-handler stored in the app-state atom.
     (alter-var-root #'*test-routes* (constantly (default-routes)))
+    (reset! watch-test-atom "initial")
     (when @test-state*
       (swap! @test-state*
              (fn [old-state]
@@ -798,3 +813,76 @@
 
       (finally
         (close-browser! browser-info)))))
+
+;; ---------------------------------------------------------------------------
+;; Test 6: watch! bootstrap — server-side atom mutation triggers SSE update
+;; ---------------------------------------------------------------------------
+
+(deftest ^:e2e watch-bootstrap-test
+  (testing "h/watch! during initial HTTP render gets promoted on SSE connect,
+            so server-side atom mutations trigger live updates"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page         (new-page ctx)]
+      (try
+        ;; Reset the shared atom to a known state
+        (reset! watch-test-atom "initial")
+
+        (w/with-page page
+          (w/navigate (str base-url "/watch-bootstrap"))
+          (wait-for-sse)
+
+          ;; 1. Verify initial HTTP render shows the atom's value
+          (testing "Initial page renders the watched atom value"
+            (is (= "Watch Bootstrap" (w/text-content "h1")))
+            (is (= "initial" (w/text-content "#watch-value"))))
+
+          ;; 2. Mutate the atom from the server side (no user action involved)
+          ;;    — this is the scenario that was broken before the fix.
+          (testing "Server-side atom mutation triggers SSE re-render"
+            (reset! watch-test-atom "updated-from-server")
+            (wait-for-text "#watch-value" "updated-from-server"))
+
+          ;; 3. Verify multiple server-side mutations continue to work
+          (testing "Subsequent server-side mutations also trigger re-renders"
+            (reset! watch-test-atom "second-update")
+            (wait-for-text "#watch-value" "second-update")))
+
+        (finally
+          ;; Reset for other tests
+          (reset! watch-test-atom "initial")
+          (close-browser! browser-info)))))
+
+  (testing "Multiple tabs each get their own watch on the same atom"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page1        (new-page ctx)
+          page2        (new-page ctx)]
+      (try
+        (reset! watch-test-atom "start")
+
+        (w/with-page page1
+          (w/navigate (str base-url "/watch-bootstrap"))
+          (wait-for-sse))
+
+        (w/with-page page2
+          (w/navigate (str base-url "/watch-bootstrap"))
+          (wait-for-sse))
+
+        ;; Both tabs should show initial value
+        (w/with-page page1
+          (is (= "start" (w/text-content "#watch-value"))))
+        (w/with-page page2
+          (is (= "start" (w/text-content "#watch-value"))))
+
+        ;; Mutate from server — both tabs should update
+        (reset! watch-test-atom "shared-update")
+
+        (w/with-page page1
+          (wait-for-text "#watch-value" "shared-update"))
+        (w/with-page page2
+          (wait-for-text "#watch-value" "shared-update"))
+
+        (finally
+          (reset! watch-test-atom "initial")
+          (close-browser! browser-info))))))

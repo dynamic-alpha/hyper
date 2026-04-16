@@ -222,7 +222,9 @@
                                                                  (filter var?))]
                                               (watch/watch-source! app-state* tab-id trigger-render! source)))
                                           ;; Set up route-level watches (:watches + Var :get handlers)
-                                          (watch/setup-route-watches! app-state* tab-id trigger-render!)))
+                                          (watch/setup-route-watches! app-state* tab-id trigger-render!)
+                                          ;; Promote any watches stashed during the initial HTTP render
+                                          (watch/promote-pending-watches! app-state* tab-id trigger-render!)))
 
                             :on-close (fn [_channel _status]
                                         (t/log! {:level :info

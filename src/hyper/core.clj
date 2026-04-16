@@ -115,8 +115,10 @@
   [source]
   (let [{:keys [tab-id app-state*]} (context/require-context! "watch!")
         trigger-render!             (get-in @app-state* [:tabs tab-id :renderer :trigger-render!])]
-    (when trigger-render!
-      (watch/watch-source! app-state* tab-id trigger-render! source))))
+    (if trigger-render!
+      (watch/watch-source! app-state* tab-id trigger-render! source)
+      ;; No SSE renderer yet (initial HTTP render) — stash for later promotion
+      (watch/stash-pending-watch! app-state* tab-id source))))
 
 ;; ---------------------------------------------------------------------------
 ;; Signals
