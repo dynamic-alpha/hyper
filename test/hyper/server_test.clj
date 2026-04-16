@@ -18,8 +18,8 @@
           id2 (server/generate-session-id)]
       (is (string? id1))
       (is (string? id2))
-      (is (.startsWith id1 "sess-"))
-      (is (.startsWith id2 "sess-"))
+      (is (.startsWith id1 "ses_"))
+      (is (.startsWith id2 "ses_"))
       (is (not= id1 id2)))))
 
 (deftest test-generate-tab-id
@@ -28,8 +28,8 @@
           id2 (server/generate-tab-id)]
       (is (string? id1))
       (is (string? id2))
-      (is (.startsWith id1 "tab-"))
-      (is (.startsWith id2 "tab-"))
+      (is (.startsWith id1 "tab_"))
+      (is (.startsWith id2 "tab_"))
       (is (not= id1 id2)))))
 
 (deftest test-wrap-hyper-context-new-session
@@ -45,14 +45,14 @@
 
       (is (contains? (:cookies response) "hyper-session"))
       (is (string? (get-in response [:cookies "hyper-session" :value])))
-      (is (.startsWith (get-in response [:cookies "hyper-session" :value]) "sess-"))
-      (is (.contains (:body response) "session: sess-"))
-      (is (.contains (:body response) "tab: tab-")))))
+      (is (.startsWith (get-in response [:cookies "hyper-session" :value]) "ses_"))
+      (is (.contains (:body response) "session: ses_"))
+      (is (.contains (:body response) "tab: tab_")))))
 
 (deftest test-wrap-hyper-context-existing-session
   (testing "Middleware reuses existing session from cookie"
     (let [app-state*          (atom (state/init-state))
-          existing-session-id "sess-existing-123"
+          existing-session-id "ses_existing_123"
           handler             (fn [req]
                                 {:status 200
                                  :body   (str "session: " (:hyper/session-id req))})
@@ -61,7 +61,7 @@
           response            (wrapped req)]
 
       (is (nil? (get-in response [:cookies "hyper-session"])))
-      (is (.contains (:body response) "session: sess-existing-123")))))
+      (is (.contains (:body response) "session: ses_existing_123")))))
 
 (deftest test-wrap-hyper-context-tab-id-from-query
   (testing "Middleware uses tab-id from query params"
@@ -70,10 +70,10 @@
                        {:status 200
                         :body   (str "tab: " (:hyper/tab-id req))})
           wrapped    ((server/wrap-hyper-context app-state*) handler)
-          req        {:query-params {"tab-id" "tab-from-query"}}
+          req        {:query-params {"tab-id" "tab_from_query"}}
           response   (wrapped req)]
 
-      (is (.contains (:body response) "tab: tab-from-query")))))
+      (is (.contains (:body response) "tab: tab_from_query")))))
 
 (deftest test-default-datastar-script
   (testing "Datastar script tag generation"
@@ -99,8 +99,8 @@
                                        (reset! captured-response response)
                                        false)]
           (#'server/-renderer-loop! (atom (state/init-state))
-                                    "sess-test"
-                                    "tab-test"
+                                    "ses_test"
+                                    "tab_test"
                                     ::channel
                                     compress?
                                     (java.util.concurrent.Semaphore. 0)
@@ -465,8 +465,8 @@
           handler    (server/create-handler routes app-state*)
           stop-fn    (server/start! handler {:port 13001})
           session-id "test-session"
-          tab-id-1   "test-tab-1"
-          tab-id-2   "test-tab-2"
+          tab-id-1   "test_tab_1"
+          tab-id-2   "test_tab_2"
           stopped    (atom #{})]
 
       ;; Simulate two connected tabs with watchers, actions, and mock renderers

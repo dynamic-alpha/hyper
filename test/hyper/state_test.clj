@@ -44,7 +44,7 @@
   (testing "creates new tab and links to session"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-3"
-          tab-id     "test-tab-1"]
+          tab-id     "test_tab_1"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (is (contains? (:tabs @app-state*) tab-id))
       (is (contains? (get-in @app-state* [:sessions session-id :tabs]) tab-id))
@@ -53,7 +53,7 @@
   (testing "doesn't overwrite existing tab data"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-4"
-          tab-id     "test-tab-2"]
+          tab-id     "test_tab_2"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (swap! app-state* assoc-in [:tabs tab-id :data :count] 42)
       (state/get-or-create-tab! app-state* session-id tab-id)
@@ -77,7 +77,7 @@
 
   (testing "deref with vector path"
     (let [app-state* (atom (state/init-state))
-          tab-id     "test-tab-3"
+          tab-id     "test_tab_3"
           session-id "test-session-7"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (swap! app-state* assoc-in [:tabs tab-id :data :todos :list] [1 2 3])
@@ -96,7 +96,7 @@
 
   (testing "reset! with nested path"
     (let [app-state* (atom (state/init-state))
-          tab-id     "test-tab-4"
+          tab-id     "test_tab_4"
           session-id "test-session-9"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (let [cursor (state/tab-cursor app-state* tab-id [:user :email])]
@@ -163,7 +163,7 @@
   (testing "cleanup-tab! removes tab and unlinks from session"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-14"
-          tab-id     "test-tab-5"]
+          tab-id     "test_tab_5"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (is (contains? (:tabs @app-state*) tab-id))
       (state/cleanup-tab! app-state* tab-id)
@@ -173,8 +173,8 @@
   (testing "cleanup-session! removes session and all tabs"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-15"
-          tab-id-1   "test-tab-6"
-          tab-id-2   "test-tab-7"]
+          tab-id-1   "test_tab_6"
+          tab-id-2   "test_tab_7"]
       (state/get-or-create-tab! app-state* session-id tab-id-1)
       (state/get-or-create-tab! app-state* session-id tab-id-2)
       (is (contains? (:sessions @app-state*) session-id))
@@ -205,7 +205,7 @@
   (testing "tab-cursor with default value initializes nil path"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-18"
-          tab-id     "test-tab-8"]
+          tab-id     "test_tab_8"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (let [cursor (state/tab-cursor app-state* tab-id :items [])]
         (is (= [] @cursor))
@@ -214,7 +214,7 @@
   (testing "tab-cursor with default value doesn't overwrite existing"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-19"
-          tab-id     "test-tab-9"]
+          tab-id     "test_tab_9"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (swap! app-state* assoc-in [:tabs tab-id :data :items] [1 2 3])
       (let [cursor (state/tab-cursor app-state* tab-id :items [])]
@@ -269,8 +269,8 @@
     (let [app-state*   (atom (state/init-state))
           session-id-1 "session-g1"
           session-id-2 "session-g2"
-          tab-id-1     "tab-g1"
-          tab-id-2     "tab-g2"]
+          tab-id-1     "tab_g1"
+          tab-id-2     "tab_g2"]
       (state/get-or-create-tab! app-state* session-id-1 tab-id-1)
       (state/get-or-create-tab! app-state* session-id-2 tab-id-2)
       ;; Both cursors point to the same global state

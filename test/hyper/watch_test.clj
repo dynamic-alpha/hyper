@@ -11,7 +11,7 @@
   (testing "Watchers trigger callback on state change"
     (let [app-state*      (atom (state/init-state))
           session-id      "test-session-4"
-          tab-id          "test-tab-4"
+          tab-id          "test_tab_4"
           trigger-count   (atom 0)
           trigger-render! #(swap! trigger-count inc)
           render-fn       (fn [_req]
@@ -47,7 +47,7 @@
   (testing "Cleanup removes all tab resources"
     (let [app-state*      (atom (state/init-state))
           session-id      "test-session-5"
-          tab-id          "test-tab-5"
+          tab-id          "test_tab_5"
           stopped?        (atom false)
           trigger-render! (fn [])
           render-fn       (fn [_req] [:div "test"])]
@@ -75,7 +75,7 @@
   (testing "watch-source! triggers callback when source changes"
     (let [app-state*      (atom (state/init-state))
           session-id      "test-session-ext"
-          tab-id          "test-tab-ext"
+          tab-id          "test_tab_ext"
           trigger-count   (atom 0)
           trigger-render! #(swap! trigger-count inc)
           external-atom   (atom 0)]
@@ -97,7 +97,7 @@
   (testing "watch! with no trigger-render! stashes source under :pending-watches"
     (let [app-state*    (atom (state/init-state))
           session-id    "test-session-pending"
-          tab-id        "test-tab-pending"
+          tab-id        "test_tab_pending"
           external-atom (atom 0)]
 
       (state/get-or-create-tab! app-state* session-id tab-id)
@@ -123,7 +123,7 @@
   (testing "watch! stashing the same source twice is idempotent"
     (let [app-state*    (atom (state/init-state))
           session-id    "test-session-idem"
-          tab-id        "test-tab-idem"
+          tab-id        "test_tab_idem"
           external-atom (atom 0)]
 
       (state/get-or-create-tab! app-state* session-id tab-id)
@@ -142,7 +142,7 @@
   (testing "promote-pending-watches! creates real watches and clears pending"
     (let [app-state*      (atom (state/init-state))
           session-id      "test-session-promote"
-          tab-id          "test-tab-promote"
+          tab-id          "test_tab_promote"
           trigger-count   (atom 0)
           trigger-render! #(swap! trigger-count inc)
           external-atom   (atom 0)]
@@ -185,7 +185,7 @@
   (testing "watch! with trigger-render! present still creates real watches directly"
     (let [app-state*      (atom (state/init-state))
           session-id      "test-session-direct"
-          tab-id          "test-tab-direct"
+          tab-id          "test_tab_direct"
           trigger-count   (atom 0)
           trigger-render! #(swap! trigger-count inc)
           external-atom   (atom 0)]
@@ -230,7 +230,7 @@
   (testing "cleanup-tab! clears pending-watches along with the whole tab"
     (let [app-state*    (atom (state/init-state))
           session-id    "test-session-cleanup-pw"
-          tab-id        "test-tab-cleanup-pw"
+          tab-id        "test_tab_cleanup_pw"
           external-atom (atom 0)]
 
       (state/get-or-create-tab! app-state* session-id tab-id)

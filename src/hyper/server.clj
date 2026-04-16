@@ -4,6 +4,7 @@
    Provides Ring handler creation for hyper applications."
   (:require [cheshire.core :as json]
             [clojure.string]
+            [compact-uuids.core :as uuid]
             [dev.onionpancakes.chassis.core :as c]
             [hyper.actions :as actions]
             [hyper.brotli :as br]
@@ -30,10 +31,10 @@
   (:import (java.util.concurrent Semaphore)))
 
 (defn generate-session-id []
-  (str "sess-" (java.util.UUID/randomUUID)))
+  (str "ses_" (uuid/str (java.util.UUID/randomUUID))))
 
 (defn generate-tab-id []
-  (str "tab-" (java.util.UUID/randomUUID)))
+  (str "tab_" (uuid/str (java.util.UUID/randomUUID))))
 
 ;; ---------------------------------------------------------------------------
 ;; Per-tab renderer thread

@@ -72,9 +72,9 @@
 (deftest signal-deref-render-context-test
   (testing "deref returns Datastar expression in render context (no *signals* bound)"
     (let [app-state* (atom (state/init-state))
-          tab-id     "tab-1"]
-      (state/get-or-create-tab! app-state* "sess-1" tab-id)
-      (binding [context/*request*          {:hyper/session-id "sess-1"
+          tab-id     "tab_1"]
+      (state/get-or-create-tab! app-state* "ses_1" tab-id)
+      (binding [context/*request*          {:hyper/session-id "ses_1"
                                             :hyper/tab-id     tab-id
                                             :hyper/app-state  app-state*}
                 context/*declared-signals* (atom [])]
@@ -83,9 +83,9 @@
 
   (testing "vector path deref returns dot-notation expression"
     (let [app-state* (atom (state/init-state))
-          tab-id     "tab-2"]
-      (state/get-or-create-tab! app-state* "sess-1" tab-id)
-      (binding [context/*request*          {:hyper/session-id "sess-1"
+          tab-id     "tab_2"]
+      (state/get-or-create-tab! app-state* "ses_1" tab-id)
+      (binding [context/*request*          {:hyper/session-id "ses_1"
                                             :hyper/tab-id     tab-id
                                             :hyper/app-state  app-state*}
                 context/*declared-signals* (atom [])]
@@ -99,9 +99,9 @@
 (deftest signal-deref-action-context-test
   (testing "deref returns live value from *signals* in action context"
     (let [app-state* (atom (state/init-state))
-          tab-id     "tab-3"]
-      (state/get-or-create-tab! app-state* "sess-1" tab-id)
-      (binding [context/*request*          {:hyper/session-id "sess-1"
+          tab-id     "tab_3"]
+      (state/get-or-create-tab! app-state* "ses_1" tab-id)
+      (binding [context/*request*          {:hyper/session-id "ses_1"
                                             :hyper/tab-id     tab-id
                                             :hyper/app-state  app-state*}
                 context/*signals*          {:user-name "Alice"}
@@ -111,9 +111,9 @@
 
   (testing "deref returns default when signal missing from *signals*"
     (let [app-state* (atom (state/init-state))
-          tab-id     "tab-4"]
-      (state/get-or-create-tab! app-state* "sess-1" tab-id)
-      (binding [context/*request*          {:hyper/session-id "sess-1"
+          tab-id     "tab_4"]
+      (state/get-or-create-tab! app-state* "ses_1" tab-id)
+      (binding [context/*request*          {:hyper/session-id "ses_1"
                                             :hyper/tab-id     tab-id
                                             :hyper/app-state  app-state*}
                 context/*signals*          {:other "value"}
@@ -123,9 +123,9 @@
 
   (testing "deref reads nested signal from *signals*"
     (let [app-state* (atom (state/init-state))
-          tab-id     "tab-5"]
-      (state/get-or-create-tab! app-state* "sess-1" tab-id)
-      (binding [context/*request*          {:hyper/session-id "sess-1"
+          tab-id     "tab_5"]
+      (state/get-or-create-tab! app-state* "ses_1" tab-id)
+      (binding [context/*request*          {:hyper/session-id "ses_1"
                                             :hyper/tab-id     tab-id
                                             :hyper/app-state  app-state*}
                 context/*signals*          {:user {:name "Bob"}}
@@ -140,9 +140,9 @@
 (deftest signal-reset!-test
   (testing "reset! updates tab state"
     (let [app-state* (atom (state/init-state))
-          tab-id     "tab-6"]
-      (state/get-or-create-tab! app-state* "sess-1" tab-id)
-      (binding [context/*request*          {:hyper/session-id "sess-1"
+          tab-id     "tab_6"]
+      (state/get-or-create-tab! app-state* "ses_1" tab-id)
+      (binding [context/*request*          {:hyper/session-id "ses_1"
                                             :hyper/tab-id     tab-id
                                             :hyper/app-state  app-state*}
                 context/*declared-signals* (atom [])]
@@ -154,9 +154,9 @@
 (deftest signal-swap!-test
   (testing "swap! in action context uses live signal value"
     (let [app-state* (atom (state/init-state))
-          tab-id     "tab-7"]
-      (state/get-or-create-tab! app-state* "sess-1" tab-id)
-      (binding [context/*request*          {:hyper/session-id "sess-1"
+          tab-id     "tab_7"]
+      (state/get-or-create-tab! app-state* "ses_1" tab-id)
+      (binding [context/*request*          {:hyper/session-id "ses_1"
                                             :hyper/tab-id     tab-id
                                             :hyper/app-state  app-state*}
                 context/*signals*          {:count 10}
@@ -167,9 +167,9 @@
 
   (testing "swap! outside action context uses server-side value"
     (let [app-state* (atom (state/init-state))
-          tab-id     "tab-8"]
-      (state/get-or-create-tab! app-state* "sess-1" tab-id)
-      (binding [context/*request*          {:hyper/session-id "sess-1"
+          tab-id     "tab_8"]
+      (state/get-or-create-tab! app-state* "ses_1" tab-id)
+      (binding [context/*request*          {:hyper/session-id "ses_1"
                                             :hyper/tab-id     tab-id
                                             :hyper/app-state  app-state*}
                 context/*declared-signals* (atom [])]
@@ -207,9 +207,9 @@
 (deftest declared-signals-accumulation-test
   (testing "signal adds declaration to *declared-signals* during render"
     (let [app-state* (atom (state/init-state))
-          tab-id     "tab-9"]
-      (state/get-or-create-tab! app-state* "sess-1" tab-id)
-      (binding [context/*request*          {:hyper/session-id "sess-1"
+          tab-id     "tab_9"]
+      (state/get-or-create-tab! app-state* "ses_1" tab-id)
+      (binding [context/*request*          {:hyper/session-id "ses_1"
                                             :hyper/tab-id     tab-id
                                             :hyper/app-state  app-state*}
                 context/*declared-signals* (atom [])]
@@ -245,9 +245,9 @@
 (deftest chassis-attribute-value-test
   (testing "signal renders as attribute value via Chassis protocol"
     (let [app-state* (atom (state/init-state))
-          tab-id     "tab-10"]
-      (state/get-or-create-tab! app-state* "sess-1" tab-id)
-      (binding [context/*request*          {:hyper/session-id "sess-1"
+          tab-id     "tab_10"]
+      (state/get-or-create-tab! app-state* "ses_1" tab-id)
+      (binding [context/*request*          {:hyper/session-id "ses_1"
                                             :hyper/tab-id     tab-id
                                             :hyper/app-state  app-state*}
                 context/*declared-signals* (atom [])]
@@ -263,9 +263,9 @@
 
   (testing "signal deref in data-text attribute renders expression"
     (let [app-state* (atom (state/init-state))
-          tab-id     "tab-11"]
-      (state/get-or-create-tab! app-state* "sess-1" tab-id)
-      (binding [context/*request*          {:hyper/session-id "sess-1"
+          tab-id     "tab_11"]
+      (state/get-or-create-tab! app-state* "ses_1" tab-id)
+      (binding [context/*request*          {:hyper/session-id "ses_1"
                                             :hyper/tab-id     tab-id
                                             :hyper/app-state  app-state*}
                 context/*declared-signals* (atom [])]

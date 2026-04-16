@@ -7,11 +7,11 @@
   (testing "registers an action and returns ID"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-1"
-          tab-id     "test-tab-1"
+          tab-id     "test_tab_1"
           action-fn  (fn [] :executed)
           action-id  (actions/register-action! app-state* session-id tab-id action-fn)]
       (is (string? action-id))
-      (is (.startsWith action-id "action-"))
+      (is (.startsWith action-id "act_"))
       (is (contains? (:actions @app-state*) action-id))
       (is (= session-id (get-in @app-state* [:actions action-id :session-id])))
       (is (= tab-id (get-in @app-state* [:actions action-id :tab-id])))
@@ -50,11 +50,11 @@
 (deftest cleanup-tab-actions-test
   (testing "removes all actions for a tab"
     (let [app-state*  (atom (state/init-state))
-          tab-id      "test-tab-cleanup"
+          tab-id      "test_tab_cleanup"
           action-fn   (fn [_] :executed)
           action-id-1 (actions/register-action! app-state* "sess1" tab-id action-fn)
           action-id-2 (actions/register-action! app-state* "sess1" tab-id action-fn)
-          action-id-3 (actions/register-action! app-state* "sess1" "other-tab" action-fn)]
+          action-id-3 (actions/register-action! app-state* "sess1" "other_tab" action-fn)]
       (is (contains? (:actions @app-state*) action-id-1))
       (is (contains? (:actions @app-state*) action-id-2))
       (is (contains? (:actions @app-state*) action-id-3))

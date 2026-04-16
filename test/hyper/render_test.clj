@@ -11,7 +11,7 @@
   (testing "Render function registration and retrieval"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-2"
-          tab-id     "test-tab-2"
+          tab-id     "test_tab_2"
           render-fn  (fn [_req] [:div "test"])]
       (state/get-or-create-tab! app-state* session-id tab-id)
 
@@ -61,14 +61,14 @@
   (testing "render-tab returns nil when no render-fn is registered"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-rt-1"
-          tab-id     "test-tab-rt-1"]
+          tab-id     "test_tab_rt_1"]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (is (nil? (render/render-tab app-state* session-id tab-id)))))
 
   (testing "render-tab returns render result with HTML strings"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-rt-2"
-          tab-id     "test-tab-rt-2"
+          tab-id     "test_tab_rt_2"
           render-fn  (fn [_req] [:div "Hello World"])]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
@@ -84,7 +84,7 @@
   (testing "Renders and formats content correctly"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-3"
-          tab-id     "test-tab-3"
+          tab-id     "test_tab_3"
           render-fn  (fn [_req] [:div "Hello World"])]
 
       (state/get-or-create-tab! app-state* session-id tab-id)
@@ -98,7 +98,7 @@
   (testing "Ring response passthrough"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-ring"
-          tab-id     "test-tab-ring"
+          tab-id     "test_tab_ring"
           render-fn  (fn [_req] {:status 302 :headers {"Location" "/login"} :body ""})]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
@@ -109,7 +109,7 @@
   (testing "Lazy sequences in hiccup see *request* bindings"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-lazy"
-          tab-id     "test-tab-lazy"
+          tab-id     "test_tab_lazy"
           ;; A render fn that returns lazy seqs which read *request*
           render-fn  (fn [_req]
                        [:ul
@@ -133,7 +133,7 @@
   (testing "safe-render catches errors and renders error fragment"
     (let [failing-render-fn (fn [_req] (throw (ex-info "Test error" {})))
           req               {:hyper/session-id "test-session"
-                             :hyper/tab-id     "test-tab"}
+                             :hyper/tab-id     "test_tab"}
           result            (render/safe-render failing-render-fn req)]
       ;; Should return hiccup, not throw
       (is (vector? result))
@@ -143,7 +143,7 @@
   (testing "safe-render returns result when render succeeds"
     (let [working-render-fn (fn [_req] [:div [:h1 "Success"]])
           req               {:hyper/session-id "test-session"
-                             :hyper/tab-id     "test-tab"}
+                             :hyper/tab-id     "test_tab"}
           result            (render/safe-render working-render-fn req)]
       (is (= [:div [:h1 "Success"]] result)))))
 
@@ -192,7 +192,7 @@
   (testing "Stale actions from a previous render are cleaned up when the next render produces fewer"
     (let [app-state*      (atom (state/init-state))
           session-id      "test-session-actions"
-          tab-id          "test-tab-actions"
+          tab-id          "test_tab_actions"
           trigger-count   (atom 0)
           trigger-render! #(swap! trigger-count inc)
           ;; Render fn whose action count depends on state
