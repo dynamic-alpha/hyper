@@ -27,8 +27,8 @@
           id2 (server/generate-tab-id)]
       (is (string? id1))
       (is (string? id2))
-      (is (.startsWith id1 "tab-"))
-      (is (.startsWith id2 "tab-"))
+      (is (.startsWith id1 "tab_"))
+      (is (.startsWith id2 "tab_"))
       (is (not= id1 id2)))))
 
 (deftest test-wrap-hyper-context-new-session
@@ -46,7 +46,7 @@
       (is (string? (get-in response [:cookies "hyper-session" :value])))
       (is (.startsWith (get-in response [:cookies "hyper-session" :value]) "sess-"))
       (is (.contains (:body response) "session: sess-"))
-      (is (.contains (:body response) "tab: tab-")))))
+      (is (.contains (:body response) "tab: tab_")))))
 
 (deftest test-wrap-hyper-context-existing-session
   (testing "Middleware reuses existing session from cookie"
