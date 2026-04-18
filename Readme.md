@@ -633,6 +633,10 @@ tab is hidden and reopening it when visible — pass `:open-when-hidden? false`:
     :open-when-hidden? false))
 ```
 
+Hyper's built-in `/hyper/events` endpoint automatically sends SSE-friendly
+headers, including `Cache-Control: no-cache, no-transform` and
+`X-Accel-Buffering: no`, to improve compatibility with reverse proxies.
+
 ## Brotli compression
 
 Hyper uses [brotli4j](https://github.com/hyperxpro/Brotli4j) to compress both
