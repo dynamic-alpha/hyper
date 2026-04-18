@@ -9,7 +9,8 @@
             [hyper.state :as state]
             [hyper.watch :as watch]
             [matcher-combinators.matchers :as m]
-            [matcher-combinators.test :refer [match?]]))
+            [matcher-combinators.test :refer [match?]]
+            [org.httpkit.server :as http-kit]))
 
 (deftest test-generate-session-id
   (testing "Session ID generation"
@@ -82,6 +83,30 @@
             [:script {:src  #".*datastar.*"
                       :type "module"}]
             script)))))
+
+(deftest test-initial-sse-response-headers
+  (testing "sends the expected initial SSE response headers"
+    (doseq [[compress? expected-headers]
+            [[false {"Content-Type"      "text/event-stream"
+                     "Cache-Control"     "no-cache, no-transform"
+                     "X-Accel-Buffering" "no"}]
+             [true  {"Content-Type"      "text/event-stream"
+                     "Cache-Control"     "no-cache, no-transform"
+                     "X-Accel-Buffering" "no"
+                     "Content-Encoding"  "br"}]]]
+      (let [captured-response (atom nil)]
+        (with-redefs [http-kit/send! (fn [_channel response _close-after-send?]
+                                       (reset! captured-response response)
+                                       false)]
+          (#'server/-renderer-loop! (atom (state/init-state))
+                                    "sess-test"
+                                    "tab-test"
+                                    ::channel
+                                    compress?
+                                    (java.util.concurrent.Semaphore. 0)
+                                    (promise))
+          (is (= expected-headers
+                 (:headers @captured-response))))))))
 
 (deftest test-create-handler
   (testing "Creates a working ring handler"
