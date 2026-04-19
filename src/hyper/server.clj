@@ -4,6 +4,7 @@
    Provides Ring handler creation for hyper applications."
   (:require [cheshire.core :as json]
             [clojure.string]
+            [compact-uuids.core :as uuid]
             [dev.onionpancakes.chassis.core :as c]
             [hyper.actions :as actions]
             [hyper.brotli :as br]
@@ -27,13 +28,14 @@
             [ring.middleware.params :as params]
             [ring.middleware.resource :as resource]
             [taoensso.telemere :as t])
-  (:import (java.util.concurrent Semaphore)))
+  (:import (java.util.concurrent Semaphore)
+           (java.util.concurrent.locks ReentrantReadWriteLock)))
 
 (defn generate-session-id []
-  (str "sess-" (java.util.UUID/randomUUID)))
+  (str "sess-" (uuid/str (java.util.UUID/randomUUID))))
 
 (defn generate-tab-id []
-  (str "tab-" (java.util.UUID/randomUUID)))
+  (str "tab_" (uuid/str (java.util.UUID/randomUUID))))
 
 ;; ---------------------------------------------------------------------------
 ;; Per-tab renderer thread
@@ -54,12 +56,13 @@
    Exits when shutdown-renderer* is delivered."
   [app-state* session-id tab-id channel compress?
    ^Semaphore semaphore shutdown-renderer*]
-  (let [br-out      (when compress? (br/byte-array-out-stream))
-        br-stream   (when br-out (br/compress-out-stream br-out :window-size 18))
-        headers     (cond-> {"Content-Type" "text/event-stream"}
-                      compress? (assoc "Content-Encoding" "br"))
-        throttle-ms (long (or (get @app-state* :render-throttle-ms)
-                              default-render-throttle-ms))]
+  (let [br-out         (when compress? (br/byte-array-out-stream))
+        br-stream      (when br-out (br/compress-out-stream br-out :window-size 18))
+        headers        (cond-> {"Content-Type" "text/event-stream"}
+                         compress? (assoc "Content-Encoding" "br"))
+        throttle-ms    (long (or (get @app-state* :render-throttle-ms)
+                                 default-render-throttle-ms))
+        tab-write-lock (.writeLock (get-in @app-state* [:tabs tab-id :renderer :rw-lock]))]
     (try
       ;; Send the connected event as the initial SSE response (headers + body).
       (let [connected-msg (render/format-connected-event tab-id)
@@ -76,33 +79,49 @@
             (.acquire semaphore)
             (.drainPermits semaphore)
             (when-not (realized? shutdown-renderer*)
-              (let [current-signals (get-in @app-state* [:tabs tab-id :signals])
-                    sig-patches     (when (and current-signals
-                                               (not= current-signals last-sent-signals))
-                                      (signal/changed-signals last-sent-signals current-signals))
-                    sent?           (try
-                            ;; Clean slate — remove stale actions before re-rendering
-                                      (actions/cleanup-tab-actions! app-state* tab-id)
-                                      (when-let [{:keys [title head-html body-html url declared-signals]}
-                                                 (render/render-tab app-state* session-id tab-id)]
-                                        (let [head-event   (render/format-head-update title head-html)
-                                              sig-attrs    (signal/format-signal-attrs declared-signals)
-                                              div-attrs    (cond-> {:id "hyper-app"}
-                                                             url       (assoc :data-hyper-url url)
-                                                             sig-attrs (merge sig-attrs))
-                                              wrapped-html (c/html [:div div-attrs (c/raw body-html)])
-                                              body-event   (render/format-datastar-fragment wrapped-html)
-                                              sig-event    (when (seq sig-patches)
-                                                             (signal/format-patch-signals-event sig-patches))
-                                              sse-payload  (str head-event body-event sig-event)
-                                              payload      (if br-stream
-                                                             (br/compress-stream br-out br-stream sse-payload)
-                                                             sse-payload)]
-                                          (boolean (http-kit/send! channel payload false))))
-                                      (catch Throwable e
-                                        (t/error! e {:id   :hyper.error/renderer
-                                                     :data {:hyper/tab-id tab-id}})
-                                        nil))]
+              (let [[current-signals sig-patches render-tab-result]
+                    ;; 1. Lock-guarded snapshot & rendering
+                    (do
+                      (.lock tab-write-lock)
+                      (try
+                        (let [current-signals   (get-in @app-state* [:tabs tab-id :signals])
+                              sig-patches       (when (and current-signals
+                                                           (not= current-signals last-sent-signals))
+                                                  (signal/changed-signals last-sent-signals current-signals))
+                                                ;; Clean slate — remove stale actions before re-rendering
+                              _                 (actions/cleanup-tab-actions! app-state* tab-id)
+                              render-tab-result (try
+                                                  (render/render-tab app-state* session-id tab-id)
+                                                  (catch Throwable e
+                                                    (t/error! e {:id   :hyper.error/renderer
+                                                                 :data {:hyper/tab-id tab-id}})
+                                                    nil))]
+                          [current-signals sig-patches render-tab-result])
+                        (finally (.unlock tab-write-lock))))
+                    ;; 2. Format events & send payload (skip if render returned nil)
+                    sent?
+                    (try
+                      (when-let [{:keys [title head-html body-html url declared-signals]} render-tab-result]
+                        (let [head-event   (render/format-head-update title head-html)
+                              sig-attrs    (signal/format-signal-attrs declared-signals)
+                              div-attrs    (cond-> {:id "hyper-app"}
+                                             url       (assoc :data-hyper-url url)
+                                             sig-attrs (merge sig-attrs))
+                              wrapped-html (c/html [:div div-attrs (c/raw body-html)])
+                              body-event   (render/format-datastar-fragment wrapped-html)
+                              sig-event    (when (seq sig-patches)
+                                             (signal/format-patch-signals-event sig-patches))
+                              sse-payload  (str head-event body-event sig-event)
+                              payload      (if br-stream
+                                             (br/compress-stream br-out br-stream sse-payload)
+                                             sse-payload)]
+                          (boolean (http-kit/send! channel payload false))))
+                      (catch Throwable e
+                        ;; 3. Error fallback
+                        (t/error! e {:id   :hyper.error/renderer
+                                     :data {:hyper/tab-id tab-id}})
+                        nil))]
+                ;; 4. Throttle & loop continuation
                 ;; sent? is true (ok), nil (no render-fn or error), false (channel closed)
                 (when-not (false? sent?)
                   ;; Throttle: sleep so triggers during this window accumulate
@@ -144,7 +163,8 @@
                                                    semaphore shutdown-renderer*)))]
     {:trigger-render! trigger-render!
      :stop!           stop!
-     :thread          thread}))
+     :thread          thread
+     :rw-lock         (ReentrantReadWriteLock. true)}))
 
 (defn wrap-hyper-context
   "Middleware that adds session-id and tab-id to the request."
@@ -296,7 +316,7 @@
           (push-thread-bindings {#'context/*request* req-with-state
                                  #'context/*signals* signals})
           (try
-            (actions/execute-action! app-state* action-id client-params)
+            (actions/execute-action! app-state* tab-id action-id client-params)
 
             ;; 204 prevents Datastar from merging the response into signals
             {:status 204}

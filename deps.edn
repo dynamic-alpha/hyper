@@ -24,6 +24,7 @@
   org.clojure/core.memoize            {:mvn/version "1.2.281"}
   camel-snake-kebab/camel-snake-kebab {:mvn/version "0.4.3"}
   ring/ring-defaults                  {:mvn/version "0.7.0"}
+  compact-uuids/compact-uuids         {:mvn/version "0.2.1"}
 
   ;; JSON
   cheshire/cheshire                   {:mvn/version "6.1.0"}

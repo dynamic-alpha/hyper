@@ -144,7 +144,7 @@
       (is (= 1 (count (:actions result))))
       (let [[k v] (first (:actions result))]
         (is (string? k))
-        (is (str/starts-with? k "a-"))
+        (is (str/starts-with? k "a_"))
         (is (fn? (:fn v)))))))
 
 (deftest test-page-signals

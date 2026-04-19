@@ -2,7 +2,8 @@
   "Action handling for hyper applications.
 
    Actions are server-side functions triggered by client interactions."
-  (:require [taoensso.telemere :as t]))
+  (:require [compact-uuids.core :as uuid]
+            [taoensso.telemere :as t]))
 
 (defn register-action!
   "Register an action function and return its ID.
@@ -15,7 +16,7 @@
    - :as  — a human-readable name for the action, useful for testing"
   ([app-state* session-id tab-id action-fn]
    (register-action! app-state* session-id tab-id action-fn
-                     (str "action-" (java.util.UUID/randomUUID))
+                     (str "action-" (uuid/str (java.util.UUID/randomUUID)))
                      nil))
   ([app-state* session-id tab-id action-fn action-id]
    (register-action! app-state* session-id tab-id action-fn action-id nil))
@@ -34,20 +35,26 @@
 (defn execute-action!
   "Execute an action by ID with error handling.
    When client-params are provided they are passed to the action fn."
-  ([app-state* action-id]
-   (execute-action! app-state* action-id nil))
-  ([app-state* action-id client-params]
-   (if-let [action-data (get-in @app-state* [:actions action-id])]
-     (let [{:keys [fn]} action-data]
-       (t/catch->error! :hyper.error/execute-action
-                        (fn client-params))
-       true)
-     (do
-       (t/log! {:level :warn
-                :id    :hyper.error/action-not-found
-                :data  {:hyper/action-id action-id}
-                :msg   "Action not found"})
-       (throw (ex-info "Action not found" {:hyper/action-id action-id}))))))
+  ([app-state* tab-id action-id]
+   (execute-action! app-state* tab-id  action-id nil))
+  ([app-state* tab-id action-id client-params]
+   (let [tab-read-lock (.readLock (get-in @app-state* [:tabs tab-id :renderer :rw-lock]))]
+     (.lock tab-read-lock)
+     (try
+       (if-let [action-data (get-in @app-state* [:actions action-id])]
+         (let [{:keys [fn]} action-data]
+           (t/catch->error! :hyper.error/execute-action
+                            (fn client-params))
+           true)
+         (do
+           (t/log! {:level :warn
+                    :id    :hyper.error/action-not-found
+                    :data  {:hyper/action-id action-id}
+                    :msg   "Action not found"})
+           (throw (ex-info "Action not found" {:hyper/action-id  action-id
+                                               :hyper/action-ids (keys (get-in @app-state* [:actions]))}))))
+       (finally
+         (.unlock tab-read-lock))))))
 
 (defn cleanup-tab-actions!
   "Remove all actions for a tab."
