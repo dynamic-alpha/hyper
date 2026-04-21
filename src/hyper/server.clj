@@ -84,10 +84,12 @@
                                                (not= current-signals last-sent-signals))
                                       (signal/changed-signals last-sent-signals current-signals))
                     sent?           (try
-                            ;; Clean slate — remove stale actions before re-rendering
-                                      (actions/cleanup-tab-actions! app-state* tab-id)
-                                      (when-let [{:keys [title head-html body-html url declared-signals]}
+                                      (when-let [{:keys [title head-html body-html url
+                                                         declared-signals registered-action-ids]}
                                                  (render/render-tab app-state* session-id tab-id)]
+                                        ;; Sweep stale actions *after* render has re-registered
+                                        ;; the live set — no gap where actions are missing.
+                                        (actions/sweep-stale-tab-actions! app-state* tab-id registered-action-ids)
                                         (let [head-event   (render/format-head-update title head-html)
                                               sig-attrs    (signal/format-signal-attrs declared-signals)
                                               div-attrs    (cond-> {:id "hyper-app"}

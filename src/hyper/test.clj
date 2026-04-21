@@ -133,9 +133,10 @@
                  extra-req (merge extra-req))]
 
        ;; Bind context vars and render
-       (push-thread-bindings {#'context/*request*          req
-                              #'context/*action-idx*       (atom 0)
-                              #'context/*declared-signals* (atom [])})
+       (push-thread-bindings {#'context/*request*               req
+                              #'context/*action-idx*            (atom 0)
+                              #'context/*declared-signals*      (atom [])
+                              #'context/*registered-action-ids* (atom #{})})
        (try
          (let [body  (render/safe-render handler req)
                ;; Ring response passthrough

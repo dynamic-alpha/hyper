@@ -179,9 +179,10 @@
                          router (assoc :hyper/router router)
                          route  (assoc :hyper/route route)
                          true   (dissoc :reitit.core/match))]
-       (push-thread-bindings {#'context/*request*          req
-                              #'context/*action-idx*       (atom 0)
-                              #'context/*declared-signals* (atom [])})
+       (push-thread-bindings {#'context/*request*               req
+                              #'context/*action-idx*            (atom 0)
+                              #'context/*declared-signals*      (atom [])
+                              #'context/*registered-action-ids* (atom #{})})
        (try
          (let [body (safe-render render-fn req)]
            ;; Ring response passthrough — render-fn returned a redirect,
@@ -193,12 +194,14 @@
                    title      (routes/resolve-title title-spec req)
                    head       (some-> (routes/resolve-head (get @app-state* :head) req)
                                       mark-head-elements)
-                   declared   @context/*declared-signals*]
-               {:title            title
-                :head-html        (some-> head c/html)
-                :body-html        (c/html body)
-                :url              url
-                :declared-signals declared})))
+                   declared   @context/*declared-signals*
+                   action-ids @context/*registered-action-ids*]
+               {:title                 title
+                :head-html             (some-> head c/html)
+                :body-html             (c/html body)
+                :url                   url
+                :declared-signals      declared
+                :registered-action-ids action-ids})))
          (finally
            (pop-thread-bindings)))))))
 

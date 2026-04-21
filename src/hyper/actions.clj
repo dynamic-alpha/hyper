@@ -2,7 +2,9 @@
   "Action handling for hyper applications.
 
    Actions are server-side functions triggered by client interactions."
-  (:require [compact-uuids.core :as uuid]
+  (:require [clojure.set]
+            [compact-uuids.core :as uuid]
+            [hyper.context :as context]
             [taoensso.telemere :as t]))
 
 (defn register-action!
@@ -30,6 +32,8 @@
                                        (:as opts) (assoc :as (:as opts))))
                            (update-in [:actions-by-tab tab-id]
                                       (fnil conj #{}) action-id))))
+   (when-let [acc context/*registered-action-ids*]
+     (swap! acc conj action-id))
    action-id))
 
 (defn execute-action!
@@ -50,8 +54,28 @@
                 :msg   "Action not found"})
        (throw (ex-info "Action not found" {:hyper/action-id action-id}))))))
 
+(defn sweep-stale-tab-actions!
+  "Remove actions for a tab that were not re-registered during the last
+   render cycle.  `live-action-ids` is the set of IDs collected by
+   `*registered-action-ids*` during render.  Actions in that set are
+   kept; any other action belonging to this tab is removed.
+
+   This replaces the old cleanup-before-render pattern with a
+   cleanup-after-render approach that eliminates the window where
+   actions are missing."
+  [app-state* tab-id live-action-ids]
+  (swap! app-state* (fn [state]
+                      (let [all-tab-ids (get-in state [:actions-by-tab tab-id] #{})
+                            stale-ids   (clojure.set/difference all-tab-ids live-action-ids)]
+                        (if (seq stale-ids)
+                          (-> state
+                              (update :actions #(apply dissoc % stale-ids))
+                              (assoc-in [:actions-by-tab tab-id] live-action-ids))
+                          (assoc-in state [:actions-by-tab tab-id] live-action-ids)))))
+  nil)
+
 (defn cleanup-tab-actions!
-  "Remove all actions for a tab."
+  "Remove all actions for a tab.  Used during tab disconnect."
   [app-state* tab-id]
   (swap! app-state* (fn [state]
                       (let [action-ids (get-in state [:actions-by-tab tab-id])]

@@ -24,6 +24,13 @@
 ;; Each entry is a map with :html-name, :default-val, and :local? keys.
 (def ^:dynamic *declared-signals* nil)
 
+;; Accumulator for action IDs registered during a render pass.
+;; Bound to (atom #{}) before each render so that register-action!
+;; can track which action IDs are live.  After render, stale actions
+;; (present in the previous cycle but absent from this one) are removed
+;; in a single atomic swap — no cleanup-before-render gap needed.
+(def ^:dynamic *registered-action-ids* nil)
+
 (defn require-context!
   "Extract and validate the request context from *request*.
    Throws if called outside a request context or if required keys are missing.
