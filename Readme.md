@@ -18,7 +18,7 @@ automatically. No client-side framework, no JSON APIs, no JavaScript to write.
   (let [count* (h/tab-cursor :count 0)]
     [:div
      [:h1 "Count: " @count*]
-     [:button {:data-on:click (h/action (swap! (h/tab-cursor :count) inc))}
+     [:button {:data-on:click (h/action (swap! count* inc))}
       "Increment"]]))
 
 (def routes
@@ -133,8 +133,8 @@ bound to any event attribute.
   (let [count* (h/tab-cursor :count 0)]
     [:div
      [:p "Count: " @count*]
-     [:button {:data-on:click (h/action (swap! (h/tab-cursor :count) inc))} "+1"]
-     [:button {:data-on:click (h/action (swap! (h/tab-cursor :count) dec))} "-1"]]))
+     [:button {:data-on:click (h/action (swap! count* inc))} "+1"]
+     [:button {:data-on:click (h/action (swap! count* dec))} "-1"]]))
 ```
 
 When the button is clicked, Datastar POSTs to the server, Hyper executes the
@@ -669,10 +669,10 @@ happened:
     [:div
      [:h1 "Count: " @count*]
      [:button {:data-on:click (h/action {:as "increment"}
-                                (swap! (h/tab-cursor :count) inc))}
+                                (swap! count* inc))}
       "+1"]
      [:button {:data-on:click (h/action {:as "decrement"}
-                                (swap! (h/tab-cursor :count) dec))}
+                                (swap! count* dec))}
       "-1"]]))
 
 (ht/test-page counter-page)
