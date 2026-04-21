@@ -819,4 +819,14 @@ The E2E suite covers:
 
 ## Contributing
 
-PRs and ideas welcome! Please follow the [angular commit guidelines](https://github.com/angular/angular/blob/main/contributing-docs/commit-message-guidelines.md) with your messages.
+PRs and ideas welcome! Please follow the [angular commit
+guidelines](https://github.com/angular/angular/blob/main/contributing-docs/commit-message-guidelines.md)
+with your messages. All subject lines should be less than 80 characters long and
+avoid needless language.
+
+eg:
+
+``` bash
+fix: header template rendering w/ nil data
+```
+
