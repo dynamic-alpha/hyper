@@ -75,7 +75,7 @@
    the document title and swaps user-provided <head> elements.
 
    Why not morph?  Morphing <head> inner content via idiomorph can
-   disconnect <style>/<link> elements from the browser's CSSOM — the
+   disconnect <style>/<link> elements from the browser's CSSOM - the
    nodes stay in the DOM but styles stop applying.  By using JS to
    remove-then-append we guarantee the browser re-evaluates them.
 
@@ -128,11 +128,11 @@
      passed through as-is for redirects, error responses, etc.
 
    - A render result map with pre-serialized HTML strings:
-       :title             — resolved page title string, or nil
-       :head-html         — HTML string of marked <head> elements, or nil
-       :body-html         — HTML string of the rendered page body
-       :url               — current route URL string, or nil
-       :declared-signals  — vector of signal declaration maps for HTML injection
+       :title             - resolved page title string, or nil
+       :head-html         - HTML string of marked <head> elements, or nil
+       :body-html         - HTML string of the rendered page body
+       :url               - current route URL string, or nil
+       :declared-signals  - vector of signal declaration maps for HTML injection
 
    Binds `context/*request*` and `context/*action-idx*` for the duration
    of both rendering and HTML serialization, so lazy hiccup sequences
@@ -185,11 +185,17 @@
                               #'context/*registered-action-ids* (atom #{})})
        (try
          (let [body (safe-render render-fn req)]
-           ;; Ring response passthrough — render-fn returned a redirect,
+           ;; Ring response passthrough - render-fn returned a redirect,
            ;; error, or other non-hiccup response; pass it through as-is.
            (if (and (map? body) (:status body))
              body
-             (let [title-spec (when (and (seq route-index) route)
+             ;; Serialize body HTML first - this forces lazy hiccup
+             ;; sequences (for, map, etc.) which may call h/action and
+             ;; register actions during realization.  We must read
+             ;; *registered-action-ids* AFTER serialization so the
+             ;; accumulator captures every action the render produced.
+             (let [body-html  (c/html body)
+                   title-spec (when (and (seq route-index) route)
                                 (routes/find-route-title route-index (:name route)))
                    title      (routes/resolve-title title-spec req)
                    head       (some-> (routes/resolve-head (get @app-state* :head) req)
@@ -198,7 +204,7 @@
                    action-ids @context/*registered-action-ids*]
                {:title                 title
                 :head-html             (some-> head c/html)
-                :body-html             (c/html body)
+                :body-html             body-html
                 :url                   url
                 :declared-signals      declared
                 :registered-action-ids action-ids})))

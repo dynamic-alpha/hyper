@@ -188,6 +188,37 @@
       ;; Should NOT contain head element removal/insertion JS
       (is (not (.contains event "[data-hyper-head]"))))))
 
+(deftest test-lazy-hiccup-actions-in-registered-ids
+  (testing "Actions inside lazy sequences (for/map) are included in registered-action-ids"
+    (let [app-state* (atom (state/init-state))
+          session-id "test-session-lazy-actions"
+          tab-id     "test_tab_lazy_actions"
+          ;; Render fn that produces actions inside a lazy `for`
+          render-fn  (fn [_req]
+                       [:div
+                        (for [i (range 3)]
+                          [:button {:data-on:click (hy/action (println "clicked" i))}
+                           (str "Button " i)])])]
+
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (render/register-render-fn! app-state* tab-id render-fn)
+
+      (let [result (render/render-tab app-state* session-id tab-id)]
+        (is (= 3 (count (:registered-action-ids result)))
+            "All 3 actions from the lazy `for` should appear in registered-action-ids")
+
+        ;; Simulate what the server renderer loop does after render:
+        ;; sweep stale actions using the returned live set.
+        (actions/sweep-stale-tab-actions! app-state* tab-id (:registered-action-ids result))
+
+        (is (= 3 (count (get-in @app-state* [:actions-by-tab tab-id])))
+            "All 3 actions should survive the sweep")
+
+        ;; Verify each action is still executable
+        (doseq [action-id (:registered-action-ids result)]
+          (is (some? (get-in @app-state* [:actions action-id]))
+              (str "Action " action-id " should still exist after sweep")))))))
+
 (deftest test-actions-cleaned-between-renders
   (testing "Stale actions from a previous render are cleaned up when the next render produces fewer"
     (let [app-state*      (atom (state/init-state))
