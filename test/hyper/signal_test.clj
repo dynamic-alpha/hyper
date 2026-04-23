@@ -149,7 +149,30 @@
         (let [sig (h/signal :count 0)]
           (is (= 0 (get-in @app-state* [:tabs tab-id :signals :count])))
           (reset! sig 42)
-          (is (= 42 (get-in @app-state* [:tabs tab-id :signals :count]))))))))
+          (is (= 42 (get-in @app-state* [:tabs tab-id :signals :count])))))))
+
+  (testing "reset! to nil is preserved across re-renders (not overwritten by default)"
+    (let [app-state* (atom (state/init-state))
+          tab-id     "tab_6b"]
+      (state/get-or-create-tab! app-state* "ses_1" tab-id)
+      ;; First render — creates the signal with default "hello"
+      (binding [context/*request*          {:hyper/session-id "ses_1"
+                                            :hyper/tab-id     tab-id
+                                            :hyper/app-state  app-state*}
+                context/*declared-signals* (atom [])]
+        (let [sig (h/signal :greeting "hello")]
+          (is (= "hello" (get-in @app-state* [:tabs tab-id :signals :greeting])))
+          ;; Simulate an action that sets the signal to nil
+          (reset! sig nil)
+          (is (nil? (get-in @app-state* [:tabs tab-id :signals :greeting])))))
+      ;; Second render — create-signal should NOT overwrite nil with default
+      (binding [context/*request*          {:hyper/session-id "ses_1"
+                                            :hyper/tab-id     tab-id
+                                            :hyper/app-state  app-state*}
+                context/*declared-signals* (atom [])]
+        (h/signal :greeting "hello")
+        (is (nil? (get-in @app-state* [:tabs tab-id :signals :greeting]))
+            "nil value should be preserved, not reset to default")))))
 
 (deftest signal-swap!-test
   (testing "swap! in action context uses live signal value"

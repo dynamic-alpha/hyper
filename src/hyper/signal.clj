@@ -195,8 +195,10 @@
         html-nm (signal-html-name path)
         st-path (signal-store-path path)
         signal  (->Signal js-name html-nm st-path app-state* tab-id default-val)]
-    ;; Initialise the server-side value if not already set
-    (when (nil? (get-in @app-state* (into [:tabs tab-id :signals] st-path)))
+    ;; Initialise the server-side value if not already set.
+    ;; Use a sentinel to distinguish "never set" from "explicitly set to nil",
+    ;; so that (reset! sig nil) is not silently overwritten by the default.
+    (when (identical? ::not-found (get-in @app-state* (into [:tabs tab-id :signals] st-path) ::not-found))
       (swap! app-state* assoc-in (into [:tabs tab-id :signals] st-path) default-val))
     ;; During render, register for HTML declaration
     (when-let [acc context/*declared-signals*]
