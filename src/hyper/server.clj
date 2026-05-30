@@ -515,9 +515,12 @@
    re-resolution, title/head resolution).
 
    Options:
-   - :datastar-script - Hiccup content for Datastar script added to document head, or nil."
-  [app-state* {:keys [datastar-script open-when-hidden? base-path] :or {open-when-hidden? true
-                                                                        base-path         ""}}]
+   - :datastar-script - Hiccup content for Datastar script added to document head, or nil.
+   - :html-attrs      - Map of attributes merged onto the root <html> element
+                        (e.g. {:lang \"en\"}).  Defaults to none."
+  [app-state* {:keys [datastar-script html-attrs open-when-hidden? base-path]
+               :or   {open-when-hidden? true
+                      base-path         ""}}]
   (fn [render-fn]
     (fn [req]
       (let [tab-id     (:hyper/tab-id req)
@@ -540,7 +543,7 @@
                                                                          sig-attrs (merge sig-attrs))
                   html                                                 (c/html
                                                                          [c/doctype-html5
-                                                                          [:html
+                                                                          [:html (or html-attrs {})
                                                                            [:head
                                                                             [:meta {:charset "UTF-8"}]
                                                                             [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
@@ -679,6 +682,8 @@
    Options:
    - :head              Hiccup nodes appended to the <head> (e.g. stylesheet <link>),
                         or (fn [req] ...) -> hiccup nodes appended to the <head>
+   - :html-attrs        Map of attributes merged onto the root <html> element
+                        (e.g. {:lang \"en\"}).  Defaults to none.
    - :datastar-script   Hiccup nodes for the Datastar script (or nil to suppress)
    - :open-when-hidden? Keep the SSE connection open when the browser tab is hidden
                         (default true). When false, Datastar closes the connection

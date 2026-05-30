@@ -151,6 +151,32 @@
       (is (.contains (:body response) "data-hyper-head")
           "Head elements are marked for SSE management")))
 
+  (testing "Allows :html-attrs to be set on root <html>"
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state*
+                                            {:html-attrs {:lang     "en"
+                                                          :data-app "demo"}})
+          response   (handler {:uri "/" :request-method :get})
+          html       (:body response)]
+      (is (= 200 (:status response)))
+      (is (.contains html "lang=\"en\"")
+          "Root <html> carries the :lang attribute")
+      (is (.contains html "data-app=\"demo\"")
+          "Root <html> carries the :data-app attribute")))
+
+  (testing ":html-attrs defaults to none (no attributes on <html>)"
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div "Home"])}]]
+          handler    (server/create-handler routes app-state* {})
+          response   (handler {:uri "/" :request-method :get})
+          html       (:body response)]
+      (is (= 200 (:status response)))
+      (is (.contains html "<html>")
+          "Root <html> renders bare when no :html-attrs provided")))
+
   (testing "Datastar script override"
     (let [app-state* (atom (state/init-state))
           routes     [["/" {:name :home

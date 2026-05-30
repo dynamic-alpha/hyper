@@ -494,6 +494,8 @@
    - :app-state         — Atom for application state (default: fresh atom)
    - :datastar-script   - Override of the default datastar script tag (as Hiccup) or nil to suppress
    - :head              — Hiccup nodes appended to the HTML <head>, or (fn [req] ...) -> hiccup
+   - :html-attrs        — Map of attributes merged onto the root <html> element
+                          (e.g. {:lang \"en\"}).  Defaults to none.
    - :base-path         — URL path prefix for reverse-proxy deployments where the app is served
                           under a subfolder (e.g. \"/my-app\"). When set, all internal hyper
                           endpoints (/hyper/events, /hyper/actions, /hyper/navigate) are mounted
@@ -553,13 +555,14 @@
      (def app (start! handler {:port 3000}))
      ;; Later...
      (stop! app)"
-  [routes & {:keys [app-state head static-resources static-dir watches
+  [routes & {:keys [app-state head html-attrs static-resources static-dir watches
                     datastar-script base-path middleware render-middleware
                     render-error]
              :or   {app-state       (atom (state/init-state))
                     datastar-script server/default-datastar-script}}]
   (server/create-handler routes app-state
                          (cond-> {:head              head
+                                  :html-attrs        html-attrs
                                   :datastar-script   datastar-script
                                   :static-resources  static-resources
                                   :static-dir        static-dir
