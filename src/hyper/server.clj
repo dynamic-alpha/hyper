@@ -712,12 +712,19 @@
                         `hyper.render.error/minimal` (generic, production-safe).
                         Use `hyper.render.error/explain` in development to see
                         the message, ex-data, and full stack trace.
+   - :hiccup-transform  (fn [hiccup] hiccup) applied to body and head hiccup
+                        before Chassis serialization.  Useful for expanding
+                        component systems (e.g. lambdaisland/ornament defstyled
+                        components) into plain keyword-first hiccup vectors that
+                        Chassis can serialize.  Runs on initial page loads and
+                        every SSE re-render.
 
    Routes should use :get handlers that return hiccup (Chassis vectors).
    Hyper will wrap them to provide full HTML responses and SSE connections."
   ([routes app-state*]
    (create-handler routes app-state* {:datastar-script (default-datastar-script)}))
-  ([routes app-state* {:keys [watches head base-path middleware render-middleware render-error]
+  ([routes app-state* {:keys [watches head base-path middleware render-middleware render-error
+                              hiccup-transform]
                        :or   {render-error render.error/minimal}
                        :as   opts}]
    (let [base-path       (or base-path "")
@@ -732,13 +739,16 @@
          ;; Store base-path so actions and navigate can reference prefixed URLs.
          ;; :render-error is stored as-is (fn or Var); render-tab invokes it
          ;; via IFn so a Var picks up redefinitions on each call.
+         ;; :hiccup-transform is read by render-tab to expand component
+         ;; systems (e.g. ornament defstyled) before Chassis serialization.
          _               (swap! app-state* assoc
                                 :routes-source routes
                                 :global-watches (vec watches)
                                 :head head
                                 :base-path base-path
                                 :render-middleware (vec render-middleware)
-                                :render-error render-error)
+                                :render-error render-error
+                                :hiccup-transform hiccup-transform)
          initial-routes  (if (var? routes) @routes routes)
          initial-handler (build-ring-handler initial-routes app-state* page-wrapper system-routes)
          handler         (if (var? routes)

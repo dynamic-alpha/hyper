@@ -516,6 +516,10 @@
                           Each is (fn [handler] (fn [req] ...)), identical to Ring
                           middleware.  Applied on both initial page loads and SSE
                           re-renders.  Per-route :render-middleware wraps inside these.
+   - :hiccup-transform  — (fn [hiccup] hiccup) applied to body and head hiccup before
+                          Chassis serialization.  Useful for expanding component systems
+                          (e.g. lambdaisland/ornament defstyled components) into plain
+                          keyword-first hiccup vectors that Chassis can serialize.
    - :render-error      — Function `(fn [error req] -> hiccup)` rendered when a
                           view's render-fn throws.  May be a Var to pick up
                           redefinitions without restarting the server.  Defaults
@@ -555,7 +559,7 @@
      (stop! app)"
   [routes & {:keys [app-state head static-resources static-dir watches
                     datastar-script base-path middleware render-middleware
-                    render-error]
+                    render-error hiccup-transform]
              :or   {app-state       (atom (state/init-state))
                     datastar-script server/default-datastar-script}}]
   (server/create-handler routes app-state
@@ -566,7 +570,8 @@
                                   :watches           watches
                                   :base-path         base-path
                                   :middleware        middleware
-                                  :render-middleware render-middleware}
+                                  :render-middleware render-middleware
+                                  :hiccup-transform  hiccup-transform}
                            ;; Only forward when supplied so server-level
                            ;; default (`render.error/minimal`) applies otherwise.
                            render-error (assoc :render-error render-error))))

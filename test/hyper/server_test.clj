@@ -151,6 +151,43 @@
       (is (.contains (:body response) "data-hyper-head")
           "Head elements are marked for SSE management")))
 
+  (testing "Allows :hiccup-transform to expand custom hiccup before serialization"
+    ;; Simulate a tiny component system: a vector whose first element is
+    ;; ::comp is "expanded" into a real hiccup vector.  Without
+    ;; :hiccup-transform, Chassis would not know how to render ::comp;
+    ;; the transform converts it to [:span ...] before serialization.
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [::greeting "world"])}]]
+          expand     (fn expand [form]
+                       (cond
+                         (and (vector? form) (= ::greeting (first form)))
+                         (into [:span.greeting "Hello, "] (rest form))
+
+                         (vector? form) (mapv expand form)
+                         (seq? form)    (map expand form)
+                         :else          form))
+          handler    (server/create-handler routes app-state*
+                                            {:hiccup-transform expand})
+          response   (handler {:uri "/" :request-method :get})
+          html       (:body response)]
+      (is (= 200 (:status response)))
+      (is (.contains html "class=\"greeting\"")
+          "Custom ::greeting node was expanded to [:span.greeting ...]")
+      (is (.contains html "Hello, world")
+          "Children of the custom node survived the transform")))
+
+  (testing ":hiccup-transform defaults to nil (body is rendered unchanged)"
+    (let [app-state* (atom (state/init-state))
+          routes     [["/" {:name :home
+                            :get  (fn [_req] [:div.untouched "plain"])}]]
+          handler    (server/create-handler routes app-state* {})
+          response   (handler {:uri "/" :request-method :get})
+          html       (:body response)]
+      (is (= 200 (:status response)))
+      (is (.contains html "class=\"untouched\""))
+      (is (.contains html "plain"))))
+
   (testing "Datastar script override"
     (let [app-state* (atom (state/init-state))
           routes     [["/" {:name :home
