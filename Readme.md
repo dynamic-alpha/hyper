@@ -1327,7 +1327,9 @@ your render function runs. The coerced values show up on `:hyper/route` under
 ```
 
 If coercion fails (e.g. `/user/abc` against an `:int`), Hyper responds with a
-`400` and a human-readable explanation of what was wrong. Routes without a
+`400` JSON response with a human-readable explanation under `humanized`.
+Browser history navigation validates against the same route specifications and
+leaves the current tab route unchanged when validation fails. Routes without a
 `:parameters` spec keep their raw string params as before.
 
 ### Ring response passthrough

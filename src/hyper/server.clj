@@ -25,7 +25,6 @@
             [hyper.uploads :as uploads]
             [hyper.utils :as utils]
             [hyper.watch :as watch]
-            [reitit.coercion :as coercion]
             [reitit.coercion.malli :as malli]
             [reitit.core :as reitit]
             [reitit.ring :as ring]
@@ -1003,6 +1002,15 @@
        :headers {"Content-Type" "text/plain"}
        :body    "No components registered"})))
 
+(defn- -navigation-parameters
+  "Coerces navigation parameters with the matched GET route's compiled validator."
+  [match request]
+  (when-let [wrap (some (fn [middleware]
+                          (when (= :reitit.ring.coercion/coerce-request (:name middleware))
+                            (:wrap middleware)))
+                        (get-in match [:result :get :middleware]))]
+    ((wrap :parameters) (assoc request :path-params (:path-params match)))))
+
 (defn- navigate-handler
   "Handler for popstate/navigation POST requests.
    Looks up the route for the given path and updates the tab's route + render fn."
@@ -1046,10 +1054,7 @@
 
             (let [route-name   (get-in match [:data :name])
                   ;; Coerce parameters using reitit's coercion if the route has specs
-                  coerced      (try
-                                 (coercion/coerce!
-                                   (assoc match :query-params raw-query-params))
-                                 (catch Exception _e nil))
+                  coerced      (-navigation-parameters match (assoc req :query-params raw-query-params))
                   query-params (or (:query coerced) raw-query-params {})
                   path-params  (or (:path coerced) (:path-params match) {})
                   render-fn    (routes/find-render-fn route-index route-name)]
@@ -1065,6 +1070,30 @@
               {:status  200
                :headers {"Content-Type" "application/json"}
                :body    "{\"success\": true}"})))))))
+
+(defn- -coercion-response
+  "Encodes a coercion error response as JSON with its HTTP content type."
+  [response]
+  (-> response
+      (assoc-in [:headers "Content-Type"] "application/json; charset=utf-8")
+      (update :body json/generate-string)))
+
+(defn- -wrap-coercion-errors
+  "Returns sendable validation responses and propagates unrelated failures."
+  [handler]
+  (fn
+    ([request]
+     (try
+       (handler request)
+       (catch Exception error
+         (ring-coercion/handle-coercion-exception error -coercion-response #(throw %)))))
+    ([request respond raise]
+     (let [fail (fn [error]
+                  (ring-coercion/handle-coercion-exception
+                    error (comp respond -coercion-response) raise))]
+       (try
+         (handler request respond fail)
+         (catch Exception error (fail error)))))))
 
 (defn- build-ring-handler
   "Build the Ring handler for the given user routes.
@@ -1083,7 +1112,7 @@
         router         (ring/router all-routes
                                     {:conflicts nil
                                      :data      {:coercion   malli/coercion
-                                                 :middleware [ring-coercion/coerce-exceptions-middleware
+                                                 :middleware [-wrap-coercion-errors
                                                               ring-coercion/coerce-request-middleware]}})]
     ;; Store the flattened routes and router in app-state for access during actions/renders/navigation
     (swap! app-state* assoc

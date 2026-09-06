@@ -1,5 +1,6 @@
 (ns hyper.server-test
-  (:require [clojure.java.io :as io]
+  (:require [cheshire.core :as json]
+            [clojure.java.io :as io]
             [clojure.string :as string]
             [clojure.test :refer [deftest is testing]]
             [hyper.actions :as actions]
@@ -426,8 +427,11 @@
           handler    (server/create-handler routes app-state*)
           bad        (handler {:uri "/page" :request-method :get :query-params {"n" "abc"}})]
       (is (= 400 (:status bad)))
-      (is (match? {:humanized {:n ["should be an integer"]}}
-                  (:body bad)))))
+      (is (= "application/json; charset=utf-8" (get-in bad [:headers "Content-Type"])))
+      (with-open [output (java.io.ByteArrayOutputStream.)]
+        (ring.core.protocols/write-body-to-stream (:body bad) bad output)
+        (is (match? {:humanized {:n ["should be an integer"]}}
+                    (json/parse-string (.toString output "UTF-8") true))))))
 
   (testing "Routes without :parameters keep raw string params"
     (let [app-state* (atom (state/init-state))
@@ -438,6 +442,73 @@
           response   (handler {:uri "/page" :request-method :get :query-params {"n" "abc"}})]
       (is (= 200 (:status response)))
       (is (string/includes? (:body response) "n=abc")))))
+
+(deftest invalid-path-and-uuid-query-parameters-have-sendable-responses
+  (let [rendered*  (atom 0)
+        app-state* (atom (state/init-state))
+        handler    (server/create-handler
+                     [["/items/:id" {:name       :item
+                                     :parameters {:path  [:map [:id :int]]
+                                                  :query [:map [:capture {:optional true} :uuid]]}
+                                     :get        (fn [_] (swap! rendered* inc) [:p "OK"])}]]
+                     app-state*)]
+    (doseq [request [{:uri "/items/not-an-int"}
+                     {:uri "/items/1" :query-string "capture=not-a-uuid"}]]
+      (let [response (handler (assoc request :request-method :get))]
+        (is (= 400 (:status response)))
+        (with-open [output (java.io.ByteArrayOutputStream.)]
+          (ring.core.protocols/write-body-to-stream (:body response) response output)
+          (is (seq (:humanized (json/parse-string (.toString output "UTF-8") true)))))))
+    (is (zero? @rendered*))))
+
+(deftest invalid-navigation-parameters-do-not-replace-the-tab-route
+  (let [app-state* (atom (state/init-state))
+        handler    (server/create-handler
+                     [["/items/:id" {:name       :item
+                                     :parameters {:path [:map [:id :int]]}
+                                     :get        (fn [_] [:p "OK"])}]] app-state*)
+        response   (handler {:uri          "/hyper/navigate"            :request-method :post
+                             :query-params {"path" "/items/not-an-int"}})]
+    (is (= 400 (:status response)))
+    (is (= {:id ["should be an integer"]}
+           (:humanized (json/parse-string (:body response) true))))
+    (is (every? #(nil? (:route %)) (vals (:tabs @app-state*))))))
+
+(deftest navigation-uses-the-same-typed-parameters-as-page-loads
+  (let [app-state* (atom (state/init-state))
+        capture    (random-uuid)
+        handler    (server/create-handler
+                     [["/items/:id" {:name       :item
+                                     :parameters {:path  [:map [:id :int]]
+                                                  :query [:map [:capture :uuid]]}
+                                     :get        (fn [_] [:p "OK"])}]] app-state*)
+        good       (handler {:uri          "/hyper/navigate"                           :request-method :post
+                             :query-params {"path" (str "/items/42?capture=" capture)}})]
+    (is (= 200 (:status good)))
+    (is (some #(= {:name        :item    :path         "/items/42"
+                   :path-params {:id 42} :query-params {:capture capture}}
+                  (:route %)) (vals (:tabs @app-state*))))
+    (let [before (into {} (map (fn [[id tab]] [id (:route tab)])) (:tabs @app-state*))
+          bad    (handler {:uri          "/hyper/navigate"                    :request-method :post
+                           :query-params {"path" "/items/42?capture=invalid"}})]
+      (is (= 400 (:status bad)))
+      (is (= {:capture ["should be a uuid"]}
+             (:humanized (json/parse-string (:body bad) true))))
+      (is (= before (into {} (keep (fn [[id tab]] (when (:route tab) [id (:route tab)])))
+                          (:tabs @app-state*)))))))
+
+(deftest coercion-response-middleware-preserves-unrelated-results-and-errors
+  (let [response {:status 418 :body "teapot"}
+        error    (ex-info "unrelated" {:type ::unrelated})
+        raised*  (atom nil)]
+    (is (= response ((#'server/-wrap-coercion-errors (constantly response)) {})))
+    (is (identical? error
+                    (try ((#'server/-wrap-coercion-errors (fn [_] (throw error))) {})
+                         (catch Exception caught caught))))
+    ((#'server/-wrap-coercion-errors (fn [_ _ raise] (raise error)))
+     {} (fn [_] (is false "unrelated errors must not become responses"))
+     #(reset! raised* %))
+    (is (identical? error @raised*))))
 
 (deftest test-create-handler-with-hyper-disabled
   (testing "render fn can disable endpoint wrapping"
