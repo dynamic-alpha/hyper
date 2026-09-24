@@ -2048,21 +2048,24 @@ another URL, such as a CDN. By default hyper serves it at
 ### Tree shaking
 
 Pass `:tree-shake? true` to `create-handler` to serve only the Squint core
-functions that your `h/expr` expressions and `defc` components use, instead of all of
-`/hyper/squint-core.js` (28 KB brotli-compressed):
+functions that your `h/expr` expressions and `defc` components use, plus the
+functions those depend on, minified. Without it, hyper serves all of
+`/hyper/squint-core.js` (28 KB brotli-compressed).
 
 ```clojure
 (h/create-handler #'routes :tree-shake? true)
 ```
 
-Add esbuild to `deps.edn`:
+Add the optional esbuild dependency to `deps.edn`:
 
 ```clojure
 org.babashka/esbuild {:mvn/version "0.1.1"}
 ```
 
-Add `--enable-native-access=ALL-UNNAMED` to your JVM options for esbuild.
-Without esbuild on the classpath, `create-handler` throws.
+The `org.babashka/esbuild` library calls esbuild through the JVM's foreign
+function API. Add `--enable-native-access=ALL-UNNAMED` to your JVM options to
+avoid the JVM's native access warning. Without esbuild on the classpath,
+`create-handler` throws.
 
 ### Editor indentation
 
