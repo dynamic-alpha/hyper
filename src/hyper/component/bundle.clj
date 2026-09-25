@@ -10,8 +10,7 @@
    REPL redefinition hot-swap the bundle over SSE."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
-            [hyper.component :as component]
-            [hyper.expr :as expr]))
+            [hyper.component :as component]))
 
 (defn- runtime-js []
   (slurp (io/resource "hyper/component-runtime.js")))
@@ -77,18 +76,10 @@
             (reset! bundle-cache* {:key registry :bundle b})
             b))))))
 
-(defonce ^:private core-vars-cache* (atom nil))
-
 (defn core-vars
   "Returns the munged squint core names that the registered components use."
   []
-  (let [registry                @component/registry*
-        [cached-registry names] @core-vars-cache*]
-    (if (identical? registry cached-registry)
-      names
-      (let [names (into #{} (mapcat #(expr/core-vars-of "$sc" (:js %))) (vals registry))]
-        (reset! core-vars-cache* [registry names])
-        names))))
+  (into #{} (mapcat :core-vars) (vals @component/registry*)))
 
 (defn head-script-tag
   "Hiccup script tag for the components bundle, or nil when no components

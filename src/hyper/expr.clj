@@ -237,13 +237,6 @@
   core-vars*
   (atom (sorted-set)))
 
-;; A future squint release adds the used core names to the compiler output, which replaces this regex.
-(defn core-vars-of
-  "Returns the squint core names that js references through alias."
-  [alias js]
-  (into (sorted-set) (map second)
-        (re-seq (re-pattern (str (java.util.regex.Pattern/quote alias) "\\.([A-Za-z_$][\\w$]*)")) js)))
-
 (defn use-core-vars!
   "Adds names to core-vars*.
    names is a set of munged squint core names.
@@ -253,25 +246,33 @@
     (swap! core-vars* into names))
   js)
 
+(defn- compile-form*
+  "Returns {:js ... :used-core-vars ...} for a single (boundary-inferred) form."
+  [form]
+  (let [processed (pre-process form)
+        ;; pr-str, not str, because embedded lazy seqs from the boundary walk would
+        ;; stringify as "clojure.lang.LazySeq@hash" under str.
+        {:keys [body used-core-vars]}
+        (squint/compile* (pr-str processed)
+                         {:elide-imports true
+                          :elide-exports true
+                          :top-level     false
+                          :context       :expr
+                          :core-alias    "hyper_sc"
+                          :macros        compiler-macros})]
+    {:js             (-> body
+                         replace-deref
+                         (restore-signal-casing processed)
+                         (str/replace #"\n" " ")
+                         str/trim
+                         (str/replace #";$" ""))
+     :used-core-vars used-core-vars}))
+
 (defn compile-form
   "Compile a single (boundary-inferred) form to a Datastar expression
    string.  Public for testing."
   [form]
-  (let [processed (pre-process form)]
-    ;; pr-str, not str — embedded lazy seqs from the boundary walk would
-    ;; stringify as "clojure.lang.LazySeq@hash" under str.
-    (-> (squint/compile-string (pr-str processed)
-                               {:elide-imports true
-                                :elide-exports true
-                                :top-level     false
-                                :context       :expr
-                                :core-alias    "hyper_sc"
-                                :macros        compiler-macros})
-        replace-deref
-        (restore-signal-casing processed)
-        (str/replace #"\n" " ")
-        str/trim
-        (str/replace #";$" ""))))
+  (:js (compile-form* form)))
 
 ;; ---------------------------------------------------------------------------
 ;; Runtime splicing
@@ -335,8 +336,9 @@
   (let [env-locals (set (keys &env))
         pairs*     (atom [])
         forms*     (mapv #(infer-boundary % env-locals pairs*) forms)
-        template   (join-statements (map compile-form forms*))
-        names      (core-vars-of "hyper_sc" template)
+        compiled   (map compile-form* forms*)
+        template   (join-statements (map :js compiled))
+        names      (into #{} (mapcat :used-core-vars) compiled)
         pairs      @pairs*
         js         (if (empty? pairs)
                      template

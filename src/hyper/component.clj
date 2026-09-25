@@ -54,6 +54,15 @@
    :core-alias    "$sc"
    :context       :statement})
 
+(defn- compile-squint*
+  [source]
+  (try
+    (squint/compile* source squint-opts)
+    (catch Exception e
+      (throw (ex-info (str "Squint compilation failed: " (ex-message e))
+                      {:source source}
+                      e)))))
+
 (defn compile-squint
   "Compile a string of Squint (CLJS-dialect) source to JavaScript.
 
@@ -63,12 +72,7 @@
 
    Throws ex-info with the source attached when compilation fails."
   [source]
-  (try
-    (:body (squint/compile-string* source squint-opts))
-    (catch Exception e
-      (throw (ex-info (str "Squint compilation failed: " (ex-message e))
-                      {:source source}
-                      e)))))
+  (:body (compile-squint* source)))
 
 (defn- ns-form-source
   "Build a Squint ns form declaring ES module requires, so alias-qualified
@@ -170,11 +174,11 @@
    Returns the component name."
   [name spec]
   {:pre [(string? name) (str/includes? name "-") (:render spec)]}
-  (let [requires (parse-requires (:require spec))
-        _        (check-alias-conflicts! name requires)
-        spec     (-> spec (dissoc :require) (assoc :requires requires))
-        js       (compile-squint (registration-source name spec))]
-    (swap! registry* assoc name (assoc spec :js js))
+  (let [requires                      (parse-requires (:require spec))
+        _                             (check-alias-conflicts! name requires)
+        spec                          (-> spec (dissoc :require) (assoc :requires requires))
+        {:keys [body used-core-vars]} (compile-squint* (registration-source name spec))]
+    (swap! registry* assoc name (assoc spec :js body :core-vars used-core-vars))
     name))
 
 ;; ---------------------------------------------------------------------------
@@ -450,42 +454,44 @@
   {:style/indent        1
    :style.cljfmt/indent [[:block 1] [:inner 1]]}
   [cname & body]
-  (let [[docstring body]         (if (string? (first body))
-                                   [(first body) (rest body)]
-                                   [nil body])
-        [opts body]              (if (map? (first body))
-                                   [(first body) (rest body)]
-                                   [{} body])
-        requires                 (parse-requires (:require opts))
-        [binding-vec & segments] body
-        _                        (assert (vector? binding-vec)
-                                         (str "defc " cname ": expected attribute binding vector, got "
-                                              (pr-str binding-vec)))
-        attr-keys                (extract-attrs binding-vec)
-        _                        (assert (seq attr-keys)
-                                         (str "defc " cname ": binding vector must use {:keys [...]} form "
-                                              "so attribute names are statically visible"))
-        tag-name                 (sym->tag cname)
-        _                        (assert (str/includes? tag-name "-")
-                                         (str "defc " cname ": tag name \"" tag-name
-                                              "\" must contain a hyphen (Custom Elements spec)"))
-        parsed                   (parse-segments cname segments)
-        _                        (assert (or (:render parsed) (:mount parsed))
-                                         (str "defc " cname ": a (render ...) or (mount ...) segment is required"))
-        ns-str                   (str *ns*)
-        src                      (squint-source tag-name attr-keys parsed ns-str requires)
-        tag-kw                   (keyword tag-name)
+  (let [[docstring body]              (if (string? (first body))
+                                        [(first body) (rest body)]
+                                        [nil body])
+        [opts body]                   (if (map? (first body))
+                                        [(first body) (rest body)]
+                                        [{} body])
+        requires                      (parse-requires (:require opts))
+        [binding-vec & segments]      body
+        _                             (assert (vector? binding-vec)
+                                              (str "defc " cname ": expected attribute binding vector, got "
+                                                   (pr-str binding-vec)))
+        attr-keys                     (extract-attrs binding-vec)
+        _                             (assert (seq attr-keys)
+                                              (str "defc " cname ": binding vector must use {:keys [...]} form "
+                                                   "so attribute names are statically visible"))
+        tag-name                      (sym->tag cname)
+        _                             (assert (str/includes? tag-name "-")
+                                              (str "defc " cname ": tag name \"" tag-name
+                                                   "\" must contain a hyphen (Custom Elements spec)"))
+        parsed                        (parse-segments cname segments)
+        _                             (assert (or (:render parsed) (:mount parsed))
+                                              (str "defc " cname ": a (render ...) or (mount ...) segment is required"))
+        ns-str                        (str *ns*)
+        src                           (squint-source tag-name attr-keys parsed ns-str requires)
+        tag-kw                        (keyword tag-name)
         ;; Compile at macro-expansion time so Squint errors surface at compile
         ;; time (with the source attached), but emit the registration into the
         ;; expansion so it executes at runtime.  This keeps defc AOT-safe
         ;; (expansion-time side effects don't survive AOT compilation) and
         ;; testable (with-redefs of registry* works).
-        compiled-js              (compile-squint src)]
+        {compiled-js :body
+         core-vars   :used-core-vars} (compile-squint* src)]
     `(do
        (check-alias-conflicts! ~tag-name '~requires)
-       (swap! registry* assoc ~tag-name {:attrs    ~attr-keys
-                                         :requires '~requires
-                                         :js       ~compiled-js})
+       (swap! registry* assoc ~tag-name {:attrs     ~attr-keys
+                                         :requires  '~requires
+                                         :js        ~compiled-js
+                                         :core-vars ~core-vars})
        (defn ~cname
          ~@(when docstring [docstring])
          [attr-map# & children#]
