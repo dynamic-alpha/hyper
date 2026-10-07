@@ -1,6 +1,9 @@
 (ns hyper.state-test
-  (:require [clojure.test :refer [deftest is testing]]
-            [hyper.state :as state]))
+  (:require [clojure.string]
+            [clojure.test :refer [deftest is testing]]
+            [hyper.state :as state]
+            [malli.core :as m]
+            [malli.transform :as mt]))
 
 (deftest normalize-path-test
   (testing "converts keyword to vector"
@@ -383,4 +386,40 @@
 
   (testing "preserves empty query param values"
     (is (= "/search?q="
-           (state/build-url "/search" {:q ""})))))
+           (state/build-url "/search" {:q ""}))))
+
+  (testing "encodes keyword values without the leading colon"
+    (is (= "/items?view=grid"
+           (state/build-url "/items" {:view :grid})))
+    (is (= "/items?view=a%2Fgrid"
+           (state/build-url "/items" {:view :a/grid}))))
+
+  (testing "writes collection values as repeated query params, skipping nils"
+    (is (= "/items?tags=a&tags=b"
+           (state/build-url "/items" {:tags [:a nil "b"]})))
+    (is (= "/items"
+           (state/build-url "/items" {:tags []}))))
+
+  (testing "keyword values round-trip through malli string coercion"
+    (let [schema [:map [:view [:enum :grid :list]]]
+          url    (state/build-url "/items" {:view :grid})
+          parsed (state/parse-query-string (second (clojure.string/split url #"\?")))]
+      (is (= {:view :grid}
+             (m/decode schema parsed (mt/string-transformer)))))))
+
+(deftest parse-query-string-test
+  (testing "returns nil for a nil query string"
+    (is (nil? (state/parse-query-string nil))))
+
+  (testing "decodes keys and values"
+    (is (= {:q "a b" :empty ""}
+           (state/parse-query-string "q=a+b&empty="))))
+
+  (testing "collects repeated keys into a vector"
+    (is (= {:tags ["a" "b" "c"] :view "grid"}
+           (state/parse-query-string "tags=a&view=grid&tags=b&tags=c"))))
+
+  (testing "round-trips with build-url"
+    (let [url (state/build-url "/items" {:tags ["a" "b"] :q "x&y"})]
+      (is (= {:tags ["a" "b"] :q "x&y"}
+             (state/parse-query-string (second (clojure.string/split url #"\?"))))))))

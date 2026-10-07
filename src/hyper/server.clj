@@ -26,7 +26,7 @@
             [hyper.uploads :as uploads]
             [hyper.utils :as utils]
             [hyper.watch :as watch]
-            [reitit.coercion.malli :as malli]
+            [reitit.coercion :as coercion]
             [reitit.core :as reitit]
             [reitit.ring :as ring]
             [reitit.ring.coercion :as ring-coercion]
@@ -1057,13 +1057,10 @@
          :body    body}))))
 
 (defn- -navigation-parameters
-  "Coerces navigation parameters with the matched GET route's compiled validator."
+  "Coerces navigation parameters with the matched GET route's param coercers."
   [match request]
-  (when-let [wrap (some (fn [middleware]
-                          (when (= :reitit.ring.coercion/coerce-request (:name middleware))
-                            (:wrap middleware)))
-                        (get-in match [:result :get :middleware]))]
-    ((wrap :parameters) (assoc request :path-params (:path-params match)))))
+  (when-let [coercers (get-in match [:result :get :data ::routes/params :coercers])]
+    (coercion/coerce-request coercers (assoc request :path-params (:path-params match)))))
 
 (defn- navigate-handler
   "Handler for popstate/navigation POST requests.
@@ -1162,12 +1159,10 @@
                                  [path (update route-data :get (fn [handler] (page-wrapper handler)))]
                                  [path route-data]))
                              flat-routes)
-        all-routes     (concat system-routes wrapped-routes)
-        router         (ring/router all-routes
-                                    {:conflicts nil
-                                     :data      {:coercion   malli/coercion
-                                                 :middleware [-wrap-coercion-errors
-                                                              ring-coercion/coerce-request-middleware]}})]
+        router         (routes/build-router (concat system-routes wrapped-routes)
+                                            {:param-transformer (:param-transformer @app-state*)
+                                             :middleware        [-wrap-coercion-errors
+                                                                 ring-coercion/coerce-request-middleware]})]
     ;; Store the flattened routes and router in app-state for access during actions/renders/navigation
     (swap! app-state* assoc
            :router router
@@ -1283,6 +1278,10 @@
                         the next write (so the disconnect grace window can
                         start).  Defaults to 25000 (25s); pass nil or 0 to
                         disable.
+   - :param-transformer Malli transformer used to decode route path and query
+                        params from URL strings and to encode them into the URLs
+                        Hyper builds.  Defaults to `default-malli-transformer`;
+                        compose with it to add custom encodings.
    - :max-file-size     Max bytes allowed per uploaded file on the /hyper/upload
                         route; a larger file gets a 413.  Default: no limit.
    - :max-file-count    Max number of files allowed per upload request.
@@ -1350,7 +1349,9 @@
                                 :disconnect-grace-ms disconnect-grace-ms
                                 :heartbeat-ms heartbeat-ms
                                 :open-when-hidden? (get opts :open-when-hidden? true)
-                                :tree-shake? (:tree-shake? opts))
+                                :tree-shake? (:tree-shake? opts)
+                                :param-transformer (or (:param-transformer opts)
+                                                       routes/default-malli-transformer))
          initial-routes  (if (var? routes) @routes routes)
          initial-handler (build-ring-handler initial-routes app-state* page-wrapper system-routes default-handler)
          handler         (if (var? routes)

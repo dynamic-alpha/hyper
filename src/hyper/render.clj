@@ -8,7 +8,6 @@
             [hyper.context :as context]
             [hyper.lifecycle :as lifecycle]
             [hyper.routes :as routes]
-            [hyper.state :as state]
             [hyper.subview :as subview]
             [hyper.utils :as utils]
             [taoensso.telemere :as t]))
@@ -332,7 +331,7 @@
                              stored-render-fn))
                          stored-render-fn)
            url         (when route
-                         (state/build-url (:path route) (:query-params route)))
+                         (routes/route-url router route))
            tab-env     (get-in @app-state* [:tabs tab-id :env])
            base        (if base-req
                          base-req

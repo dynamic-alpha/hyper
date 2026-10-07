@@ -3,8 +3,14 @@
             [clojure.test :refer [deftest is testing]]
             [hyper.core :as h]
             [hyper.effects :as effects]
+            [hyper.routes :as routes]
+            [hyper.server :as server]
+            [hyper.state :as state]
             [hyper.test :as ht]
-            [reitit.core :as reitit]))
+            [malli.transform :as mt]
+            [reitit.coercion.malli :as reitit.malli]
+            [reitit.core :as reitit]
+            [reitit.ring :as ring]))
 
 ;; ---------------------------------------------------------------------------
 ;; test-page
@@ -395,6 +401,64 @@
   (testing "without :routes/:router, the request carries no router (backward compatible)"
     (let [result (ht/test-page (fn [_req] [:div "Hi"]))]
       (is (nil? (get @(:app-state result) :router))))))
+
+(def ^:private typed-routes
+  [["/items/:id" {:name       :items
+                  :parameters {:path  [:map [:id :int]]
+                               :query [:map [:since inst?] [:tags [:vector :keyword]]]}
+                  :get        (fn [_] [:p])}]])
+
+(def ^:private typed-query
+  {:since #inst "2026-10-07T00:00:00.000-00:00" :tags [:a :b]})
+
+(defn- -production-url
+  "Returns the URL production builds for :items with typed-query."
+  [opts]
+  (let [app-state* (atom (state/init-state))]
+    (server/create-handler typed-routes app-state* opts)
+    (let [router (:router @app-state*)]
+      (routes/route-url router (routes/tab-route router :items {:id 1} typed-query)))))
+
+(defn- -test-page-href
+  "Returns the href of h/navigate to :items with typed-query inside test-page."
+  [opts]
+  (let [captured (atom nil)]
+    (ht/test-page (fn [_req] (reset! captured (h/navigate :items {:id 1} typed-query)) [:div])
+                  opts)
+    (:href @captured)))
+
+(deftest test-page-navigate-encodes-like-production
+  (let [expected (-production-url {})]
+    (is (= "/items/1?since=2026-10-07T00%3A00%3A00.000Z&tags=a&tags=b" expected))
+
+    (testing "with :routes"
+      (is (= expected (-test-page-href {:routes typed-routes}))))
+
+    (testing "a pre-built router without coercion builds URLs from raw params"
+      (is (= (state/build-url "/items/1" typed-query)
+             (-test-page-href {:router (reitit/router typed-routes)}))))
+
+    (testing "a pre-built Ring router encodes with its own coercion"
+      (is (= expected (-test-page-href {:router (ring/router typed-routes
+                                                             {:data {:coercion reitit.malli/coercion}})}))))
+
+    (testing "with a custom :param-transformer"
+      (let [csv  (mt/transformer
+                   {:encoders {:vector {:leave (fn [v] (if (sequential? v) (str/join "," v) v))}}})
+            opts {:param-transformer (mt/transformer csv h/default-malli-transformer)}]
+        (is (= (-production-url opts)
+               (-test-page-href (assoc opts :routes typed-routes))))
+        (is (str/ends-with? (-production-url opts) "tags=a%2Cb"))))))
+
+(deftest test-page-url-encodes-the-route
+  (testing ":url encodes the route's typed params like the browser URL bar"
+    (let [result (ht/test-page (fn [_req] [:div])
+                               {:routes typed-routes
+                                :route  {:name         :items
+                                         :path         "/items/1"
+                                         :path-params  {:id 1}
+                                         :query-params typed-query}})]
+      (is (= (-production-url {}) (:url result))))))
 
 (deftest test-action-navigate-with-routes
   (testing "effects/navigate! in an action resolves routes injected via :routes"

@@ -23,31 +23,42 @@
 
 (defn parse-query-string
   "Parse a query string into a keyword-keyed map with URL-decoded values.
+   Repeated keys are collected into a vector of values.
    Returns nil if query-string is nil."
   [query-string]
   (when query-string
-    (into {}
-          (map (fn [pair]
-                 (let [[k v] (clojure.string/split pair #"=" 2)]
-                   [(keyword (URLDecoder/decode k "UTF-8"))
-                    (URLDecoder/decode (or v "") "UTF-8")])))
-          (clojure.string/split query-string #"&"))))
+    (reduce (fn [acc pair]
+              (let [[k v] (clojure.string/split pair #"=" 2)
+                    k     (keyword (URLDecoder/decode k "UTF-8"))
+                    v     (URLDecoder/decode (or v "") "UTF-8")]
+                (if-let [[_ existing] (find acc k)]
+                  (assoc acc k (if (vector? existing) (conj existing v) [existing v]))
+                  (assoc acc k v))))
+            {}
+            (clojure.string/split query-string #"&"))))
+
+(defn- query-param-str
+  "Returns the query string representation of v. Keywords are rendered
+   without their leading colon, keeping any namespace."
+  [v]
+  (if (keyword? v)
+    (subs (str v) 1)
+    (str v)))
 
 (defn build-url
   "Build a URL string from a path and query params map.
+   Collection values become one query param per non-nil element.
    Omits query params with nil values.
    Returns path if no query params remain."
   [path query-params]
-  (let [non-nil-query-params (into {}
-                                   (remove (comp nil? val))
-                                   query-params)]
-    (if (empty? non-nil-query-params)
+  (let [pairs (for [[k v] query-params
+                    v     (if (and (coll? v) (not (map? v))) v [v])
+                    :when (some? v)]
+                (str (URLEncoder/encode (name k) "UTF-8") "="
+                     (URLEncoder/encode (query-param-str v) "UTF-8")))]
+    (if (empty? pairs)
       path
-      (let [query-string (->> non-nil-query-params
-                              (map (fn [[k v]]
-                                     (str (name k) "=" (URLEncoder/encode (str v) "UTF-8"))))
-                              (clojure.string/join "&"))]
-        (str path "?" query-string)))))
+      (str path "?" (clojure.string/join "&" pairs)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Warn-on-access map

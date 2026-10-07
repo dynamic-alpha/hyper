@@ -1333,6 +1333,19 @@ Browser history navigation validates against the same route specifications and
 leaves the current tab route unchanged when validation fails. Routes without a
 `:parameters` spec keep their raw string params as before.
 
+URLs that Hyper builds (`navigate`, `navigate!`, and the URL bar kept in sync
+with `path-cursor`) encode params with the same schemas, so typed values
+round-trip: `{:tab :posts}` is written as `?tab=posts`, and vectors are written
+as repeated keys (`?tags=a&tags=b`). Decoding and encoding both use the
+`:param-transformer` option of `create-handler`, which defaults to
+`h/default-malli-transformer`. Compose with it to customise the format:
+
+```clojure
+(create-handler routes
+                :param-transformer (mt/transformer my-transformer
+                                                   h/default-malli-transformer))
+```
+
 ### Ring response passthrough
 
 If a route handler returns a Ring response map (a map with `:status`) instead of

@@ -32,6 +32,7 @@
             [hyper.reactive :as reactive]
             [hyper.render :as render]
             [hyper.render.error :as render.error]
+            [hyper.routes :as routes]
             [hyper.state :as state]
             [hyper.subview :as subview]
             [reitit.core :as reitit]))
@@ -52,15 +53,17 @@
    render, from the test-page opts.  Returns nil when no router/routes are
    supplied (so existing tests are unaffected).
 
-   opts keys (both optional):
-   - :router — a pre-built reitit router, used as-is for name matching.
-   - :routes — a reitit routes vector (or a Var holding one) from which a
-               router is compiled.  Each route's :name is what h/navigate and
-               effects/navigate! match against.
+   opts keys (all optional):
+   - :router            — a pre-built reitit router, used as-is for name matching.
+   - :routes            — a reitit routes vector (or a Var holding one) from
+                          which a router is compiled as the server does, so
+                          URL encoding matches production.  Each route's :name
+                          is what h/navigate and effects/navigate! match against.
+   - :param-transformer — malli transformer for route params of a compiled router.
 
-   When both are supplied, :router is used for matching and :routes for the
-   flattened route index (titles, render fns)."
-  [{:keys [router routes]}]
+   When both :router and :routes are supplied, :router is used for matching and
+   :routes for the flattened route index (titles, render fns)."
+  [{:keys [router routes param-transformer]}]
   (let [routes (cond-> routes (var? routes) deref)]
     (cond
       router
@@ -73,7 +76,7 @@
 
       (seq routes)
       (let [flat (flatten-routes routes)]
-        {:router (reitit/router flat)
+        {:router (routes/build-router flat {:param-transformer param-transformer})
          :routes flat})
 
       :else nil)))
@@ -133,8 +136,13 @@
                      Example: {:routes [[\"/\" {:name :home :get home-fn}]
                                         [\"/about\" {:name :about :get about-fn}]]}.
    - :router      — A pre-built reitit router, used as-is for name matching.
-                     Escape hatch for advanced cases; prefer :routes. When both
-                     are given, :router matches and :routes provides metadata.
+                     Params are encoded into URLs only if it is a Ring router
+                     with a :coercion. Escape hatch for advanced cases; prefer
+                     :routes. When both are given, :router matches and :routes
+                     provides metadata.
+   - :param-transformer — Malli transformer for route params of the router built
+                     from :routes, as passed to create-handler.
+                     Default: `default-malli-transformer`.
    - :req         — Extra keys to merge into the request map passed to handler.
    - :render-middleware — Vector of middleware fns to wrap the handler.
                      Each is (fn [handler] (fn [req] ...)), identical to Ring
@@ -231,7 +239,7 @@
                {:body        body
                 :body-html   body-html
                 :title       nil
-                :url         (state/build-url (:path route) (:query-params route))
+                :url         (routes/route-url effective-router route)
                 :signals     signals
                 :actions     (build-actions-map app-state* tab-id)
                 :cursors     (cursors-snapshot app-state* session-id tab-id route)

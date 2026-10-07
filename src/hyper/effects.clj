@@ -39,8 +39,7 @@
             [hyper.render :as render]
             [hyper.routes :as routes]
             [hyper.state :as state]
-            [hyper.utils :as utils]
-            [reitit.core :as reitit]))
+            [hyper.utils :as utils]))
 
 ;; ---------------------------------------------------------------------------
 ;; Pending effects accumulator
@@ -96,8 +95,8 @@
          router     (or (:hyper/router req) (get @app-state* :router))]
      (when-not router
        (throw (ex-info "No router available for navigate!" {:route-name route-name})))
-     (when-let [path (:path (reitit/match-by-name router route-name params))]
-       (let [href        (state/build-url path query-params)
+     (when-let [route (routes/tab-route router route-name params query-params)]
+       (let [href        (routes/route-url router route)
              route-index (routes/live-route-index app-state*)
              render-fn   (routes/find-render-fn route-index route-name)
              title-spec  (routes/find-route-title route-index route-name)
@@ -105,11 +104,7 @@
          ;; Server-side state transition
          (when render-fn
            (render/register-render-fn! app-state* tab-id render-fn))
-         (state/set-tab-route! app-state* tab-id
-                               {:name         route-name
-                                :path         path
-                                :path-params  (or params {})
-                                :query-params (or query-params {})})
+         (state/set-tab-route! app-state* tab-id route)
          ;; Queue client-side URL update
          (let [escaped-title (or (utils/escape-js-string title) "")
                escaped-href  (utils/escape-js-string href)]

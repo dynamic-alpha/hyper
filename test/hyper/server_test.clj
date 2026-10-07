@@ -15,9 +15,11 @@
             [hyper.state :as state]
             [hyper.subview :as subview]
             [hyper.watch :as watch]
+            [malli.transform :as mt]
             [matcher-combinators.matchers :as m]
             [matcher-combinators.test :refer [match?]]
-            [ring.core.protocols])
+            [ring.core.protocols]
+            [taoensso.telemere :as t])
   (:import [java.io OutputStream]))
 
 (deftest test-generate-session-id
@@ -524,6 +526,120 @@
              (:humanized (json/parse-string (:body bad) true))))
       (is (= before (into {} (keep (fn [[id tab]] (when (:route tab) [id (:route tab)])))
                           (:tabs @app-state*)))))))
+
+(def ^:private typed-param-routes
+  [["/items/:id" {:name       :item
+                  :parameters {:path  [:map [:id :int]]
+                               :query [:map
+                                       [:view [:enum :grid :list]]
+                                       [:since {:optional true} inst?]
+                                       [:capture {:optional true} :uuid]
+                                       [:tags {:optional true} [:vector :keyword]]]}
+                  :get        (fn [_] [:p "OK"])}]
+   ["/plain" {:name :plain
+              :get  (fn [_] [:p "OK"])}]])
+
+(defn- -route-after-page-load
+  "Requests url through handler and returns the route the page rendered with."
+  [handler app-state* url]
+  (let [[uri query-string] (string/split url #"\?" 2)
+        before             (set (keys (:tabs @app-state*)))
+        response           (handler {:uri uri :query-string query-string :request-method :get})
+        new-tab            (first (remove before (keys (:tabs @app-state*))))]
+    (is (= 200 (:status response)) url)
+    (get-in @app-state* [:tabs new-tab :route])))
+
+(defn- -route-after-navigation
+  "Navigates to url through handler and returns the resulting tab route."
+  [handler app-state* url]
+  (let [before   (set (keys (:tabs @app-state*)))
+        response (handler {:uri          "/hyper/navigate" :request-method :post
+                           :query-params {"path" url}})
+        new-tab  (first (remove before (keys (:tabs @app-state*))))]
+    (is (= 200 (:status response)) url)
+    (get-in @app-state* [:tabs new-tab :route])))
+
+(defn- -url
+  "Returns the URL h/navigate builds for route-name with params in router."
+  [router route-name path-params query-params]
+  (some->> (routes/tab-route router route-name path-params query-params)
+           (routes/route-url router)))
+
+(deftest route-urls-round-trip-typed-parameters
+  (let [app-state* (atom (state/init-state))
+        handler    (server/create-handler typed-param-routes app-state*)
+        router     (:router @app-state*)
+        query      {:view    :grid
+                    :since   #inst "2026-10-07T12:30:00.000-00:00"
+                    :capture #uuid "00000000-0000-0000-0000-000000000001"
+                    :tags    [:a :b]}
+        url        (-url router :item {:id 42} query)]
+    (testing "values are encoded with the route's schema"
+      (is (= (str "/items/42?view=grid&since=2026-10-07T12%3A30%3A00.000Z"
+                  "&capture=00000000-0000-0000-0000-000000000001&tags=a&tags=b")
+             url)))
+
+    (testing "page loads decode the URL back into the original values"
+      (is (= {:id 42} (:path-params (-route-after-page-load handler app-state* url))))
+      (is (= query (:query-params (-route-after-page-load handler app-state* url)))))
+
+    (testing "navigation decodes the URL back into the original values"
+      (is (= query (:query-params (-route-after-navigation handler app-state* url)))))
+
+    (testing "a one-element vector round-trips"
+      (let [url (-url router :item {:id 1} {:view :list :tags [:a]})]
+        (is (= "/items/1?view=list&tags=a" url))
+        (is (= {:view :list :tags [:a]}
+               (:query-params (-route-after-page-load handler app-state* url))
+               (:query-params (-route-after-navigation handler app-state* url))))))
+
+    (testing "routes without :parameters write keywords without a colon"
+      (is (= "/plain?view=grid"
+             (-url router :plain nil {:view :grid}))))
+
+    (testing "unknown routes return nil"
+      (is (nil? (-url router :missing nil nil))))
+
+    (testing "params that don't match the schema still build a URL, with a warning"
+      (let [url*         (atom nil)
+            {:keys [id]} (t/with-signal
+                           (reset! url* (-url router :item {:id 1} {:view :table})))]
+        (is (= "/items/1?view=table" @url*))
+        (is (= :hyper.warn/invalid-route-params id))))
+
+    (testing "tab routes hold params as a page load of their URL decodes them"
+      (let [route (routes/tab-route router :item {:id 42} (assoc query :view "grid" :junk 1))]
+        (is (= {:name         :item
+                :path         "/items/42"
+                :path-params  {:id 42}
+                :query-params query}
+               route))
+        (is (= (select-keys route [:path-params :query-params])
+               (select-keys (-route-after-page-load handler app-state* url)
+                            [:path-params :query-params])))))
+
+    (testing "tab routes keep params that don't match the schema as given"
+      (let [route* (atom nil)]
+        (t/with-signal (reset! route* (routes/tab-route router :item {:id 1} {:view :table})))
+        (is (= {:view :table} (:query-params @route*)))))))
+
+(deftest param-transformer-customises-encoding-and-decoding
+  (let [csv        (let [encode {:leave (fn [v] (if (sequential? v) (string/join "," v) v))}
+                         decode {:enter (fn [v] (if (string? v) (string/split v #",") v))}]
+                     (mt/transformer {:encoders {:vector encode}
+                                      :decoders {:vector decode}}))
+        app-state* (atom (state/init-state))
+        handler    (server/create-handler typed-param-routes app-state*
+                                          {:param-transformer (mt/transformer
+                                                                csv h/default-malli-transformer)})
+        url        (-url (:router @app-state*) :item {:id 7} {:view :grid :tags [:a :b]})]
+    (is (= "/items/7?view=grid&tags=a%2Cb" url))
+    (is (= {:view :grid :tags [:a :b]}
+           (:query-params (-route-after-page-load handler app-state* url))
+           (:query-params (-route-after-navigation handler app-state* url))))
+    (testing "unknown query params are still dropped rather than rejected"
+      (is (= {:view :grid}
+             (:query-params (-route-after-page-load handler app-state* "/items/7?view=grid&junk=x")))))))
 
 (deftest coercion-response-middleware-preserves-unrelated-results-and-errors
   (let [response {:status 418 :body "teapot"}

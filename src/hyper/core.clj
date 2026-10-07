@@ -23,8 +23,7 @@
             [hyper.state :as state]
             [hyper.subview :as subview]
             [hyper.uploads :as uploads]
-            [hyper.utils :as utils]
-            [reitit.core :as reitit]))
+            [hyper.utils :as utils]))
 
 (defn global-cursor
   "Create a cursor to global state at the given path.
@@ -883,8 +882,8 @@
          app-state* (:hyper/app-state *request*)
          session-id (:hyper/session-id *request*)
          tab-id     (:hyper/tab-id *request*)]
-     (when-let [path (:path (reitit/match-by-name router route-name params))]
-       (let [href          (state/build-url path query-params)
+     (when-let [route (routes/tab-route router route-name params query-params)]
+       (let [href          (routes/route-url router route)
              base-path     (get @app-state* :base-path "")
              ;; Use live-routes to always get the latest route metadata
              route-index   (routes/live-route-index app-state*)
@@ -899,11 +898,7 @@
                                  (render/register-render-fn! app-state* tab-id render-fn))
                         ;; Setting the route triggers the route watcher,
                         ;; which handles re-rendering via SSE
-                               (state/set-tab-route! app-state* tab-id
-                                                     {:name         route-name
-                                                      :path         path
-                                                      :path-params  (or params {})
-                                                      :query-params (or query-params {})})))
+                               (state/set-tab-route! app-state* tab-id route)))
              nav-idx       (if *action-idx* (swap! *action-idx* inc) (hash nav-fn))
              action-id     (actions/register-action! app-state* session-id tab-id nav-fn
                                                      (str "a_" tab-id "_" nav-idx))
@@ -915,6 +910,18 @@
                " window.history.pushState({title: '" escaped-title "'}, '', '" escaped-href "');"
                (when title
                  (str " document.title = '" escaped-title "'")))})))))
+
+(def default-malli-transformer
+  "The default :param-transformer for create-handler: malli's string
+   transformer, extended so a single query value decodes into a one-element
+   vector, sequence or set.
+
+   Compose with it to customise how route params are decoded and encoded:
+
+     (create-handler routes
+                     :param-transformer (mt/transformer my-transformer
+                                                        default-malli-transformer))"
+  routes/default-malli-transformer)
 
 (defn create-handler
   "Create a Ring handler for a hyper application.
@@ -971,6 +978,11 @@
                           up redefinitions.  Defaults to a built-in 404 page;
                           pass `nil` to disable and fall back to reitit's
                           plain-text 404.
+   - :param-transformer — Malli transformer used to decode route path and query
+                          params from URL strings (per the route's :parameters)
+                          and to encode them into the URLs Hyper builds, so values
+                          round-trip.  Defaults to `default-malli-transformer`;
+                          compose with it to add custom encodings.
 
    The request key :hyper/env is reserved for application-provided context.
    Ring middleware that sets :hyper/env on the request will have it automatically
@@ -1005,7 +1017,7 @@
   [routes & {:keys [app-state head static-resources static-dir watches
                     datastar-script base-path middleware render-middleware
                     render-error squint-core-url tree-shake? render-guard
-                    max-file-size max-file-count upload-expires-in]
+                    max-file-size max-file-count upload-expires-in param-transformer]
              :or   {app-state       (atom (state/init-state))
                     datastar-script server/default-datastar-script}
              :as   opts}]
@@ -1023,6 +1035,7 @@
                            ;; Only forward when supplied so server defaults apply.
                            render-error (assoc :render-error render-error)
                            render-guard (assoc :render-guard render-guard)
+                           param-transformer (assoc :param-transformer param-transformer)
                            ;; File-upload limits for the /hyper/upload route.
                            max-file-size (assoc :max-file-size max-file-size)
                            max-file-count (assoc :max-file-count max-file-count)
