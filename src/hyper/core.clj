@@ -1051,7 +1051,8 @@
 
    handler: Ring handler created with create-handler
    options:
-   - :port - Port to run server on (default: 3000)
+   - :port            - Port to run server on (default: 3000)
+   - :stop-timeout-ms - Jetty graceful-stop timeout (default: 1000)
 
    Returns a stop function. Call (stop! app) to shut down the server
    and clean up all tab resources (watchers, SSE channels, actions).
@@ -1061,8 +1062,8 @@
      (def app (start! handler {:port 3000}))
      ;; Later...
      (stop! app)"
-  [handler {:keys [port] :or {port 3000}}]
-  (server/start! handler {:port port}))
+  [handler opts]
+  (server/start! handler opts))
 
 (defn stop!
   "Stop the hyper application server and clean up all resources.
