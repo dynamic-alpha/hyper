@@ -63,16 +63,22 @@
       (str prefix tab-id "_" token)
       (str prefix tab-id "_" (format "%08x" (bit-and (hash parent) 0xffffffff)) "_" token))))
 
+(defn- element?
+  "True when `hiccup` is a single rooted element that can carry an `:id`."
+  [hiccup]
+  (and (vector? hiccup)
+       (keyword? (first hiccup))))
+
 (defn- resolve-region-id
   "Resolve a region's id and ensure the hiccup root carries it as `:id` (the
    morph anchor).  Precedence: `explicit-id` > the root element's `:id` >
-   `fallback-id`.  A nil body renders nothing but the region still needs a
-   stable anchor for later partial fragments, so an empty element carrying the
-   id is returned.  Returns `[id hiccup]`."
+   `fallback-id`.  A body that is not a single rooted element (nil, a seq,
+   text) is wrapped in a div carrying the id, so the region still
+   has a stable anchor for later partial fragments.  Returns `[id hiccup]`."
   [explicit-id fallback-id hiccup]
-  (if (nil? hiccup)
+  (if-not (element? hiccup)
     (let [id (or explicit-id fallback-id)]
-      [id [:div {:id id}]])
+      [id (if (nil? hiccup) [:div {:id id}] [:div {:id id} hiccup])])
     (let [[tag & more] hiccup
           has-attrs?   (map? (first more))
           attrs        (if has-attrs? (first more) {})

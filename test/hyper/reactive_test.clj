@@ -82,6 +82,27 @@
       (is (re-find #"<div id=\"r_test-tab_\d+\"></div>" html)
           "should emit an empty anchor div carrying the region id"))))
 
+(deftest test-reactive-seq-body
+  (testing "a seq body is wrapped in an anchor, not leaked internals"
+    (let [result (ht/test-page
+                   (fn [_req]
+                     (let [count* (h/tab-cursor :count 0)]
+                       [:div
+                        (h/reactive [count*]
+                                    (list [:p "one"] [:p "two"]))])))
+          html   (:body-html result)]
+      (is (not (str/includes? html "{:id"))
+          "must not leak the internal attribute map")
+      (is (re-find #"<div id=\"r_test-tab_\d+\"><p>one</p><p>two</p></div>" html)
+          "should wrap the seq in an anchor div carrying the region id")))
+
+  (testing "a string body is wrapped in an anchor"
+    (let [result (ht/test-page
+                   (fn [_req]
+                     (let [count* (h/tab-cursor :count 0)]
+                       [:div (h/reactive [count*] (str "Count: " @count*))])))]
+      (is (re-find #"<div id=\"r_test-tab_\d+\">Count: 0</div>" (:body-html result))))))
+
 (deftest test-reactive-caching
   (testing "reactive returns cached HTML when deps unchanged"
     (let [counter*  (atom 0)

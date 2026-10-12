@@ -336,8 +336,10 @@
   "Create a reactive component that re-renders independently when its deps change.
 
    deps is a vector of Watchable sources (atoms, cursors, or any type
-   extending Watchable).  The body is a hiccup expression that will be
-   wrapped in a div with a stable ID.
+   extending Watchable).  The body is a hiccup expression.  When it returns a
+   single element, the region's stable ID is set as that element's `:id` (an
+   existing `:id` is kept).  Any other body — a seq of elements, text, or nil —
+   is wrapped in a div carrying the ID.
 
    When any dep changes, only this component re-renders and a targeted Datastar
    fragment is sent — the rest of the page is untouched.  During full page
@@ -394,8 +396,9 @@
                    while the placeholder renders (wrap multiple forms in `do`).
                    Blocking I/O is fine (it is a virtual thread).
    - `binding`     a destructuring form bound to the status map.
-   - `render-body` hiccup rendered from the status; must return a single rooted
-                   element (as with `reactive`) so the region id can be injected.
+   - `render-body` hiccup rendered from the status.  A single rooted element
+                   receives the region id; any other body (a seq, text) is
+                   wrapped in a div carrying it (as with `reactive`).
 
    The status map is `{:status :result :error}` where `:status` is one of:
    - `:loading`   — first load in flight; `:result` is nil.
