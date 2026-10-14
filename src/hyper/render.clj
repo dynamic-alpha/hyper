@@ -154,7 +154,8 @@
    hiccup or nil."
   [app-state* req]
   (let [user-head (routes/resolve-head (get @app-state* :head) req)
-        comp-tag  (component.bundle/head-script-tag (get @app-state* :base-path ""))
+        comp-tag  (component.bundle/head-script-tag (get @app-state* :base-path "")
+                                                    (:source-map? @app-state*))
         els       (cond-> (head-elements user-head)
                     comp-tag (conj comp-tag))]
     (when (seq els)

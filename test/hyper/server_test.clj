@@ -1219,7 +1219,7 @@
       (try
         (reset! component/registry* {})
         (component/register-component! "x-widget" {:attrs [] :render "(fn [_ _] [:i])"})
-        (let [handler (#'server/components-js-handler)
+        (let [handler (#'server/components-js-handler (atom {}))
               hash    (:hash (bundle/bundle))]
           (testing "matching ?v -> immutable (true content-addressed cache)"
             (let [resp (handler {:query-params {"v" hash}})]
@@ -1241,12 +1241,35 @@
         (finally
           (reset! component/registry* saved))))))
 
+(deftest test-components-js-map-handler
+  (let [saved @component/registry*]
+    (try
+      (reset! component/registry* {})
+      (let [handler (#'server/components-js-map-handler (atom {:source-map? true}))]
+        (testing "404 when no components are registered"
+          (is (= 404 (:status (handler {})))))
+        (component/register-component! "m-widget" {:attrs [] :render "(fn [_ _] [:i])"})
+        (testing "404 when no component carries a source map"
+          (is (= 404 (:status (handler {})))))
+        (swap! component/registry* assoc-in ["m-widget" :source-map]
+               {:segments [[0 0 0 0]] :source "hyper/server_test.clj"})
+        (testing "200 with the bundle's source map JSON"
+          (let [resp (handler {})]
+            (is (= 200 (:status resp)))
+            (is (= "application/json; charset=utf-8" (get-in resp [:headers "Content-Type"])))
+            (is (= (:source-map (bundle/bundle true)) (:body resp)))
+            (is (string/starts-with? (:body resp) "{\"version\":3"))))
+        (testing "404 with :source-map? false"
+          (is (= 404 (:status ((#'server/components-js-map-handler (atom {})) {}))))))
+      (finally
+        (reset! component/registry* saved)))))
+
 (deftest test-components-js-handler-no-components
   (testing "404 when no components are registered"
     (let [saved @component/registry*]
       (try
         (reset! component/registry* {})
-        (let [handler (#'server/components-js-handler)
+        (let [handler (#'server/components-js-handler (atom {}))
               resp    (handler {:query-params {"v" "anything"}})]
           (is (= 404 (:status resp))))
         (finally
