@@ -7,13 +7,14 @@
             [hyper.component :as hc]
             [hyper.component.bundle :as hcb]
             [hyper.component.hiccup :as hch]
-            [hyper.signal :as signal]))
+            [hyper.signal :as signal]
+            [squint.compiler.source-map :as sm]))
 
 (defn- with-fresh-registry*
   "Run f with an isolated component registry and bundle cache."
   [f]
   (with-redefs-fn {#'hc/registry*                         (atom {})
-                   #'hyper.component.bundle/bundle-cache* (atom nil)}
+                   #'hyper.component.bundle/bundle-cache* (atom {})}
     f))
 
 (defmacro with-fresh-registry [& body]
@@ -301,6 +302,75 @@
       (is (thrown? Exception
                    (eval '(hyper.component/defc no-render-widget
                             [{:keys [x]}])))))))
+
+(deftest test-defc-source-map
+  (with-fresh-registry
+    #_{:clj-kondo/ignore [:inline-def]}
+    (hc/defc sm-widget
+      [{:keys [label]}]
+      (render
+        [:span (str label "!")]))
+
+    (let [{:keys [line file]}       (meta #'sm-widget)
+          {:keys [segments source]} (get-in @hc/registry* ["sm-widget" :source-map])]
+      (testing "defc maps the str call to its line in the source file"
+        (is (= file source))
+        (is (= #{(+ line 2)} (set (map #(nth % 2) segments)))))
+
+      (testing "the bundle links a source map with the file name and content"
+        (let [{:keys [js source-map]} (hcb/bundle true)]
+          (is (str/ends-with? js "//# sourceMappingURL=components.js.map\n"))
+          (is (str/includes? source-map (str "\"sources\":[\"" source "\"]")))
+          (is (str/includes? source-map "\"sourcesContent\":[\"(ns hyper.component-test"))))
+
+      (testing "source-map? false omits the map and the sourceMappingURL"
+        (let [{:keys [js source-map]} (hcb/bundle false)]
+          (is (nil? source-map))
+          (is (not (str/includes? js "sourceMappingURL")))))
+
+      (testing "bundle caches source-map? true and false separately"
+        (let [with-map (hcb/bundle true)]
+          (hcb/bundle false)
+          (is (identical? with-map (hcb/bundle true))))))))
+
+(deftest test-bundle-source-map-lines
+  (with-fresh-registry
+    (hc/register-component! "sm-0" {:attrs [] :render "(fn [_ _] [:i])"})
+    #_{:clj-kondo/ignore [:inline-def]}
+    (hc/defc sm-a
+      [{:keys [label]}]
+      (render
+        [:span (str label "!")]))
+    #_{:clj-kondo/ignore [:inline-def]}
+    (hc/defc sm-b
+      [{:keys [label]}]
+      (render
+        [:span (str label "?")]))
+
+    (let [segments* (atom nil)
+          encode    sm/encode
+          js        (with-redefs [sm/encode (fn [segments opts]
+                                              (reset! segments* segments)
+                                              (encode segments opts))]
+                      (:js (hcb/bundle true)))
+          js-lines  (str/split-lines js)
+          marker    {(+ 2 (:line (meta #'sm-a))) "\"!\""
+                     (+ 2 (:line (meta #'sm-b))) "\"?\""}]
+      (testing "each segment points at the bundle line with its component's str call"
+        (is (= (set (keys marker)) (set (map #(nth % 2) @segments*))))
+        (doseq [[gl _ sl _ src] @segments*]
+          (is (= 0 src))
+          (is (str/includes? (nth js-lines gl) (marker sl))))))))
+
+(deftest test-defc-no-source-path
+  (with-fresh-registry
+    (testing "defc with *file* NO_SOURCE_PATH stores no source map"
+      (binding [*file* "NO_SOURCE_PATH"]
+        (eval '(hyper.component/defc repl-widget
+                 [{:keys [x]}]
+                 (render [:i x]))))
+      (is (contains? @hc/registry* "repl-widget"))
+      (is (nil? (get-in @hc/registry* ["repl-widget" :source-map]))))))
 
 (deftest test-defc-requires
   (with-fresh-registry

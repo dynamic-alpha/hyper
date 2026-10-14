@@ -590,7 +590,7 @@
 ;; ---------------------------------------------------------------------------
 
 (def app
-  (h/start! (h/create-handler #'routes :head [styles]) {:port 4000}))
+  (h/start! (h/create-handler #'routes :head [styles] :source-map? true) {:port 4000}))
 
 (comment
   (h/stop! app))

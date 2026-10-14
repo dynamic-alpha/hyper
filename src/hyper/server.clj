@@ -1016,9 +1016,9 @@
    URL forever, so a later URL reuse (e.g. reverting an edit) would serve
    that stale entry until a hard refresh.  A mismatched (or missing) `?v=`
    is therefore served `no-cache` so the browser always revalidates."
-  []
+  [app-state*]
   (fn [req]
-    (if-let [{:keys [js hash]} (component.bundle/bundle)]
+    (if-let [{:keys [js hash]} (component.bundle/bundle (:source-map? @app-state*))]
       (let [requested (get-in req [:query-params "v"])
             matched?  (= requested hash)]
         {:status  200
@@ -1031,6 +1031,20 @@
       {:status  404
        :headers {"Content-Type" "text/plain"}
        :body    "No components registered"})))
+
+(defn- components-js-map-handler
+  "Serve the source map of the client-components bundle if :source-map? is true."
+  [app-state*]
+  (fn [_req]
+    (if-let [source-map (when (:source-map? @app-state*)
+                          (:source-map (component.bundle/bundle true)))]
+      {:status  200
+       :headers {"Content-Type"  "application/json; charset=utf-8"
+                 "Cache-Control" "no-cache"}
+       :body    source-map}
+      {:status  404
+       :headers {"Content-Type" "text/plain"}
+       :body    "No source map"})))
 
 (defn- squint-core-js-handler
   "Returns a handler that serves squint's core.js from the classpath.
@@ -1328,7 +1342,8 @@
                           [(str base-path "/hyper/actions") {:post (action-handler app-state*)}]
                           [(str base-path "/hyper/upload") {:post upload-route}]
                           [(str base-path "/hyper/navigate") {:post (navigate-handler app-state*)}]
-                          [(str base-path "/hyper/components.js") {:get (components-js-handler)}]
+                          [(str base-path "/hyper/components.js") {:get (components-js-handler app-state*)}]
+                          [(str base-path "/hyper/components.js.map") {:get (components-js-map-handler app-state*)}]
                           [(str base-path "/hyper/squint-core.js") {:get (squint-core-js-handler app-state* (:tree-shake? opts))}]]
          ;; Store the routes source (Var or value) so title resolution can
          ;; always read the latest route metadata, even between router rebuilds.
@@ -1350,6 +1365,7 @@
                                 :heartbeat-ms heartbeat-ms
                                 :open-when-hidden? (get opts :open-when-hidden? true)
                                 :tree-shake? (:tree-shake? opts)
+                                :source-map? (:source-map? opts)
                                 :param-transformer (or (:param-transformer opts)
                                                        routes/default-malli-transformer))
          initial-routes  (if (var? routes) @routes routes)

@@ -55,13 +55,14 @@
    :context       :statement})
 
 (defn- compile-squint*
-  [source]
-  (try
-    (squint/compile* source squint-opts)
-    (catch Exception e
-      (throw (ex-info (str "Squint compilation failed: " (ex-message e))
-                      {:source source}
-                      e)))))
+  ([source] (compile-squint* source nil))
+  ([source opts]
+   (try
+     (squint/compile* source (merge squint-opts opts))
+     (catch Exception e
+       (throw (ex-info (str "Squint compilation failed: " (ex-message e))
+                       {:source (if (string? source) source (str/join "\n" (map pr-str source)))}
+                       e))))))
 
 (defn compile-squint
   "Compile a string of Squint (CLJS-dialect) source to JavaScript.
@@ -74,29 +75,23 @@
   [source]
   (:body (compile-squint* source)))
 
-(defn- ns-form-source
+(defn- ns-form
   "Build a Squint ns form declaring ES module requires, so alias-qualified
    symbols (e.g. d3/line) resolve during compilation.  The import statements
    themselves are elided from the compiled output (the bundle prelude emits
    them once, deduplicated across components)."
   [tag-name requires]
   (when (seq requires)
-    (str "(ns hyper.component."
-         (str/replace tag-name "-" "_")
-         " (:require "
-         (str/join " " (map (fn [{:keys [url alias]}]
-                              (str "[\"" url "\" :as " alias "]"))
-                            requires))
-         "))\n")))
+    (list 'ns (symbol (str "hyper.component." (str/replace tag-name "-" "_")))
+          (list* :require (map (fn [{:keys [url alias]}] [url :as alias]) requires)))))
 
 (defn- define-call-source
   "Assemble the full Squint source for a component definition: the optional
    ns/require form followed by a call to the runtime's `$define` (which the
    bundle prelude provides) with the given spec-entry strings as the spec
-   map body.  Shared by registration-source (raw Squint strings) and
-   squint-source (defc)."
+   map body.  Used by registration-source (raw Squint strings)."
   [tag-name requires spec-entries]
-  (str (ns-form-source tag-name requires)
+  (str (some-> (ns-form tag-name requires) pr-str (str "\n"))
        "($define " (pr-str tag-name) " "
        "{" (str/join " " spec-entries) "})"))
 
@@ -315,7 +310,8 @@
     form))
 
 (defn- squint-source
-  "Build the complete Squint source for a `defc` component.
+  "Build the Squint forms for a `defc` component, keeping the source
+   positions of the user's forms.
 
    The generated source is a call to `$define` with:
    - :attrs  — vector of attribute name strings
@@ -331,10 +327,7 @@
      and `emit`/`ctx` in scope.
 
    When `requires` is non-empty, an ns form with the module requires is
-   prepended so alias-qualified symbols resolve during compilation.
-
-   All forms are emitted as Clojure data (readable by Squint) so no
-   string-quoting escaping is needed — `pr-str` handles it."
+   prepended so alias-qualified symbols resolve during compilation."
   [tag-name attr-keys {:keys [events render mount update unmount]} ns-str requires]
   (let [attr-strs        (mapv clojure.core/name attr-keys)
         attr-destructure {:keys (mapv symbol (map clojure.core/name attr-keys))}
@@ -362,12 +355,14 @@
                            ~@handler-bindings
                            ~@(when (seq events) ['$handlers handlers-map])]
                           ~render-rewritten))))
-        spec-entries     (cond-> [(str ":attrs " (pr-str attr-strs))]
-                           render-fn (conj (str ":render " (pr-str render-fn)))
-                           mount     (conj (str ":mount " (pr-str (lifecycle-fn mount))))
-                           update    (conj (str ":update " (pr-str (lifecycle-fn update))))
-                           unmount   (conj (str ":unmount " (pr-str (lifecycle-fn unmount)))))]
-    (define-call-source tag-name requires spec-entries)))
+        spec             (cond-> (array-map :attrs attr-strs)
+                           render-fn (assoc :render render-fn)
+                           mount     (assoc :mount (lifecycle-fn mount))
+                           update    (assoc :update (lifecycle-fn update))
+                           unmount   (assoc :unmount (lifecycle-fn unmount)))]
+    (cond-> []
+      (seq requires) (conj (ns-form tag-name requires))
+      true (conj (list '$define tag-name spec)))))
 
 (defmacro defc
   "Define a client-side web component.
@@ -477,21 +472,25 @@
         _                             (assert (or (:render parsed) (:mount parsed))
                                               (str "defc " cname ": a (render ...) or (mount ...) segment is required"))
         ns-str                        (str *ns*)
-        src                           (squint-source tag-name attr-keys parsed ns-str requires)
+        forms                         (squint-source tag-name attr-keys parsed ns-str requires)
         tag-kw                        (keyword tag-name)
         ;; Compile at macro-expansion time so Squint errors surface at compile
         ;; time (with the source attached), but emit the registration into the
         ;; expansion so it executes at runtime.  This keeps defc AOT-safe
         ;; (expansion-time side effects don't survive AOT compilation) and
         ;; testable (with-redefs of registry* works).
-        {compiled-js :body
-         core-vars   :used-core-vars} (compile-squint* src)]
+        {:as         compiled
+         compiled-js :body
+         core-vars   :used-core-vars} (compile-squint* forms {:source-map true})]
     `(do
        (check-alias-conflicts! ~tag-name '~requires)
-       (swap! registry* assoc ~tag-name {:attrs     ~attr-keys
-                                         :requires  '~requires
-                                         :js        ~compiled-js
-                                         :core-vars ~core-vars})
+       (swap! registry* assoc ~tag-name {:attrs      ~attr-keys
+                                         :requires   '~requires
+                                         :js         ~compiled-js
+                                         :core-vars  ~core-vars
+                                         :source-map ~(when (not= "NO_SOURCE_PATH" *file*)
+                                                        {:segments (:source-map-segments compiled)
+                                                         :source   *file*})})
        (defn ~cname
          ~@(when docstring [docstring])
          [attr-map# & children#]
