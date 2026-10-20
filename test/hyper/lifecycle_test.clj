@@ -56,6 +56,29 @@
           _        (ht/test-page handler2 {:app-state app})] ;; re-mount
       (is (= 2 @setup)))))
 
+(defn- redef-page [_req] (fn [_req] [:div "old"]))
+
+(deftest form-2-var-redefinition-remounts
+  (testing "a Var handler keeps its mount until the Var is redefined"
+    (let [original @#'redef-page
+          setup    (atom 0)
+          mk       (fn [label] (fn [_req]
+                                 (swap! setup inc)
+                                 (fn [_req] [:div label])))]
+      (try
+        (alter-var-root #'redef-page (constantly (mk "old")))
+        (let [r1  (ht/test-page #'redef-page)
+              app (:app-state r1)
+              r2  (ht/test-page #'redef-page {:app-state app})]
+          (is (= 1 @setup) "unchanged Var takes the fast path")
+          (is (str/includes? (:body-html r2) "old"))
+          (alter-var-root #'redef-page (constantly (mk "new")))
+          (let [r3 (ht/test-page #'redef-page {:app-state app})]
+            (is (= 2 @setup) "redefined Var remounts")
+            (is (str/includes? (:body-html r3) "new"))))
+        (finally
+          (alter-var-root #'redef-page (constantly original)))))))
+
 ;; ---------------------------------------------------------------------------
 ;; form-3 — mount/render/unmount lifecycle
 ;; ---------------------------------------------------------------------------

@@ -205,6 +205,7 @@
    form-1 re-runs its body every render."
   [app-state* tab-id handler req render-error-fn wrap-mw]
   (let [wrap-mw     (or wrap-mw identity)
+        handler     (if (var? handler) @handler handler)
         stored      (get-in @app-state* [:tabs tab-id :page-view])
         path-params (get-in @app-state* [:tabs tab-id :route :path-params])
         same-mount? (and stored
