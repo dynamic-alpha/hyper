@@ -1,5 +1,6 @@
 (ns hyper.action-order-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [hyper.actions :as actions]
             [hyper.context :as context]
             [hyper.core :as h]
@@ -286,5 +287,87 @@
                                                      :hyper/app-state  app-state* :hyper/router nil}
                                context/*action-idx* (atom 0)]
                        (h/action {:concurrency :drop} nil))
-          id         (second (re-find #"action-id=([^']+)" (str expr)))]
+          id         (second (re-find #"action-id=([^'&]+)" (str expr)))]
       (is (= :drop (get-in @app-state* [:actions id :concurrency]))))))
+
+(defn- post-seq!
+  "POST action `action-id` with sequence number `n` and JSON `body`; returns
+   the response."
+  [handler action-id n body]
+  (handler (cond-> {:query-params {"action-id" action-id "hyper-seq" (str n)}}
+             body (assoc :body body))))
+
+(deftest test-older-signals-are-ignored
+  (testing "signals from a request sent before ones already applied are
+            ignored, while its action still runs"
+    (let [app-state* (new-app "t")
+          ran        (atom 0)
+          handler    (server/action-handler app-state*)]
+      (actions/register-action! app-state* "s" "t" (fn [_] (swap! ran inc)) "a")
+      (post-seq! handler "a" 2 "{\"x\": 2}")
+      (post-seq! handler "a" 1 "{\"x\": 1}")
+      (is (= 2 (get-in @app-state* [:tabs "t" :signals :x])) "the newer value stays")
+      (is (= 2 @ran) "both clicks ran")
+      (post-seq! handler "a" 3 "{\"x\": 3}")
+      (is (= 3 (get-in @app-state* [:tabs "t" :signals :x]))))))
+
+(deftest test-requests-without-seq-apply-signals
+  (testing "a request without a sequence number applies its signals"
+    (let [app-state* (new-app "t")
+          handler    (server/action-handler app-state*)]
+      (actions/register-action! app-state* "s" "t" (fn [_] nil) "a")
+      (post-seq! handler "a" 5 "{\"x\": 5}")
+      @(post! handler "a" "{\"x\": 6}")
+      (is (= 6 (get-in @app-state* [:tabs "t" :signals :x]))))))
+
+(deftest test-seq-is-not-a-client-param
+  (testing "the sequence number is not passed to the action as a client param"
+    (let [app-state* (new-app "t")
+          seen       (promise)
+          handler    (server/action-handler app-state*)]
+      (actions/register-action! app-state* "s" "t" (fn [cp] (deliver seen cp)) "a")
+      (post-seq! handler "a" 1 nil)
+      (is (nil? (:hyper-seq (deref seen 0 :none)))))))
+
+(deftest test-older-navigation-is-skipped
+  (testing "a navigation action sent before one already applied does not run"
+    (let [app-state* (new-app "t")
+          route      (atom nil)
+          handler    (server/action-handler app-state*)]
+      (actions/register-action! app-state* "s" "t" (fn [_] (reset! route :a)) "nav-a"
+                                {:navigation? true})
+      (actions/register-action! app-state* "s" "t" (fn [_] (reset! route :b)) "nav-b"
+                                {:navigation? true})
+      (is (= 204 (:status (post-seq! handler "nav-b" 3 nil))))
+      (is (= 204 (:status (post-seq! handler "nav-a" 2 nil))))
+      (is (= :b @route)))))
+
+(deftest test-older-back-forward-navigation-is-skipped
+  (testing "a back/forward navigation sent before one already applied does not
+            change the route"
+    (let [app-state* (atom (state/init-state))
+          handler    (server/create-handler [["/a" {:name :a :get (fn [_] [:div "A"])}]
+                                             ["/b" {:name :b :get (fn [_] [:div "B"])}]]
+                                            app-state*)
+          navigate!  (fn [path n]
+                       (handler {:uri            "/hyper/navigate"
+                                 :request-method :post
+                                 :query-params   {"path" path "tab-id" "t" "hyper-seq" (str n)}}))]
+      (state/get-or-create-tab! app-state* "s" "t")
+      (navigate! "/b" 3)
+      (navigate! "/a" 2)
+      (is (= :b (get-in @app-state* [:tabs "t" :route :name]))))))
+
+(deftest test-client-sends-seq
+  (testing "action and navigation requests carry the page's next sequence number"
+    (is (str/includes? (actions/build-action-expr "a_t_1" {} nil "")
+                       "hyper-seq=' + hyper.nextSeq()"))
+    (is (str/includes? (actions/build-action-expr "a_t_1" {'$value {:js "evt.target.value" :key "value"}} nil "")
+                       "hyper-seq=' + hyper.nextSeq()"))
+    (let [app-state* (atom (state/init-state))
+          handler    (server/create-handler [["/" {:name :home :get (fn [_] [:div "Home"])}]]
+                                            app-state*)
+          body       (str (:body (handler {:uri "/" :request-method :get})))]
+      (is (str/includes? body "window.hyper.nextSeq"))
+      (is (str/includes? body "hyper-seq=' + window.hyper.nextSeq()")
+          "back/forward navigation sends it too"))))

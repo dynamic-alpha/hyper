@@ -104,7 +104,7 @@
           (is (.contains action-js "action-id="))
 
           ;; Extract action ID and execute it
-          (let [action-id (second (re-find #"action-id=([^']+)" action-js))]
+          (let [action-id (second (re-find #"action-id=([^'&]+)" action-js))]
             (is (some? action-id))
             ((get-in @app-state* [:actions action-id :fn]) nil)
             (is @executed)))))))
@@ -171,7 +171,7 @@
 
       (binding [context/*request* ctx]
         (let [nav-attrs (hy/navigate :about)
-              action-id (second (re-find #"action-id=([^']+)"
+              action-id (second (re-find #"action-id=([^'&]+)"
                                          (str (:data-on:click__prevent nav-attrs))))
               _         (do (is (some? action-id))
                             ((get-in @app-state* [:actions action-id :fn]) nil))

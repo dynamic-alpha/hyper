@@ -592,8 +592,8 @@
 
 (defn- parse-client-query-params
   "Extract client params from URL query parameters, JSON-decoding each
-   value.  Skips the `action-id` key (which is a hyper routing param,
-   not a client param).  Returns a keyword-keyed map, or nil when no
+   value.  Skips the `action-id` and `hyper-seq` keys (hyper's own params,
+   not client params).  Returns a keyword-keyed map, or nil when no
    client params are present.
 
    Values are JSON-encoded on the client by `hyper.encodeClientParams`, so a
@@ -606,16 +606,53 @@
    the client side is JSON-typed (Squint has no keyword type), so a
    keyword emitted from a component arrives as a string."
   [req]
-  (let [qp (get req :query-params {})]
-    (when (> (count qp) 1)                 ;; more than just action-id
+  (let [qp (dissoc (get req :query-params {}) "action-id" "hyper-seq")]
+    (when (seq qp)
       (reduce-kv (fn [acc k v]
-                   (if (= k "action-id")
-                     acc
-                     (assoc acc (keyword k)
-                            (try (json/parse-string v true)
-                                 (catch Exception _ v)))))
+                   (assoc acc (keyword k)
+                          (try (json/parse-string v true)
+                               (catch Exception _ v))))
                  {}
                  qp))))
+
+(defn- request-seq
+  "The sequence number the page sent with `req` (`hyper-seq`), or nil."
+  [req]
+  (some-> (get-in req [:query-params "hyper-seq"]) parse-long))
+
+(defn- newer-request!
+  "Record `n` as the latest sequence number seen for tab `tab-id` under `k`
+   and return true, unless a request sent later was already recorded there.
+   Requests without a number, or for a tab that does not exist, count as
+   newer."
+  [app-state* tab-id k n]
+  (or (nil? n)
+      (not (contains? (:tabs @app-state*) tab-id))
+      (let [[old new] (swap-vals! app-state*
+                                  (fn [state]
+                                    (if (> n (get-in state [:tabs tab-id k] 0))
+                                      (assoc-in state [:tabs tab-id k] n)
+                                      state)))]
+        (not (identical? old new)))))
+
+(defn- apply-signals!
+  "Merge a request's `signals` into tab state, unless a request sent later
+   (by sequence number `n`) already applied its own.  Returns true when
+   merged."
+  [app-state* tab-id signals n]
+  (let [merged? (volatile! false)]
+    (swap! app-state*
+           (fn [state]
+             (if (and n (<= n (get-in state [:tabs tab-id :signal-seq] 0)))
+               (do (vreset! merged? false) state)
+               (do (vreset! merged? true)
+                   (update-in state [:tabs tab-id]
+                              (fn [tab]
+                                (cond-> (-> tab
+                                            (update :signals merge signals)
+                                            (update :client-signals merge signals))
+                                  n (assoc :signal-seq n))))))))
+    @merged?))
 
 (defn- action-gone-response
   "409 for a request whose action no longer exists — typically a click from
@@ -691,12 +728,8 @@
                     ;; Dropped or replaced (see :concurrency)
                       {:status 204}))
                (fn [run-action?]
-                 (when (and signals tab-id)
-                   (swap! app-state* update-in [:tabs tab-id]
-                          (fn [tab]
-                            (-> tab
-                                (update :signals merge signals)
-                                (update :client-signals merge signals))))
+                 (when (and signals tab-id
+                            (apply-signals! app-state* tab-id signals (request-seq req)))
                   ;; Persist auto-commit optimistics before the action body runs,
                   ;; so cursor reads in the action see the committed value.
                    (signal/auto-commit! app-state* tab-id signals))
@@ -710,6 +743,11 @@
                  ;; Removed (e.g. by a re-render) while the request waited
                    (not (get-in @app-state* [:actions action-id]))
                    (action-gone-response action-id)
+
+                 ;; A navigation sent before one already applied
+                   (and (:navigation? action-data)
+                        (not (newer-request! app-state* tab-id :navigation-seq (request-seq req))))
+                   {:status 204}
 
                    :else
                    (binding [context/*request*     req-with-state
@@ -848,6 +886,8 @@
   "JavaScript for SPA navigation support and client param encoding:
    - hyper.encodeClientParams(obj): URL-encodes an object of client params as a
      query string fragment (e.g. \"value=hello&checked=true\") for use in @post() URLs.
+   - hyper.nextSeq(): the page's next request sequence number, sent as
+     `hyper-seq` with action and navigation requests.
    - MutationObserver on #hyper-app watches data-hyper-url attribute changes
      and syncs the browser URL bar via replaceState. Title syncing is handled
      server-side by re-rendering the full <head> (including <title>) via SSE.
@@ -867,6 +907,11 @@
      (str "
 (function() {
   window.hyper = window.hyper || {};
+  // Numbers every request that carries signals or navigates, so the server
+  // can ignore one that arrives after a request sent later. Seeded from the
+  // clock so numbers keep increasing if the script runs again.
+  window.hyper.seq = window.hyper.seq || Date.now();
+  window.hyper.nextSeq = function() { return ++window.hyper.seq; };
   window.hyper.encodeClientParams = function(o) {
     var p = [];
     for (var k in o) {
@@ -950,7 +995,8 @@
     }
     var path = window.location.pathname + window.location.search;
     window.hyper.startNavigation(path);
-    fetch('" base-path "/hyper/navigate?tab-id=" tab-id "&path=' + encodeURIComponent(path), {
+    fetch('" base-path "/hyper/navigate?tab-id=" tab-id "&hyper-seq=' + window.hyper.nextSeq() +
+          '&path=' + encodeURIComponent(path), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'}
     }).then(function(r) { if (!r.ok) { setNavigating(false); } },
@@ -1153,7 +1199,8 @@
 
 (defn- navigate-handler
   "Handler for popstate/navigation POST requests.
-   Looks up the route for the given path and updates the tab's route + render fn."
+   Looks up the route for the given path and updates the tab's route + render fn,
+   unless a navigation the page sent later was already applied."
   [app-state*]
   (fn [req]
     (let [path        (get-in req [:query-params "path"])
@@ -1169,47 +1216,52 @@
          :headers {"Content-Type" "application/json"}
          :body    "{\"error\": \"Missing path or tab-id\"}"}
 
+        (if-not (newer-request! app-state* tab-id :navigation-seq (request-seq req))
+          ;; A navigation sent before one already applied: leave the route.
+          {:status  200
+           :headers {"Content-Type" "application/json"}
+           :body    "{\"success\": true}"}
         ;; Parse path and query string
-        (let [[path-part query-string] (clojure.string/split path #"\?" 2)
-              raw-query-params         (state/parse-query-string query-string)
+          (let [[path-part query-string] (clojure.string/split path #"\?" 2)
+                raw-query-params         (state/parse-query-string query-string)
               ;; Match the path using the reitit router
-              match                    (reitit/match-by-path router path-part)]
-          (if-not match
+                match                    (reitit/match-by-path router path-part)]
+            (if-not match
             ;; No route matched — when :not-found is set, register it and set
             ;; the route so the route watcher re-renders the 404 over SSE and
             ;; syncs the URL bar, matching an initial-load 404.  When disabled
             ;; (nil), reply with the plain JSON 404.
-            (if-let [not-found-fn (get @app-state* :not-found)]
-              (do
-                (render/register-render-fn! app-state* tab-id not-found-fn)
-                (state/set-tab-route! app-state* tab-id
-                                      {:path         path-part
-                                       :query-params raw-query-params})
-                {:status  200
+              (if-let [not-found-fn (get @app-state* :not-found)]
+                (do
+                  (render/register-render-fn! app-state* tab-id not-found-fn)
+                  (state/set-tab-route! app-state* tab-id
+                                        {:path         path-part
+                                         :query-params raw-query-params})
+                  {:status  200
+                   :headers {"Content-Type" "application/json"}
+                   :body    "{\"success\": true}"})
+                {:status  404
                  :headers {"Content-Type" "application/json"}
-                 :body    "{\"success\": true}"})
-              {:status  404
-               :headers {"Content-Type" "application/json"}
-               :body    "{\"error\": \"Route not found\"}"})
+                 :body    "{\"error\": \"Route not found\"}"})
 
-            (let [route-name   (get-in match [:data :name])
+              (let [route-name   (get-in match [:data :name])
                   ;; Coerce parameters using reitit's coercion if the route has specs
-                  coerced      (-navigation-parameters match (assoc req :query-params raw-query-params))
-                  query-params (or (:query coerced) raw-query-params {})
-                  path-params  (or (:path coerced) (:path-params match) {})
-                  render-fn    (routes/find-render-fn route-index route-name)]
-              (when render-fn
-                (render/register-render-fn! app-state* tab-id render-fn))
+                    coerced      (-navigation-parameters match (assoc req :query-params raw-query-params))
+                    query-params (or (:query coerced) raw-query-params {})
+                    path-params  (or (:path coerced) (:path-params match) {})
+                    render-fn    (routes/find-render-fn route-index route-name)]
+                (when render-fn
+                  (render/register-render-fn! app-state* tab-id render-fn))
               ;; Setting the route triggers the route watcher,
               ;; which handles re-rendering and URL updates via SSE
-              (state/set-tab-route! app-state* tab-id
-                                    {:name         route-name
-                                     :path         path-part
-                                     :path-params  path-params
-                                     :query-params query-params})
-              {:status  200
-               :headers {"Content-Type" "application/json"}
-               :body    "{\"success\": true}"})))))))
+                (state/set-tab-route! app-state* tab-id
+                                      {:name         route-name
+                                       :path         path-part
+                                       :path-params  path-params
+                                       :query-params query-params})
+                {:status  200
+                 :headers {"Content-Type" "application/json"}
+                 :body    "{\"success\": true}"}))))))))
 
 (defn- -coercion-response
   "Encodes a coercion error response as JSON with its HTTP content type."

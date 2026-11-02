@@ -966,7 +966,8 @@
          {:href href
           :data-on:click__prevent
           (str "window.hyper.startNavigation('" escaped-href "');"
-               " @post('" base-path "/hyper/actions?action-id=" action-id "');"
+               " @post('" base-path "/hyper/actions?action-id=" action-id
+               "&hyper-seq=' + window.hyper.nextSeq());"
                " window.history.pushState({title: '" escaped-title "'}, '', '" escaped-href "');"
                (when title
                  (str " document.title = '" escaped-title "'")))})))))

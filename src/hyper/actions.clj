@@ -46,11 +46,14 @@
    they are URL-encoded into the query string via the hyper.encodeClientParams helper
    so the server can read them from query-params.
    Optionally injects a custom Datastar expression to conditionally prevent the post.
-   base-path is prepended to the /hyper/actions endpoint (empty string when not set)."
+   base-path is prepended to the /hyper/actions endpoint (empty string when not set).
+   Each request carries the page's next sequence number (`hyper-seq`) so the
+   server can ignore signals that arrive after those of a request sent later."
   [action-id used-params js base-path]
   (let [js-injection (when js (str js " && "))]
     (if (empty? used-params)
-      (str js-injection "@post('" base-path "/hyper/actions?action-id=" action-id "')")
+      (str js-injection "@post('" base-path "/hyper/actions?action-id=" action-id
+           "&hyper-seq=' + hyper.nextSeq())")
       (let [obj-entries (->> used-params
                              vals
                              (map (fn [{:keys [js key]}]
@@ -58,7 +61,7 @@
                              (str/join ","))]
         (str js-injection
              "@post('" base-path "/hyper/actions?action-id=" action-id
-             "&' + hyper.encodeClientParams({" obj-entries "}))")))))
+             "&hyper-seq=' + hyper.nextSeq() + '&' + hyper.encodeClientParams({" obj-entries "}))")))))
 
 ;; ---------------------------------------------------------------------------
 ;; Derived action ids
