@@ -126,6 +126,15 @@
                   (< (- (System/currentTimeMillis) stale-at) (keep-stale-ms state)))
           action)))))
 
+(defn stale-refusal
+  "What a click on `action` should do instead of running it: nil to run it,
+   :reject to refuse it, or a fn to run in its place.  Only a stale action
+   whose :on-stale is not :run is refused."
+  [action]
+  (let [on-stale (:on-stale action :run)]
+    (when (and (:stale-at action) (not= :run on-stale))
+      on-stale)))
+
 (defn- held-by-other?
   "True when `id` belongs to a kept action other than the one identified by
    `identity-key`."
@@ -184,7 +193,10 @@
    - :concurrency — what happens to a request for this action while another
                     one is waiting or running: :queue (default) runs every
                     request in order, :drop ignores the new one, :latest
-                    replaces the waiting one with the new one"
+                    replaces the waiting one with the new one
+   - :on-stale    — what a click does when the action is stale (the latest
+                    render no longer shows it): :run (default) runs it,
+                    :reject refuses it, a zero-arg fn runs instead of it"
   ([app-state* session-id tab-id action-fn]
    (register-action! app-state* session-id tab-id action-fn
                      (str "act_" (uuid/str (java.util.UUID/randomUUID)))
@@ -196,6 +208,10 @@
      (when-not (concurrency-values c)
        (throw (ex-info (str "action :concurrency must be one of " (pr-str concurrency-values))
                        {:concurrency c :hyper/action-id action-id}))))
+   (when-let [s (:on-stale opts)]
+     (when-not (or (#{:run :reject} s) (fn? s))
+       (throw (ex-info "action :on-stale must be :run, :reject or a fn"
+                       {:on-stale s :hyper/action-id action-id}))))
    ;; What a derived id was derived from, so claim-id! can tell a different
    ;; action apart from this one while it is kept
    (let [identity-key (some-> context/*action-id-claims* deref (get-in [:claimed action-id]))]
@@ -208,7 +224,8 @@
                                          identity-key        (assoc :identity-key identity-key)
                                          (:as opts)          (assoc :as (:as opts))
                                          (:navigation? opts) (assoc :navigation? true)
-                                         (:concurrency opts) (assoc :concurrency (:concurrency opts))))
+                                         (:concurrency opts) (assoc :concurrency (:concurrency opts))
+                                         (:on-stale opts)    (assoc :on-stale (:on-stale opts))))
                              (update-in [:actions-by-tab tab-id]
                                         (fnil conj #{}) action-id)
                              (cond-> (get-in state [:stale-actions-by-tab tab-id action-id])

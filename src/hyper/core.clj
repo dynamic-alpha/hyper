@@ -768,6 +768,16 @@
      [:button {:data-on:click (action {:concurrency :drop} (save! @draft*))}
       \"Save\"]
 
+     ;; :on-stale decides what a click does when the page it came from has
+     ;; since been re-rendered without this action (e.g. the data it closes
+     ;; over changed).  :run (default) runs the handler the click was rendered
+     ;; with; :reject refuses it with a 409; a zero-arg fn runs instead, e.g.
+     ;; to tell the user why.  Stale actions are kept for
+     ;; :keep-stale-actions-ms (see create-handler).
+     [:button {:data-on:click (action {:on-stale #(reset! (tab-cursor :notice) \"This changed\")}
+                                (decide! values))}
+      \"Decide\"]
+
      ;; Checkbox
      [:input {:type \"checkbox\"
               :data-on:change (action (reset! (tab-cursor :dark?) $checked))}]
@@ -782,8 +792,8 @@
   [& args]
   (let [[maybe-opts & body]   args
         opts-map?             (and (map? maybe-opts)
-                                   (some #{:when :as :upload :key :concurrency} (keys maybe-opts)))
-        [js as-name upload-ref-form key-form concurrency-form body]
+                                   (some #{:when :as :upload :key :concurrency :on-stale} (keys maybe-opts)))
+        [js as-name upload-ref-form key-form concurrency-form on-stale-form body]
         (if opts-map?
           (let [guard (:when maybe-opts)
                 ;; String literals are validated here; any other form
@@ -792,8 +802,9 @@
                 js    (cond
                         (string? guard) (when-not (str/blank? guard) guard)
                         (some? guard)   guard)]
-            [js (:as maybe-opts) (:upload maybe-opts) (:key maybe-opts) (:concurrency maybe-opts) body])
-          [nil nil nil nil nil args])
+            [js (:as maybe-opts) (:upload maybe-opts) (:key maybe-opts) (:concurrency maybe-opts)
+             (:on-stale maybe-opts) body])
+          [nil nil nil nil nil nil args])
         _                     (when (and opts-map? (contains? maybe-opts :when))
                                 (actions/warn-deprecated-when!))
         used-params           (find-client-params body)
@@ -830,26 +841,32 @@
             app-state*# :app-state*
             router#     :router}    (context/require-context! "action")
            upload-ref#              ~upload-ref-form
+           ;; Runs f with this tab as the request context, as at click time
+           in-tab#                  (fn [f#]
+                                      (binding [context/*request* {:hyper/session-id session-id#
+                                                                   :hyper/tab-id     tab-id#
+                                                                   :hyper/app-state  app-state*#
+                                                                   :hyper/router     router#
+                                                                   :hyper/env        (get-in @app-state*# [:tabs tab-id# :env])}]
+                                        (f#)))
            action-fn#               (fn [~cp-sym]
                                       (let [~@(mapcat (fn [sym]
                                                         (let [k (keyword (:key (client-params/client-param sym)))]
                                                           [sym (list `get cp-sym k)]))
                                                       param-syms)]
-                                        (binding [context/*request* {:hyper/session-id session-id#
-                                                                     :hyper/tab-id     tab-id#
-                                                                     :hyper/app-state  app-state*#
-                                                                     :hyper/router     router#
-                                                                     :hyper/env        (get-in @app-state*# [:tabs tab-id# :env])}]
-                                          ~@body)))
+                                        (in-tab# (fn [] ~@body))))
+           on-stale#                (let [s# ~on-stale-form]
+                                      (if (fn? s#) (fn [] (in-tab# s#)) s#))
            key#                     ~key-form
            action-id#               (if (some? key#)
                                       (subview/scoped-id "a_" tab-id# (subview/key->token key#))
                                       (actions/derived-action-id tab-id# ~site [~@captured-syms]))
            _#                       (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#
-                                                              ~(when (or as-name concurrency-form)
-                                                                 (cond-> {}
-                                                                   as-name          (assoc :as as-name)
-                                                                   concurrency-form (assoc :concurrency concurrency-form))))
+                                                              (cond-> ~(when (or as-name concurrency-form)
+                                                                         (cond-> {}
+                                                                           as-name          (assoc :as as-name)
+                                                                           concurrency-form (assoc :concurrency concurrency-form)))
+                                                                on-stale# (assoc :on-stale on-stale#)))
            ;; Stash the upload status ref so the /hyper/upload handler can
            ;; transition its phase/result; nil for non-upload actions.
            _#                       (when upload-ref#

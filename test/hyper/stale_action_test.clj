@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [hyper.actions :as actions]
             [hyper.context :as context]
+            [hyper.core :as h]
             [hyper.server :as server]
             [hyper.state :as state]))
 
@@ -110,3 +111,87 @@
       (server/create-handler routes b*)
       (is (= 5 (:keep-stale-actions-ms @a*)))
       (is (= 60000 (:keep-stale-actions-ms @b*))))))
+
+(defn- register-stale!
+  "Register action `id` on tab \"t\" with `opts`, then sweep it stale."
+  [app-state* id f opts]
+  (actions/register-action! app-state* "s" "t" f id opts)
+  (actions/sweep-stale-tab-actions! app-state* "t" #{}))
+
+(deftest test-on-stale-reject
+  (testing ":on-stale :reject refuses a stale action with 409 but runs a
+            current one"
+    (let [app-state* (new-app)
+          ran        (atom 0)
+          handler    (server/action-handler app-state*)]
+      (actions/register-action! app-state* "s" "t" (fn [_] (swap! ran inc)) "a" {:on-stale :reject})
+      (is (= 204 (:status (post handler "a"))) "current: runs")
+      (actions/sweep-stale-tab-actions! app-state* "t" #{})
+      (is (= 409 (:status (post handler "a"))) "stale: refused")
+      (is (= 1 @ran)))))
+
+(deftest test-on-stale-run
+  (testing ":on-stale :run (the default) runs a stale action"
+    (let [app-state* (new-app)
+          ran        (atom 0)
+          handler    (server/action-handler app-state*)]
+      (register-stale! app-state* "a" (fn [_] (swap! ran inc)) {:on-stale :run})
+      (is (= 204 (:status (post handler "a"))))
+      (is (= 1 @ran)))))
+
+(deftest test-on-stale-fn
+  (testing "an :on-stale fn runs instead of a stale action, and the request
+            is refused"
+    (let [app-state* (new-app)
+          log        (atom [])
+          handler    (server/action-handler app-state*)]
+      (register-stale! app-state* "a" (fn [_] (swap! log conj :action))
+                       {:on-stale (fn [] (swap! log conj :on-stale))})
+      (is (= 409 (:status (post handler "a"))))
+      (is (= [:on-stale] @log)))))
+
+(deftest test-on-stale-reject-while-queued
+  (testing "an :on-stale :reject action that goes stale while its request
+            waits is refused when its turn comes"
+    (let [app-state* (new-app)
+          release    (promise)
+          started    (promise)
+          ran        (atom 0)
+          handler    (server/action-handler app-state*)]
+      (actions/register-action! app-state* "s" "t"
+                                (fn [_] (deliver started true) (deref release 2000 nil))
+                                "block")
+      (actions/register-action! app-state* "s" "t" (fn [_] (swap! ran inc)) "a" {:on-stale :reject})
+      (let [fb (future (post handler "block"))
+            _  (deref started 1000 :timeout)
+            fa (future (post handler "a"))]
+        (Thread/sleep 50)
+        (actions/sweep-stale-tab-actions! app-state* "t" #{"block"})
+        (deliver release true)
+        @fb
+        (is (= 409 (:status (deref fa 1000 :timeout))))
+        (is (zero? @ran))))))
+
+(deftest test-invalid-on-stale-throws
+  (testing "an :on-stale value other than :run, :reject or a fn is rejected"
+    (let [app-state* (new-app)]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #":on-stale"
+                            (actions/register-action! app-state* "s" "t" (fn [_] nil)
+                                                      "a" {:on-stale :sometimes}))))))
+
+(deftest test-action-macro-on-stale
+  (testing "(h/action {:on-stale f} ...) runs f in the tab's context when the
+            action is stale"
+    (let [app-state* (new-app)
+          handler    (server/action-handler app-state*)
+          expr       (binding [context/*request*          {:hyper/session-id "s"        :hyper/tab-id "t"
+                                                           :hyper/app-state  app-state* :hyper/router nil}
+                               context/*action-idx*       (atom 0)
+                               context/*action-id-claims* (atom {})]
+                       (h/action {:on-stale #(reset! (h/tab-cursor :notice) "changed")}
+                                 (reset! (h/tab-cursor :done) true)))
+          id         (second (re-find #"action-id=([^'&]+)" (str expr)))]
+      (actions/sweep-stale-tab-actions! app-state* "t" #{})
+      (is (= 409 (:status (post handler id))))
+      (is (= "changed" (get-in @app-state* [:tabs "t" :data :notice])))
+      (is (nil? (get-in @app-state* [:tabs "t" :data :done]))))))

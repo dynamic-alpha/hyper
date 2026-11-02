@@ -666,6 +666,17 @@
    :headers {"Content-Type" "application/json"}
    :body    "{\"error\": \"Action no longer exists\"}"})
 
+(defn- action-stale-response
+  "409 for a click on a stale action whose :on-stale refuses it."
+  [action-id]
+  (t/log! {:level :debug
+           :id    :hyper.event/action-stale
+           :data  {:hyper/action-id action-id}
+           :msg   "Action is stale and refuses to run (:on-stale)"})
+  {:status  409
+   :headers {"Content-Type" "application/json"}
+   :body    "{\"error\": \"Action is stale\"}"})
+
 (defn action-handler
   "Handler for action POST requests.
 
@@ -755,14 +766,20 @@
                              context/*signals*     signals
                              context/*action-name* (:as action-data)
                              effects/*pending*     (effects/init-pending)]
-                     (actions/execute-action! app-state* action-id client-params)
-                     (let [pending (effects/collect-pending!)]
+                     ;; A stale action may refuse to run (:on-stale)
+                     (let [refusal (actions/stale-refusal (actions/find-action app-state* action-id))]
+                       (cond
+                         (nil? refusal) (actions/execute-action! app-state* action-id client-params)
+                         (fn? refusal)  (t/catch->error! :hyper.error/on-stale (refusal)))
+                       (let [pending (effects/collect-pending!)]
                     ;; Queue pending scripts for SSE delivery via the renderer thread
-                       (when-let [scripts (seq (:scripts pending))]
-                         (when-let [renderer (get-in @app-state* [:tabs tab-id :renderer])]
-                           ((:enqueue-scripts! renderer) scripts)))
-                    ;; 204 with any cookies from effects
-                       (effects/apply-cookies-to-response {:status 204} pending))))))
+                         (when-let [scripts (seq (:scripts pending))]
+                           (when-let [renderer (get-in @app-state* [:tabs tab-id :renderer])]
+                             ((:enqueue-scripts! renderer) scripts)))
+                    ;; 204 (409 when refused) with any cookies from effects
+                         (effects/apply-cookies-to-response
+                           (if refusal (action-stale-response action-id) {:status 204})
+                           pending)))))))
               (catch Exception e
                 (t/error! {:id   :hyper.error/action-handler
                            :msg  "Error executing action handler"
@@ -835,22 +852,28 @@
                               context/*signals*     signals
                               context/*action-name* as
                               effects/*pending*     (effects/init-pending)]
+                      (if-let [refusal (actions/stale-refusal (actions/find-action app-state* action-id))]
+                      ;; A stale upload may refuse to run (:on-stale)
+                        (do (when (fn? refusal)
+                              (t/catch->error! :hyper.error/on-stale (refusal)))
+                            (action-stale-response action-id))
+                        (do
                   ;; Body fully received: transfer is complete, processing begins.
-                      (uploads/set-status! upload-ref {:phase :processing :percent 100 :error nil})
-                      (trigger-tab-render! app-state* tab-id)
-                      (let [result (try
-                                     ((:fn action-data) client-params)
-                                     (catch Throwable e
-                                       (uploads/set-status! upload-ref {:phase :error :error (.getMessage e)})
-                                       (trigger-tab-render! app-state* tab-id)
-                                       (throw e)))]
-                        (uploads/set-status! upload-ref {:phase :done :percent 100 :result result :error nil})
-                        (trigger-tab-render! app-state* tab-id)
-                        (let [pending (effects/collect-pending!)]
-                          (when-let [scripts (seq (:scripts pending))]
-                            (when-let [renderer (get-in @app-state* [:tabs tab-id :renderer])]
-                              ((:enqueue-scripts! renderer) scripts)))
-                          (effects/apply-cookies-to-response {:status 204} pending)))))))
+                          (uploads/set-status! upload-ref {:phase :processing :percent 100 :error nil})
+                          (trigger-tab-render! app-state* tab-id)
+                          (let [result (try
+                                         ((:fn action-data) client-params)
+                                         (catch Throwable e
+                                           (uploads/set-status! upload-ref {:phase :error :error (.getMessage e)})
+                                           (trigger-tab-render! app-state* tab-id)
+                                           (throw e)))]
+                            (uploads/set-status! upload-ref {:phase :done :percent 100 :result result :error nil})
+                            (trigger-tab-render! app-state* tab-id)
+                            (let [pending (effects/collect-pending!)]
+                              (when-let [scripts (seq (:scripts pending))]
+                                (when-let [renderer (get-in @app-state* [:tabs tab-id :renderer])]
+                                  ((:enqueue-scripts! renderer) scripts)))
+                              (effects/apply-cookies-to-response {:status 204} pending)))))))))
              ;; Dropped or replaced (see :concurrency)
               {:status 204})
             (catch Throwable e
