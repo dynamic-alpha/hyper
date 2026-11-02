@@ -415,6 +415,7 @@
     (lifecycle/teardown-page-view! app-state* tab-id)
     (when-let [stop! (get-in @app-state* [:tabs tab-id :renderer :stop!])]
       (stop!))
+    (actions/stop-action-queue! app-state* tab-id)
     (actions/cleanup-tab-actions! app-state* tab-id)
     (state/cleanup-tab! app-state* tab-id))
   nil)
@@ -628,7 +629,11 @@
    - Binds `effects/*pending*` to collect side-effects (cookies, scripts)
    - Returns 204 (with any Set-Cookie headers) to prevent Datastar from
      merging the response into signals
-   - Queues any pending scripts to the renderer for SSE delivery"
+   - Queues any pending scripts to the renderer for SSE delivery
+
+   The body is read here, but everything that touches tab state (applying
+   signals, running the action) runs on the tab's action queue, one action
+   at a time in arrival order."
   [app-state*]
   (fn [req]
     (let [action-id (get-in req [:query-params "action-id"])]
@@ -657,34 +662,34 @@
               ;; from echoing them back as patches.
               action-data    (get-in @app-state* [:actions action-id])
               tab-id         (:tab-id action-data)]
-          (when (and signals tab-id)
-            (swap! app-state* update-in [:tabs tab-id]
-                   (fn [tab]
-                     (-> tab
-                         (update :signals merge signals)
-                         (update :client-signals merge signals))))
-            ;; Persist auto-commit optimistics before the action body runs,
-            ;; so cursor reads in the action see the committed value.
-            (signal/auto-commit! app-state* tab-id signals))
-          (when-let [env (:hyper/env req)]
-            (when tab-id
-              (swap! app-state* assoc-in [:tabs tab-id :env] env)))
-          (push-thread-bindings {#'context/*request*     req-with-state
-                                 #'context/*signals*     signals
-                                 #'context/*action-name* (:as action-data)
-                                 #'effects/*pending*     (effects/init-pending)})
           (try
-            (actions/execute-action! app-state* action-id client-params)
-
-            ;; Collect accumulated effects
-            (let [pending  (effects/collect-pending!)
-                  ;; Queue pending scripts for SSE delivery via the renderer thread
-                  _        (when-let [scripts (seq (:scripts pending))]
-                             (when-let [renderer (get-in @app-state* [:tabs tab-id :renderer])]
-                               ((:enqueue-scripts! renderer) scripts)))
-                  ;; Build response — 204 with any cookies from effects
-                  response {:status 204}]
-              (effects/apply-cookies-to-response response pending))
+            (actions/run-in-order!
+              app-state* tab-id {:action-id action-id :as (:as action-data)}
+              (fn []
+                (when (and signals tab-id)
+                  (swap! app-state* update-in [:tabs tab-id]
+                         (fn [tab]
+                           (-> tab
+                               (update :signals merge signals)
+                               (update :client-signals merge signals))))
+                  ;; Persist auto-commit optimistics before the action body runs,
+                  ;; so cursor reads in the action see the committed value.
+                  (signal/auto-commit! app-state* tab-id signals))
+                (when-let [env (:hyper/env req)]
+                  (when tab-id
+                    (swap! app-state* assoc-in [:tabs tab-id :env] env)))
+                (binding [context/*request*     req-with-state
+                          context/*signals*     signals
+                          context/*action-name* (:as action-data)
+                          effects/*pending*     (effects/init-pending)]
+                  (actions/execute-action! app-state* action-id client-params)
+                  (let [pending (effects/collect-pending!)]
+                    ;; Queue pending scripts for SSE delivery via the renderer thread
+                    (when-let [scripts (seq (:scripts pending))]
+                      (when-let [renderer (get-in @app-state* [:tabs tab-id :renderer])]
+                        ((:enqueue-scripts! renderer) scripts)))
+                    ;; 204 with any cookies from effects
+                    (effects/apply-cookies-to-response {:status 204} pending)))))
             (catch Exception e
               (t/error! {:id   :hyper.error/action-handler
                          :msg  "Error executing action handler"
@@ -692,9 +697,7 @@
                         e)
               {:status  500
                :headers {"Content-Type" "application/json"}
-               :body    (json/generate-string {:error (.getMessage e)})})
-            (finally
-              (pop-thread-bindings))))))))
+               :body    (json/generate-string {:error (.getMessage e)})})))))))
 
 (defn- trigger-tab-render!
   "Enqueue a full render for `tab-id` on its currently attached renderer (if
@@ -744,30 +747,35 @@
               req-with-state                 (assoc req
                                                     :hyper/app-state app-state*
                                                     :hyper/router (get @app-state* :router))]
-          (when-let [env (:hyper/env req)]
-            (when tab-id
-              (swap! app-state* assoc-in [:tabs tab-id :env] env)))
-          (push-thread-bindings {#'context/*request*     req-with-state
-                                 #'context/*signals*     signals
-                                 #'context/*action-name* as
-                                 #'effects/*pending*     (effects/init-pending)})
           (try
-            ;; Body fully received: transfer is complete, processing begins.
-            (uploads/set-status! upload-ref {:phase :processing :percent 100 :error nil})
-            (trigger-tab-render! app-state* tab-id)
-            (let [result (try
-                           ((:fn action-data) client-params)
-                           (catch Throwable e
-                             (uploads/set-status! upload-ref {:phase :error :error (.getMessage e)})
-                             (trigger-tab-render! app-state* tab-id)
-                             (throw e)))]
-              (uploads/set-status! upload-ref {:phase :done :percent 100 :result result :error nil})
-              (trigger-tab-render! app-state* tab-id)
-              (let [pending (effects/collect-pending!)]
-                (when-let [scripts (seq (:scripts pending))]
-                  (when-let [renderer (get-in @app-state* [:tabs tab-id :renderer])]
-                    ((:enqueue-scripts! renderer) scripts)))
-                (effects/apply-cookies-to-response {:status 204} pending)))
+            ;; The multipart body is already on disk; only the action runs on
+            ;; the tab's action queue.
+            (actions/run-in-order!
+              app-state* tab-id {:action-id action-id :as as}
+              (fn []
+                (when-let [env (:hyper/env req)]
+                  (when tab-id
+                    (swap! app-state* assoc-in [:tabs tab-id :env] env)))
+                (binding [context/*request*     req-with-state
+                          context/*signals*     signals
+                          context/*action-name* as
+                          effects/*pending*     (effects/init-pending)]
+                  ;; Body fully received: transfer is complete, processing begins.
+                  (uploads/set-status! upload-ref {:phase :processing :percent 100 :error nil})
+                  (trigger-tab-render! app-state* tab-id)
+                  (let [result (try
+                                 ((:fn action-data) client-params)
+                                 (catch Throwable e
+                                   (uploads/set-status! upload-ref {:phase :error :error (.getMessage e)})
+                                   (trigger-tab-render! app-state* tab-id)
+                                   (throw e)))]
+                    (uploads/set-status! upload-ref {:phase :done :percent 100 :result result :error nil})
+                    (trigger-tab-render! app-state* tab-id)
+                    (let [pending (effects/collect-pending!)]
+                      (when-let [scripts (seq (:scripts pending))]
+                        (when-let [renderer (get-in @app-state* [:tabs tab-id :renderer])]
+                          ((:enqueue-scripts! renderer) scripts)))
+                      (effects/apply-cookies-to-response {:status 204} pending))))))
             (catch Throwable e
               (t/error! {:id   :hyper.error/upload-handler
                          :msg  "Error executing upload handler"
@@ -775,9 +783,7 @@
                         e)
               {:status  500
                :headers {"Content-Type" "application/json"}
-               :body    (json/generate-string {:error (.getMessage e)})})
-            (finally
-              (pop-thread-bindings))))))))
+               :body    (json/generate-string {:error (.getMessage e)})})))))))
 
 (defn- extract-route-info
   "Extract route info from a reitit match and Ring request.
