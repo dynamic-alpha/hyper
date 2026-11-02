@@ -346,6 +346,14 @@
 ;; Worker subviews (h/spawn!)
 ;; ---------------------------------------------------------------------------
 
+(defn- remove-worker-subview!
+  "Drop a finished worker's subview entry, if its tab and entry still exist."
+  [app-state* tab-id sid]
+  (swap! app-state* (fn [state]
+                      (if (get-in state [:tabs tab-id :subviews sid])
+                        (update-in state [:tabs tab-id :subviews] dissoc sid)
+                        state))))
+
 (defn spawn-worker!
   "Register (idempotently) a mount-scoped background-worker subview keyed by
    `sid`.  On first registration spawns a virtual thread that runs
@@ -367,25 +375,41 @@
 
    Idempotent: a form-1 render body re-invokes `h/spawn!` on every render, so
    only the first occurrence (when `sid` is absent) actually spawns; later
-   renders are a no-op."
-  [app-state* tab-id sid session-id worker-fn]
-  (when-let [acc context/*registered-subview-ids*]
-    (swap! acc conj sid))
-  (when-not (get-subview app-state* tab-id sid)
-    (let [req    (context/context-request app-state* tab-id session-id)
-          thread (Thread/startVirtualThread
-                   (fn []
-                     (binding [context/*request* req]
-                       (try
-                         (worker-fn)
-                         (catch InterruptedException _ nil)
-                         (catch Throwable e
-                           (t/error! {:id :hyper.error/spawn-worker} e))))))]
-      (register-subview! app-state* tab-id sid
-                         {:scope    :mount
-                          :resource thread
-                          :unmount  (fn [^Thread t] (when t (.interrupt t)))})
-      sid)))
+   renders are a no-op.
+
+   `opts`:
+   - :remove-on-exit? — remove the subview entry when `worker-fn` returns or
+     throws, so the `sid` is not kept for the rest of the mount."
+  ([app-state* tab-id sid session-id worker-fn]
+   (spawn-worker! app-state* tab-id sid session-id worker-fn nil))
+  ([app-state* tab-id sid session-id worker-fn {:keys [remove-on-exit?]}]
+   (when-let [acc context/*registered-subview-ids*]
+     (swap! acc conj sid))
+   (when-not (get-subview app-state* tab-id sid)
+     (let [req        (context/context-request app-state* tab-id session-id)
+           ;; The worker waits until its subview is registered, so removal on
+           ;; exit can never run before the registration it removes.
+           registered (promise)
+           thread     (Thread/startVirtualThread
+                        (fn []
+                          (binding [context/*request* req]
+                            (try
+                              @registered
+                              (worker-fn)
+                              (catch InterruptedException _ nil)
+                              (catch Throwable e
+                                (t/error! {:id :hyper.error/spawn-worker} e))
+                              (finally
+                                (when remove-on-exit?
+                                  (remove-worker-subview! app-state* tab-id sid)))))))]
+       (try
+         (register-subview! app-state* tab-id sid
+                            {:scope    :mount
+                             :resource thread
+                             :unmount  (fn [^Thread t] (when t (.interrupt t)))})
+         (finally
+           (deliver registered true)))
+       sid))))
 
 ;; ---------------------------------------------------------------------------
 ;; Async render-time data loading (h/async)

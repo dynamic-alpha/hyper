@@ -23,6 +23,23 @@
              context/*action-idx* (atom 0)]
      ~@body))
 
+(defmacro ^:private acting
+  "Evaluate body as if inside an action handler for `tab-id`: only `*request*`
+   is bound, as the `action` macro does (no *action-idx*)."
+  [app-state* session-id tab-id & body]
+  `(binding [context/*request* (ctx ~app-state* ~session-id ~tab-id)]
+     ~@body))
+
+(defn- wait-until
+  "Poll `pred` until truthy or ~1s elapses.  Returns the truthy value or false."
+  [pred]
+  (let [deadline (+ (System/currentTimeMillis) 1000)]
+    (loop []
+      (or (pred)
+          (if (> (System/currentTimeMillis) deadline)
+            false
+            (do (Thread/sleep 5) (recur)))))))
+
 (deftest test-worker-runs-off-render-guard
   (testing "a worker writes state even when spawned under an ACTIVE :error
             guard — the virtual thread does not inherit the render guard"
@@ -162,3 +179,75 @@
       (is (true? (deref interrupted 1000 :timeout))
           "worker interrupted on disconnect")
       (is (not (contains? (:tabs @app-state*) tab-id)) "tab removed"))))
+
+(deftest test-spawn-from-action-runs-every-call
+  (testing "each spawn! from an action starts its own worker (regression: all
+            action-time spawns shared one id, so only the first ever ran)"
+    (let [app-state* (atom (state/init-state))
+          session-id "s-spawn-act"
+          tab-id     "t_spawn_act"
+          ran        (atom [])
+          done       (java.util.concurrent.CountDownLatch. 2)]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (doseq [label [:first-click :second-click]]
+        (acting app-state* session-id tab-id
+                (h/spawn! (fn [] (swap! ran conj label) (.countDown done)))))
+      (is (.await done 1000 java.util.concurrent.TimeUnit/MILLISECONDS)
+          "both workers ran")
+      (is (= #{:first-click :second-click} (set @ran))))))
+
+(deftest test-spawn-from-action-deregisters-when-done
+  (testing "an action-spawned worker removes its subview when it finishes, so
+            repeated clicks do not accumulate entries"
+    (let [app-state* (atom (state/init-state))
+          session-id "s-spawn-act-done"
+          tab-id     "t_spawn_act_done"]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (dotimes [_ 3]
+        (acting app-state* session-id tab-id
+                (h/spawn! (fn [] :done))))
+      (is (wait-until #(empty? (get-in @app-state* [:tabs tab-id :subviews])))
+          "finished workers leave no subviews behind"))))
+
+(deftest test-spawn-from-action-interrupted-on-unmount
+  (testing "a still-running action-spawned worker is interrupted on remount"
+    (let [app-state*  (atom (state/init-state))
+          session-id  "s-spawn-act-int"
+          tab-id      "t_spawn_act_int"
+          started     (promise)
+          interrupted (promise)]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (acting app-state* session-id tab-id
+              (h/spawn! (fn []
+                          (deliver started true)
+                          (try (Thread/sleep 60000)
+                               (catch InterruptedException _
+                                 (deliver interrupted true))))))
+      (is (true? (deref started 1000 :timeout)) "worker started")
+      (is (= 1 (count (get-in @app-state* [:tabs tab-id :subviews])))
+          "running worker is registered")
+      (subview/teardown-mount-scoped! app-state* tab-id)
+      (is (true? (deref interrupted 1000 :timeout))
+          "worker interrupted on mount-scoped teardown"))))
+
+(deftest test-spawn-from-action-after-disconnect-does-not-resurrect-tab
+  (testing "a worker finishing after its tab was cleaned up does not recreate
+            the tab entry while deregistering"
+    (let [app-state* (atom (state/init-state))
+          session-id "s-spawn-act-dc"
+          tab-id     "t_spawn_act_dc"
+          release    (promise)
+          finished   (promise)]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (acting app-state* session-id tab-id
+              (h/spawn! (fn []
+                          ;; swallow the disconnect interrupt and keep going
+                          (try (deref release 1000 nil)
+                               (catch InterruptedException _ nil))
+                          (deliver finished true))))
+      (server/cleanup-tab! app-state* tab-id)
+      (deliver release true)
+      (is (true? (deref finished 1000 :timeout)))
+      (Thread/sleep 20)
+      (is (not (contains? (:tabs @app-state*) tab-id))
+          "tab stays removed"))))

@@ -169,6 +169,10 @@
 
    Mount-scoped and keyed by call order (like `reactive`), so a form-1 body
    that calls `spawn!` on every render still spawns exactly one worker.
+   Called outside a render (e.g. from an action), every call starts a new
+   worker, which is still interrupted on unmount and is removed when it
+   finishes.  The worker sees the tab's context, not the action's request,
+   so read client params such as `$value` in the action and close over them.
    Prefer calling it from a **form-2 setup closure** (runs once per mount),
    where its intent — \"start this worker when the view mounts\" — is clearest:
 
@@ -188,10 +192,17 @@
    placeholder, prefer `async`."
   [worker-fn]
   (context/guard-effect! :spawn "h/spawn!")
-  (let [{:keys [session-id tab-id app-state*]} (context/require-context! "spawn!")
-        idx                                    (if *action-idx* (swap! *action-idx* inc) 0)
-        sid                                    (str "s_" tab-id "_" idx)]
-    (subview/spawn-worker! app-state* tab-id sid session-id worker-fn)
+  (let [{:keys [session-id tab-id app-state*]} (context/require-context! "spawn!")]
+    (if *action-idx*
+      ;; Render: keyed by call order, so re-renders reuse the one worker.
+      (subview/spawn-worker! app-state* tab-id
+                             (str "s_" tab-id "_" (swap! *action-idx* inc))
+                             session-id worker-fn)
+      ;; Outside a render (e.g. an action): every call is a new worker, and it
+      ;; deregisters itself when done.
+      (subview/spawn-worker! app-state* tab-id
+                             (str "s_" tab-id "_" (random-uuid))
+                             session-id worker-fn {:remove-on-exit? true}))
     nil))
 
 (defn env
