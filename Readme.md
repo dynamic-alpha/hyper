@@ -195,7 +195,8 @@ inside them:
 Actions are scoped to the tab that rendered them and are cleaned up automatically
 when the tab disconnects. The body can contain arbitrary Clojure — call
 functions, hit databases, update multiple cursors — whatever happens, the
-resulting state changes trigger re-renders for the appropriate tabs.
+resulting state changes trigger re-renders for the appropriate tabs. A tab runs
+its actions one at a time, in order (see [How actions run](#how-actions-run)).
 
 ### Action identity
 
@@ -251,7 +252,7 @@ Example usage:
  [:button "Save"]]
 ```
 
-When `$` symbols appear in the action body, the macro automatically generates a `fetch()` call instead of `@post()`, sending the extracted values as a JSON body. On the server, the action function receives these values bound to the corresponding `$` symbols.
+When `$` symbols appear in the action body, the macro adds the extracted values to the `@post()` URL as query parameters (signals still ride the request body). On the server, the action function receives these values bound to the corresponding `$` symbols.
 
 Additional symbols can be defined by extending the `h/client-param` multimethod.
 
@@ -289,6 +290,111 @@ no network traffic otherwise.
 `$value`, …), so the guard reads naturally. The embedded action registers at
 render time and contributes its `@post(…)` — see
 [Actions inside expressions](#actions-inside-expressions).
+
+### How actions run
+
+Each tab runs its actions **one at a time, in the order the requests arrive**.
+Two actions on the same page never interleave, so their effects can't land out
+of order, and an action never sees signals from a request sent after its own.
+Actions are usually short, so the page stays responsive; actions from
+different tabs run independently.
+
+- **Navigation doesn't wait.** `h/navigate` links and the browser's back/forward
+  run immediately, like a page load in a browser, and the most recently sent
+  navigation wins.
+- **Newer values win.** Every request carries a sequence number from the page.
+  If a request arrives after one the page sent later, its signals are ignored
+  (its action still runs), so an input never reverts to an older value.
+- **Keep actions short.** An action that holds its tab for more than 100ms logs
+  a `:hyper.warn/slow-action` warning, since the tab's other actions wait
+  behind it. Move slow work into [`h/spawn!`](#background-workers--hspawn) and
+  write the result to a cursor:
+
+```clojure
+[:input {:data-on:input
+         (h/action
+           (let [q $value]                    ;; read client params in the action
+             (reset! status* :searching)
+             (h/spawn! #(do (reset! results* (db/search q))
+                            (reset! status* :done)))))}]
+```
+
+### Repeated requests — `:concurrency`
+
+`:concurrency` decides what happens to a request for an action while another
+request for the **same action** is waiting or running on the tab:
+
+| Value | Behavior | Use for |
+|---|---|---|
+| `:queue` (default) | Every request runs, in order | Increment, add item |
+| `:drop` | The new request is ignored | Submit / save (double clicks) |
+| `:latest` | The new request replaces the waiting one, at the back of the queue | Search as you type |
+
+```clojure
+[:button {:data-on:click (h/action {:concurrency :drop} (save! @draft*))} "Save"]
+```
+
+A running request is never cancelled — `:latest` only replaces one that is
+still waiting. A dropped request still applies its signals, in order, so
+nothing the user typed is lost. "The same action" means the same action id
+(see below), so the delete buttons of different list rows are independent.
+
+### Action ids and outdated pages
+
+An action's id is derived from **where it is defined** and **the values its
+body closes over**. Cursors and signals count by what they point to, not by the
+object, so re-rendering the same page produces the same ids — identical HTML,
+which compresses well — and an id always means the same action. Closed-over
+values without a stable identity (fns, atoms) are told apart by their order
+among actions defined at the same place. `:key` replaces all of this with an
+explicit identity (handy in lists):
+
+```clojure
+(for [row rows]
+  [:button {:data-on:click (h/action {:key (:id row)} (delete! (:id row)))} "Delete"])
+```
+
+A click can arrive after the page it came from was re-rendered — the user
+clicked just as new data landed. When the latest render no longer shows an
+action (it disappeared, or a value it closes over changed), the action becomes
+**stale**, but Hyper keeps it for a while, so the click still runs the handler
+it was rendered with — the way a React event handler runs with the props of the
+render the user clicked. Clicks are never dropped and never reach a different
+action. Configure how long stale actions are kept with `:keep-stale-actions-ms`
+(default **60000**; `0` removes them at once):
+
+```clojure
+(def handler
+  (h/create-handler
+    #'routes
+    :keep-stale-actions-ms (* 2 60 1000)))   ;; keep stale actions for 2 minutes
+```
+
+After that a click on the action gets a `409`. Closing over only what an
+action needs keeps its id stable: an action that captures a whole record goes
+stale whenever any field of it changes.
+
+### Clicks on stale actions — `:on-stale`
+
+Running the handler the user saw is right for most actions. For some — a
+decision based on data that has since changed — it isn't. `:on-stale` decides
+what a click on a stale action does:
+
+| Value | Behavior |
+|---|---|
+| `:run` (default) | Run the handler the click was rendered with |
+| `:reject` | Don't run it; the request gets a `409` |
+| a zero-arg fn | Run it instead (with the same context as an action body), then `409` |
+
+```clojure
+;; `values` is closed over, so the action goes stale when they change
+(h/action {:on-stale #(reset! (h/tab-cursor :notice) "This changed — please review it again")}
+  (decide! values))
+```
+
+The check happens when the request's turn comes, so an action that goes stale
+while its request waits behind another is refused too. No re-render is needed:
+a stale action means the newer page has already been sent.
 
 ## Signals
 
@@ -1520,6 +1626,18 @@ catch `InterruptedException` to clean up on the way out.
 calls it on every render spawns exactly one worker. A
 [form-2](#form-2--setup-closure) setup closure is its natural home — "start this
 worker when the view mounts" — keeping the render body a pure function of state.
+
+Called from an **action**, every `spawn!` starts a new worker: the way to move
+slow work off the tab's action queue (see [How actions run](#how-actions-run)).
+It is still interrupted on unmount, and removed once it finishes. The worker
+sees the tab's context, not the action's request, so read client params and
+signals in the action and close over them:
+
+```clojure
+(h/action
+  (let [file $value]
+    (h/spawn! #(reset! (h/tab-cursor :report) (build-report! file)))))
+```
 
 > Reach for `spawn!` only when you genuinely need a long-lived loop or blocking
 > consumer tied to the view. For one-shot data loading with a placeholder,
