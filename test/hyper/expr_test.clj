@@ -232,8 +232,8 @@
   (testing "a bare action splices its raw @post(...) into the expression"
     (let [app-state* (new-tab)]
       (rendering app-state*
-                 (is (= "@post('/hyper/actions?action-id=a_t_1')"
-                        (h/expr (h/action (reset! (h/tab-cursor :q) 1))))))))
+                 (is (re-matches #"@post\('/hyper/actions\?action-id=a_t_[0-9a-f]{8}'\)"
+                                 (h/expr (h/action (reset! (h/tab-cursor :q) 1))))))))
 
   (testing "an action guarded by a client-side condition compiles to a ternary"
     (let [app-state* (new-tab)]
@@ -241,15 +241,16 @@
                  (let [out (h/expr (when (= evt.key "Enter")
                                      (h/action (reset! (h/tab-cursor :q) 2))))]
                    (is (str/includes? out "evt.key === \"Enter\""))
-                   (is (str/includes? out "@post('/hyper/actions?action-id=a_t_1')"))
+                   (is (re-find #"@post\('/hyper/actions\?action-id=a_t_[0-9a-f]{8}'\)" out))
                    (is (str/includes? out "?"))
                    (is (not (str/includes? out "action(")))))))
 
   (testing "the embedded action is registered in tab state at render time"
     (let [app-state* (new-tab)]
-      (rendering app-state*
-                 (h/expr (h/action (reset! (h/tab-cursor :q) 3))))
-      (is (contains? (:actions @app-state*) "a_t_1")))))
+      (let [out (rendering app-state*
+                           (h/expr (h/action (reset! (h/tab-cursor :q) 3))))
+            id  (second (re-find #"action-id=([^']+)" out))]
+        (is (contains? (:actions @app-state*) id))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Client-param vocabulary in expr ($value, $key, …)

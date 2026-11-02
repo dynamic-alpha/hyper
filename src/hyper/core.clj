@@ -711,9 +711,14 @@
    Returns a Datastar expression string that can be bound to any event.
 
    The action is registered with the current session/tab context
-   and can access state via cursors. Action IDs are deterministic
-   (derived from a per-render counter + tab-id) so that re-renders
-   produce identical HTML, enabling effective brotli streaming compression.
+   and can access state via cursors.  Its id is derived from where the
+   action is defined and the values its body closes over (cursors and
+   signals count by what they point to), so re-renders produce identical
+   HTML, enabling effective brotli streaming compression, and a click from
+   an outdated page can only reach the action it was rendered for (or get a
+   409).  Closed-over values without a stable identity, such as fns and
+   atoms, are told apart by their order among actions defined at the same
+   place.
 
    Supports client-side special forms that transmit DOM values to the server:
    - $value     — the value of the input/select/textarea that fired the event
@@ -775,9 +780,9 @@
      Applications may define additional client parameters by extending
      the hyper.client-params/client-param multi-method."
   [& args]
-  (let [[maybe-opts & body] args
-        opts-map?           (and (map? maybe-opts)
-                                 (some #{:when :as :upload :key :concurrency} (keys maybe-opts)))
+  (let [[maybe-opts & body]   args
+        opts-map?             (and (map? maybe-opts)
+                                   (some #{:when :as :upload :key :concurrency} (keys maybe-opts)))
         [js as-name upload-ref-form key-form concurrency-form body]
         (if opts-map?
           (let [guard (:when maybe-opts)
@@ -789,25 +794,37 @@
                         (some? guard)   guard)]
             [js (:as maybe-opts) (:upload maybe-opts) (:key maybe-opts) (:concurrency maybe-opts) body])
           [nil nil nil nil nil args])
-        _                   (when (and opts-map? (contains? maybe-opts :when))
-                              (actions/warn-deprecated-when!))
-        used-params         (find-client-params body)
-        param-syms          (keys used-params)
+        _                     (when (and opts-map? (contains? maybe-opts :when))
+                                (actions/warn-deprecated-when!))
+        used-params           (find-client-params body)
+        param-syms            (keys used-params)
         ;; Multipart params ($form/$files) switch the action to a file-upload
         ;; transport (see hyper.uploads).  Validate the combination at macro
         ;; time so misuse fails loudly with a clear message.
-        multipart-syms      (filter client-params/multipart-param? param-syms)
-        other-syms          (remove (set multipart-syms) param-syms)
-        _                   (when (> (count multipart-syms) 1)
-                              (throw (ex-info "An upload action may use at most one multipart param ($form or $files)."
-                                              {:params (vec multipart-syms)})))
-        _                   (when (and (seq multipart-syms) (seq other-syms))
-                              (throw (ex-info "Multipart upload params ($form/$files) cannot be combined with other client params."
-                                              {:multipart (vec multipart-syms) :others (vec other-syms)})))
-        _                   (when (and upload-ref-form (empty? multipart-syms))
-                              (throw (ex-info "action :upload requires a $form or $files param in the body."
-                                              {:upload upload-ref-form})))
-        cp-sym              (gensym "client-params")]
+        multipart-syms        (filter client-params/multipart-param? param-syms)
+        other-syms            (remove (set multipart-syms) param-syms)
+        _                     (when (> (count multipart-syms) 1)
+                                (throw (ex-info "An upload action may use at most one multipart param ($form or $files)."
+                                                {:params (vec multipart-syms)})))
+        _                     (when (and (seq multipart-syms) (seq other-syms))
+                                (throw (ex-info "Multipart upload params ($form/$files) cannot be combined with other client params."
+                                                {:multipart (vec multipart-syms) :others (vec other-syms)})))
+        _                     (when (and upload-ref-form (empty? multipart-syms))
+                                (throw (ex-info "action :upload requires a $form or $files param in the body."
+                                                {:upload upload-ref-form})))
+        cp-sym                (gensym "client-params")
+        ;; Where the action is defined, and the locals its body closes over,
+        ;; identify it for its derived id.
+        {:keys [line column]} (meta &form)
+        site                  (hash (if line
+                                      [(str *ns*) line column]
+                                      [(str *ns*) body]))
+        captured-syms         (->> (tree-seq coll? seq (list body upload-ref-form))
+                                   (filter symbol?)
+                                   (filter #(contains? &env %))
+                                   (remove (set param-syms))
+                                   distinct
+                                   (sort-by str))]
     `(let [{session-id# :session-id
             tab-id#     :tab-id
             app-state*# :app-state*
@@ -824,11 +841,10 @@
                                                                      :hyper/router     router#
                                                                      :hyper/env        (get-in @app-state*# [:tabs tab-id# :env])}]
                                           ~@body)))
-           idx#                     (if context/*action-idx* (swap! context/*action-idx* inc) (hash action-fn#))
            key#                     ~key-form
            action-id#               (if (some? key#)
                                       (subview/scoped-id "a_" tab-id# (subview/key->token key#))
-                                      (str "a_" tab-id# "_" idx#))
+                                      (actions/derived-action-id tab-id# ~site [~@captured-syms]))
            _#                       (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#
                                                               ~(when (or as-name concurrency-form)
                                                                  (cond-> {}
@@ -940,9 +956,10 @@
                         ;; Setting the route triggers the route watcher,
                         ;; which handles re-rendering via SSE
                                (state/set-tab-route! app-state* tab-id route)))
-             nav-idx       (if *action-idx* (swap! *action-idx* inc) (hash nav-fn))
              action-id     (actions/register-action! app-state* session-id tab-id nav-fn
-                                                     (str "a_" tab-id "_" nav-idx)
+                                                     (actions/derived-action-id
+                                                       tab-id (hash ::navigate)
+                                                       [route-name params query-params])
                                                      {:navigation? true})
              escaped-title (or (utils/escape-js-string title) "")
              escaped-href  (utils/escape-js-string href)]

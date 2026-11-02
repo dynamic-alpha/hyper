@@ -281,9 +281,10 @@
 
 (deftest test-action-macro-passes-concurrency
   (testing "(h/action {:concurrency ...} ...) records it on the action"
-    (let [app-state* (new-app "t")]
-      (binding [context/*request*    {:hyper/session-id "s"        :hyper/tab-id "t"
-                                      :hyper/app-state  app-state* :hyper/router nil}
-                context/*action-idx* (atom 0)]
-        (h/action {:concurrency :drop} nil))
-      (is (= :drop (get-in @app-state* [:actions "a_t_1" :concurrency]))))))
+    (let [app-state* (new-app "t")
+          expr       (binding [context/*request*    {:hyper/session-id "s"        :hyper/tab-id "t"
+                                                     :hyper/app-state  app-state* :hyper/router nil}
+                               context/*action-idx* (atom 0)]
+                       (h/action {:concurrency :drop} nil))
+          id         (second (re-find #"action-id=([^']+)" (str expr)))]
+      (is (= :drop (get-in @app-state* [:actions id :concurrency]))))))

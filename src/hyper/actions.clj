@@ -6,7 +6,11 @@
             [clojure.string :as str]
             [compact-uuids.core :as uuid]
             [hyper.context :as context]
-            [taoensso.telemere :as t]))
+            [hyper.signal]
+            [hyper.state]
+            [taoensso.telemere :as t])
+  (:import [hyper.signal LocalSignal Optimistic Signal]
+           [hyper.state Cursor]))
 
 ;; ---------------------------------------------------------------------------
 ;; Action expression building (client side of the boundary)
@@ -55,6 +59,73 @@
         (str js-injection
              "@post('" base-path "/hyper/actions?action-id=" action-id
              "&' + hyper.encodeClientParams({" obj-entries "}))")))))
+
+;; ---------------------------------------------------------------------------
+;; Derived action ids
+;; ---------------------------------------------------------------------------
+;; An unkeyed action's id is a hash of where it is defined plus the values its
+;; body closes over, so it follows what the action is rather than where it
+;; sits on the page.
+
+(defn- plain-value?
+  "True for values whose hash reflects their contents and is cheap to compute."
+  [v]
+  (or (nil? v) (boolean? v) (number? v) (string? v) (keyword? v) (symbol? v)
+      (char? v) (uuid? v) (inst? v)
+      (and (coll? v)
+           (not (instance? clojure.lang.LazySeq v)))))
+
+(defn- id-part
+  "What captured value `v` contributes to an action id, or ::by-occurrence
+   when it has no stable value-based identity (fns, atoms, lazy seqs, other
+   objects)."
+  [v]
+  (cond
+    (instance? Cursor v)      [::cursor
+                               (System/identityHashCode (.-parent-atom ^Cursor v))
+                               (.-full-path ^Cursor v)]
+    (instance? Signal v)      [::signal (.-tab-id ^Signal v) (.-sig-name ^Signal v)]
+    (instance? LocalSignal v) [::local-signal (.-sig-name ^LocalSignal v)]
+    (instance? Optimistic v)  [::optimistic (id-part (.-signal ^Optimistic v))]
+    (plain-value? v)          v
+    :else                     ::by-occurrence))
+
+(defn- next-occurrence!
+  "The number of earlier calls with `k` in this render, counting this one."
+  [k]
+  (if-let [claims context/*action-id-claims*]
+    (get-in (swap! claims update-in [:occurrences k] (fnil inc -1)) [:occurrences k])
+    0))
+
+(defn- claim-id!
+  "Claim `id` for the action identified by `identity-key` in this render.
+   An id already claimed by a different action gets a numeric suffix, so
+   colliding ids are told apart in render order."
+  [id identity-key]
+  (if-let [claims context/*action-id-claims*]
+    (loop [n 1]
+      (let [candidate (if (= 1 n) id (str id "_" n))
+            claimed   (get-in @claims [:claimed candidate] ::none)]
+        (cond
+          (= claimed identity-key) candidate
+          (and (= ::none claimed)
+               (= identity-key
+                  (get-in (swap! claims update-in [:claimed candidate] #(or % identity-key))
+                          [:claimed candidate])))
+          candidate
+          :else (recur (inc n)))))
+    id))
+
+(defn derived-action-id
+  "The id for an unkeyed action on `tab-id` defined at `site` (a hash of its
+   source location) that closes over `captured` values."
+  [tab-id site captured]
+  (let [parts        (mapv id-part captured)
+        occurrence   (when (some #{::by-occurrence} parts)
+                       (next-occurrence! [site context/*region-path*]))
+        identity-key [site parts occurrence]]
+    (claim-id! (str "a_" tab-id "_" (format "%08x" (bit-and (hash identity-key) 0xffffffff)))
+               identity-key)))
 
 (def concurrency-values
   "Accepted values for an action's :concurrency option."
