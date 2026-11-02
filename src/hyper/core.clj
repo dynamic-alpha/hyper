@@ -860,7 +860,9 @@
            key#                     ~key-form
            action-id#               (if (some? key#)
                                       (subview/scoped-id "a_" tab-id# (subview/key->token key#))
-                                      (actions/derived-action-id tab-id# ~site [~@captured-syms]))
+                                      (actions/derived-action-id tab-id# ~site [~@captured-syms]
+                                                                 ~(str *ns* (when line (str ":" line ":" column)))
+                                                                 ~(mapv str captured-syms)))
            _#                       (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#
                                                               (cond-> ~(when (or as-name concurrency-form)
                                                                          (cond-> {}

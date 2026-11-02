@@ -4,7 +4,8 @@
             [hyper.core :as h]
             [hyper.state :as state]
             [hyper.subview :as subview]
-            [reitit.ring :as ring]))
+            [reitit.ring :as ring]
+            [taoensso.telemere :as t]))
 
 (defn- new-app []
   (let [app-state* (atom (state/init-state))]
@@ -160,3 +161,67 @@
           [v1 v2]    (render! true)]
       (is (not= u1 u2))
       (is (= [u1 u2] [v1 v2])))))
+
+(deftest test-map-of-cursors-keeps-the-id
+  (testing "an action closing over a map of cursors (fresh objects each render)
+            keeps its id"
+    (let [app-state* (new-app)
+          render!    (fn []
+                       (rendering app-state*
+                                  (let [state {:open* (h/tab-cursor :open nil)
+                                               :sel*  (h/tab-cursor :sel nil)}]
+                                    (id-of (h/action (reset! (:open* state) nil))))))]
+      (is (= (render!) (render!))))))
+
+(deftest test-nested-fns-are-told-apart-by-occurrence
+  (testing "fns nested in captured data are numbered by occurrence: distinct
+            and stable"
+    (let [app-state* (new-app)
+          render!    (fn []
+                       (rendering app-state*
+                                  (vec (for [f [inc dec]]
+                                         (let [opts {:f f}]
+                                           (id-of (h/action ((:f opts) 1))))))))
+          r1         (render!)]
+      (is (= 2 (count (set r1))))
+      (is (= r1 (render!))))))
+
+(deftest test-value-objects-count-by-value
+  (testing "a captured Java value object counts by its value"
+    (let [app-state* (new-app)
+          render!    (fn [t] (rendering app-state* (id-of (h/action (prn t)))))
+          t1         (java.time.Instant/ofEpochMilli 1)
+          t2         (java.time.Instant/ofEpochMilli 2)]
+      (is (= (render! t1) (render! (java.time.Instant/ofEpochMilli 1))))
+      (is (not= (render! t1) (render! t2))))))
+
+(deftest test-infinite-seq-capture-does-not-hang
+  (testing "closing over an infinite seq does not hang the render"
+    (let [app-state* (new-app)
+          xs         (range)
+          ids        (future (rendering app-state* (id-of (h/action (first xs)))))]
+      (is (string? (deref ids 1000 :timeout))))))
+
+(deftest test-large-capture-is-hashed-and-warned-once
+  (testing "a captured collection too large to walk still changes the id when
+            its data changes, and logs one warning naming the site"
+    (let [app-state* (new-app)
+          warnings   (atom [])
+          render!    (fn [rows]
+                       (rendering app-state* (id-of (h/action (prn (count rows))))))
+          big        (vec (range 1000))]
+      (t/add-handler! ::probe (fn ([sig] (when (= :hyper.warn/large-action-capture (:id sig))
+                                           (swap! warnings conj (:data sig))))
+                                ([])))
+      (try
+        (reset! @#'hyper.actions/warned-sites #{})
+        (let [a (render! big)
+              b (render! big)
+              c (render! (conj big 1))]
+          (is (= a b) "same data, same id")
+          (is (not= a c) "changed data, new id"))
+        (is (= 1 (count @warnings)) "warned once for the site")
+        (is (= ["rows"] (:captured (first @warnings))))
+        (is (re-find #"hyper.action-id-test:\d+" (:site (first @warnings))))
+        (finally
+          (t/remove-handler! ::probe))))))

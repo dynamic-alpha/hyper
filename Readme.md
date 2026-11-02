@@ -372,7 +372,10 @@ action. Configure how long stale actions are kept with `:keep-stale-actions-ms`
 
 After that a click on the action gets a `409`. Closing over only what an
 action needs keeps its id stable: an action that captures a whole record goes
-stale whenever any field of it changes.
+stale whenever any field of it changes. Small collections are looked inside —
+a map of cursors keeps its id — but one too large to walk (over 256 elements)
+counts as a whole, and Hyper logs a `:hyper.warn/large-action-capture`
+warning, once, naming the action and what it closes over.
 
 ### Clicks on stale actions — `:on-stale`
 

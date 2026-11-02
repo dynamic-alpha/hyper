@@ -70,28 +70,59 @@
 ;; body closes over, so it follows what the action is rather than where it
 ;; sits on the page.
 
-(defn- plain-value?
-  "True for values whose hash reflects their contents and is cheap to compute."
-  [v]
+(def ^:private walk-budget
+  "The most collection elements walked for one action's id; a collection
+   beyond it is hashed whole."
+  256)
+
+(defn- scalar? [v]
   (or (nil? v) (boolean? v) (number? v) (string? v) (keyword? v) (symbol? v)
-      (char? v) (uuid? v) (inst? v)
-      (and (coll? v)
-           (not (instance? clojure.lang.LazySeq v)))))
+      (char? v) (uuid? v) (inst? v)))
+
+(defn- walkable?
+  "Collections walked for an action id: persistent maps, vectors, sets and
+   lists, all of which count in constant time."
+  [v]
+  (or (map? v) (vector? v) (set? v) (list? v)))
 
 (defn- id-part
-  "What captured value `v` contributes to an action id, or ::by-occurrence
-   when it has no stable value-based identity (fns, atoms, lazy seqs, other
-   objects)."
-  [v]
+  "What captured value `v` contributes to an action id.  Cursors and signals
+   count by what they point to and small collections are walked, element by
+   element, against the budget in `walk` (a volatile map).  Values without a
+   value-based identity (fns, atoms, seqs, other objects) contribute
+   ::by-occurrence; a collection beyond the budget contributes itself and is
+   recorded under :too-large."
+  [v walk]
   (cond
     (instance? Cursor v)      [::cursor
                                (System/identityHashCode (.-parent-atom ^Cursor v))
                                (.-full-path ^Cursor v)]
     (instance? Signal v)      [::signal (.-tab-id ^Signal v) (.-sig-name ^Signal v)]
     (instance? LocalSignal v) [::local-signal (.-sig-name ^LocalSignal v)]
-    (instance? Optimistic v)  [::optimistic (id-part (.-signal ^Optimistic v))]
-    (plain-value? v)          v
-    :else                     ::by-occurrence))
+    (instance? Optimistic v)  [::optimistic (id-part (.-signal ^Optimistic v) walk)]
+    (scalar? v)               v
+
+    (walkable? v)
+    (if (<= (count v) (:budget @walk))
+      (do (vswap! walk update :budget - (count v))
+          (cond
+            (map? v) (into {} (map (fn [[k x]] [(id-part k walk) (id-part x walk)])) v)
+            (set? v) (into #{} (map #(id-part % walk)) v)
+            :else    (mapv #(id-part % walk) v)))
+      (do (vswap! walk update :too-large (fnil conj #{}) (:current @walk))
+          v))
+
+    ;; Seqs may be lazy or infinite and other iterables large: never hash them
+    (or (seq? v) (instance? Iterable v))
+    (do (vswap! walk assoc :by-occurrence? true) ::by-occurrence)
+
+    ;; A value object (Instant, URI, …) hashes by value; fns, atoms and plain
+    ;; objects hash by identity
+    (not= (hash v) (System/identityHashCode v))
+    v
+
+    :else
+    (do (vswap! walk assoc :by-occurrence? true) ::by-occurrence)))
 
 (defn- next-occurrence!
   "The number of earlier calls with `k` in this render, counting this one."
@@ -164,16 +195,45 @@
           :else (recur (inc n)))))
     id))
 
+(defonce ^:private warned-sites (atom #{}))
+
+(defn- warn-large-capture!
+  "Warn, once per definition site, that an action closes over collections too
+   large to walk for its id."
+  [site-label names]
+  (when-not (contains? @warned-sites site-label)
+    (swap! warned-sites conj site-label)
+    (t/log! {:level :warn
+             :id    :hyper.warn/large-action-capture
+             :data  {:site site-label :captured (vec (sort names))}
+             :msg   (str "Action at " site-label " closes over " (str/join ", " (sort names))
+                         ", too large to walk for its id: the id changes whenever any part of it"
+                         " changes (and every render if it holds cursors, signals or fns), so the"
+                         " action goes stale more often than it needs to. Close over only what"
+                         " the action uses, or give it a :key.")})))
+
 (defn derived-action-id
   "The id for an unkeyed action on `tab-id` defined at `site` (a hash of its
-   source location) that closes over `captured` values."
-  [tab-id site captured]
-  (let [parts        (mapv id-part captured)
-        occurrence   (when (some #{::by-occurrence} parts)
-                       (next-occurrence! [site context/*region-path*]))
-        identity-key [site parts occurrence]]
-    (claim-id! (str "a_" tab-id "_" (format "%08x" (bit-and (hash identity-key) 0xffffffff)))
-               identity-key)))
+   source location) that closes over `captured` values.  `site-label` and
+   `captured-names` (the closed-over locals' names), when given, name the
+   action in warnings."
+  ([tab-id site captured]
+   (derived-action-id tab-id site captured nil nil))
+  ([tab-id site captured site-label captured-names]
+   (let [walk                               (volatile! {:budget walk-budget})
+         parts                              (mapv (fn [v name]
+                                                    (vswap! walk assoc :current name)
+                                                    (id-part v walk))
+                                                  captured
+                                                  (concat captured-names (repeat nil)))
+         {:keys [by-occurrence? too-large]} @walk
+         occurrence                         (when by-occurrence?
+                                              (next-occurrence! [site context/*region-path*]))
+         identity-key                       [site parts occurrence]]
+     (when (and site-label (seq too-large))
+       (warn-large-capture! site-label (remove nil? too-large)))
+     (claim-id! (str "a_" tab-id "_" (format "%08x" (bit-and (hash identity-key) 0xffffffff)))
+                identity-key))))
 
 (def concurrency-values
   "Accepted values for an action's :concurrency option."
