@@ -1160,7 +1160,11 @@
       (is (string/includes? body "data-signals:_hyper-connection__ifmissing"))
       (is (string/includes? body "data-signals:_hyper-connected__ifmissing"))
       (is (string/includes? body "data-on:datastar-fetch"))
-      (is (string/includes? body "evt.detail.el === el")))))
+      (is (string/includes? body "evt.detail.el === el"))
+      (testing "data-init comes after the fetch listener, so it sees the SSE `started` event"
+        (let [body-tag (re-find #"<body[^>]*>" body)]
+          (is (< (string/index-of body-tag "data-on:datastar-fetch")
+                 (string/index-of body-tag "data-init"))))))))
 
 ;; ===========================================================================
 ;; Heartbeat keepalive

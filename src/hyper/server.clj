@@ -965,13 +965,16 @@
                                                                   (when head-html (c/raw head-html))]
                                                                  [:body
                                                                   (merge
-                                                                    {:data-init (sse-connect-expr base-path tab-id open-when-hidden?)}
                                                                     ;; Declare + maintain the client-only connection signals
                                                                     ;; ($_hyperConnected / $_hyperConnection) from Datastar's
                                                                     ;; fetch lifecycle.  Lives on <body> so it persists across
                                                                     ;; SSE re-renders (only #hyper-app and <head> are morphed).
                                                                     (signal/connection-attrs)
-                                                                    (signal/navigation-attrs))
+                                                                    (signal/navigation-attrs)
+                                                                    ;; Last: Datastar applies attributes in order, and the
+                                                                    ;; @get fires its `started` fetch event immediately, so the
+                                                                    ;; listener above must already be attached to see it.
+                                                                    {:data-init (sse-connect-expr base-path tab-id open-when-hidden?)})
                                                                   [:div div-attrs (c/raw body-html)]
                                                                   (hyper-scripts tab-id base-path)]]])]
     {:status  status
