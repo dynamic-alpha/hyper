@@ -33,6 +33,24 @@
     (Thread/sleep (long ms))
     (swap! log conj [label :end])))
 
+(defn- blocker!
+  "Register an action \"block\" on tab \"t\" that holds the queue until
+   `release` is delivered.  Returns a promise delivered once it is running."
+  [app-state* release]
+  (let [started (promise)]
+    (actions/register-action! app-state* "s" "t"
+                              (fn [_] (deliver started true) (deref release 2000 nil))
+                              "block")
+    started))
+
+(defn- wait-queued!
+  "Wait until `n` requests are waiting in tab \"t\"'s action queue."
+  [app-state* n]
+  (let [deadline (+ (System/currentTimeMillis) 1000)]
+    (while (and (< (count (get-in @app-state* [:tabs "t" :action-queue :queue])) n)
+                (< (System/currentTimeMillis) deadline))
+      (Thread/sleep 2))))
+
 (deftest test-same-tab-actions-run-one-at-a-time
   (testing "two actions on the same tab do not overlap"
     (let [app-state* (new-app "t")
@@ -95,11 +113,29 @@
       (is (= 2 (get-in @app-state* [:tabs "t" :signals :x]))
           "the later request's signals are applied once it runs"))))
 
-(deftest test-unknown-action-still-500s
-  (testing "an unknown action id still returns 500"
+(deftest test-unknown-action-409s
+  (testing "an unknown action id returns 409, so a click from a stale page
+            fails quietly"
     (let [app-state* (new-app "t")
           handler    (server/action-handler app-state*)]
-      (is (= 500 (:status (handler {:query-params {"action-id" "nope"}})))))))
+      (is (= 409 (:status (handler {:query-params {"action-id" "nope"}})))))))
+
+(deftest test-action-removed-while-waiting-409s
+  (testing "an action removed while its request waited in the queue returns
+            409 instead of running or erroring"
+    (let [app-state* (new-app "t")
+          release    (promise)
+          handler    (server/action-handler app-state*)
+          started    (blocker! app-state* release)]
+      (actions/register-action! app-state* "s" "t" (fn [_] nil) "gone")
+      (let [fb (post! handler "block")
+            _  (deref started 1000 :timeout)
+            fg (post! handler "gone")]
+        (wait-queued! app-state* 1)
+        (actions/sweep-stale-tab-actions! app-state* "t" #{"block"})
+        (deliver release true)
+        @fb
+        (is (= 409 (:status (deref fg 1000 :timeout))))))))
 
 (deftest test-cleanup-answers-waiting-requests
   (testing "cleaning up a tab interrupts its running action and fails the
@@ -147,24 +183,6 @@
         (is (true? (deref navigated 0 :pending)))
         (deliver release true)
         (is (= 204 (:status @fa)))))))
-
-(defn- blocker!
-  "Register an action \"block\" on tab \"t\" that holds the queue until
-   `release` is delivered.  Returns a promise delivered once it is running."
-  [app-state* release]
-  (let [started (promise)]
-    (actions/register-action! app-state* "s" "t"
-                              (fn [_] (deliver started true) (deref release 2000 nil))
-                              "block")
-    started))
-
-(defn- wait-queued!
-  "Wait until `n` requests are waiting in tab \"t\"'s action queue."
-  [app-state* n]
-  (let [deadline (+ (System/currentTimeMillis) 1000)]
-    (while (and (< (count (get-in @app-state* [:tabs "t" :action-queue :queue])) n)
-                (< (System/currentTimeMillis) deadline))
-      (Thread/sleep 2))))
 
 (deftest test-drop-ignores-repeats-while-in-flight
   (testing ":drop ignores a request for the same action while one is waiting

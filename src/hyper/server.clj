@@ -617,6 +617,18 @@
                  {}
                  qp))))
 
+(defn- action-gone-response
+  "409 for a request whose action no longer exists — typically a click from
+   a page the server has already re-rendered."
+  [action-id]
+  (t/log! {:level :debug
+           :id    :hyper.event/action-gone
+           :data  {:hyper/action-id action-id}
+           :msg   "Action no longer exists; the page was likely re-rendered"})
+  {:status  409
+   :headers {"Content-Type" "application/json"}
+   :body    "{\"error\": \"Action no longer exists\"}"})
+
 (defn action-handler
   "Handler for action POST requests.
 
@@ -662,55 +674,64 @@
               ;; from echoing them back as patches.
               action-data    (get-in @app-state* [:actions action-id])
               tab-id         (:tab-id action-data)]
-          (try
-            ((if (:navigation? action-data)
+          (if-not action-data
+            (action-gone-response action-id)
+            (try
+              ((if (:navigation? action-data)
                ;; Navigation does not wait behind the tab's other actions,
                ;; as in a browser, where a new page load never waits for
                ;; earlier requests.
-               (fn [job] (job true))
-               #(or (actions/run-in-order!
-                      app-state* tab-id
-                      {:action-id   action-id
-                       :as          (:as action-data)
-                       :concurrency (:concurrency action-data)}
-                      %)
+                 (fn [job] (job true))
+                 #(or (actions/run-in-order!
+                        app-state* tab-id
+                        {:action-id   action-id
+                         :as          (:as action-data)
+                         :concurrency (:concurrency action-data)}
+                        %)
                     ;; Dropped or replaced (see :concurrency)
-                    {:status 204}))
-             (fn [run-action?]
-               (when (and signals tab-id)
-                 (swap! app-state* update-in [:tabs tab-id]
-                        (fn [tab]
-                          (-> tab
-                              (update :signals merge signals)
-                              (update :client-signals merge signals))))
+                      {:status 204}))
+               (fn [run-action?]
+                 (when (and signals tab-id)
+                   (swap! app-state* update-in [:tabs tab-id]
+                          (fn [tab]
+                            (-> tab
+                                (update :signals merge signals)
+                                (update :client-signals merge signals))))
                   ;; Persist auto-commit optimistics before the action body runs,
                   ;; so cursor reads in the action see the committed value.
-                 (signal/auto-commit! app-state* tab-id signals))
-               (when-let [env (:hyper/env req)]
-                 (when tab-id
-                   (swap! app-state* assoc-in [:tabs tab-id :env] env)))
-               (if-not run-action?
-                 {:status 204}
-                 (binding [context/*request*     req-with-state
-                           context/*signals*     signals
-                           context/*action-name* (:as action-data)
-                           effects/*pending*     (effects/init-pending)]
-                   (actions/execute-action! app-state* action-id client-params)
-                   (let [pending (effects/collect-pending!)]
+                   (signal/auto-commit! app-state* tab-id signals))
+                 (when-let [env (:hyper/env req)]
+                   (when tab-id
+                     (swap! app-state* assoc-in [:tabs tab-id :env] env)))
+                 (cond
+                   (not run-action?)
+                   {:status 204}
+
+                 ;; Removed (e.g. by a re-render) while the request waited
+                   (not (get-in @app-state* [:actions action-id]))
+                   (action-gone-response action-id)
+
+                   :else
+                   (binding [context/*request*     req-with-state
+                             context/*signals*     signals
+                             context/*action-name* (:as action-data)
+                             effects/*pending*     (effects/init-pending)]
+                     (actions/execute-action! app-state* action-id client-params)
+                     (let [pending (effects/collect-pending!)]
                     ;; Queue pending scripts for SSE delivery via the renderer thread
-                     (when-let [scripts (seq (:scripts pending))]
-                       (when-let [renderer (get-in @app-state* [:tabs tab-id :renderer])]
-                         ((:enqueue-scripts! renderer) scripts)))
+                       (when-let [scripts (seq (:scripts pending))]
+                         (when-let [renderer (get-in @app-state* [:tabs tab-id :renderer])]
+                           ((:enqueue-scripts! renderer) scripts)))
                     ;; 204 with any cookies from effects
-                     (effects/apply-cookies-to-response {:status 204} pending))))))
-            (catch Exception e
-              (t/error! {:id   :hyper.error/action-handler
-                         :msg  "Error executing action handler"
-                         :data {:hyper/action-id action-id}}
-                        e)
-              {:status  500
-               :headers {"Content-Type" "application/json"}
-               :body    (json/generate-string {:error (.getMessage e)})})))))))
+                       (effects/apply-cookies-to-response {:status 204} pending))))))
+              (catch Exception e
+                (t/error! {:id   :hyper.error/action-handler
+                           :msg  "Error executing action handler"
+                           :data {:hyper/action-id action-id}}
+                          e)
+                {:status  500
+                 :headers {"Content-Type" "application/json"}
+                 :body    (json/generate-string {:error (.getMessage e)})}))))))))
 
 (defn- trigger-tab-render!
   "Enqueue a full render for `tab-id` on its currently attached renderer (if
