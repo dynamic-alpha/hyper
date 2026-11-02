@@ -626,6 +626,18 @@
   "The set of keyword tokens `connection*` may hold."
   signal/connection-states)
 
+(def navigating?*
+  "Static client-only boolean signal — true from the moment a client-side
+   navigation starts (a `navigate` link click, browser back/forward, or an
+   action calling `effects/navigate!`) until the new route's render arrives
+   over SSE.
+
+   Deref in render/`expr` yields its Datastar expression; deref in an action
+   throws.
+
+     [:div.progress-bar {:data-show (h/expr @h/navigating?*)}]"
+  signal/navigating?*)
+
 (defn reconnect
   "Return a Datastar expression that re-opens this tab's SSE connection, for
    binding to an event attribute — e.g. a \"Retry\" button shown when
@@ -864,6 +876,8 @@
    3. Triggers a re-render via SSE
    4. Pushes the new URL via pushState (with title in history state)
 
+   The click also sets `navigating?*` until the new route's render arrives.
+
    The :href ensures right-click → open in new tab works.
    The title from the target route's :title metadata is resolved eagerly and
    included in the pushState call so browser history entries have meaningful titles.
@@ -909,7 +923,8 @@
              escaped-href  (utils/escape-js-string href)]
          {:href href
           :data-on:click__prevent
-          (str "@post('" base-path "/hyper/actions?action-id=" action-id "');"
+          (str "window.hyper.startNavigation('" escaped-href "');"
+               " @post('" base-path "/hyper/actions?action-id=" action-id "');"
                " window.history.pushState({title: '" escaped-title "'}, '', '" escaped-href "');"
                (when title
                  (str " document.title = '" escaped-title "'")))})))))

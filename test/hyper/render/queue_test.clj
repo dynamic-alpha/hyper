@@ -124,6 +124,34 @@
       (let [result (rq/drain! q)]
         (is (= scripts (:scripts result)))))))
 
+(deftest test-scripts-before-render
+  (testing "scripts enqueued before the first render event are split out"
+    (let [q (rq/make-queue)]
+      (rq/enqueue-scripts! q ["before-1" "before-2"])
+      (rq/enqueue-full-render! q)
+      (rq/enqueue-scripts! q ["after"])
+      (rq/enqueue-full-render! q)
+      (rq/enqueue-scripts! q ["after-2"])
+      (let [result (rq/drain! q)]
+        (is (= ["before-1" "before-2"] (:scripts-before-render result)))
+        (is (= ["after" "after-2"] (:scripts result))))))
+
+  (testing "a partial render event also marks the split"
+    (let [q (rq/make-queue)]
+      (rq/enqueue-scripts! q ["before"])
+      (rq/enqueue-partial! q "comp-1")
+      (rq/enqueue-scripts! q ["after"])
+      (let [result (rq/drain! q)]
+        (is (= ["before"] (:scripts-before-render result)))
+        (is (= ["after"] (:scripts result))))))
+
+  (testing "without a render event every script is in :scripts"
+    (let [q (rq/make-queue)]
+      (rq/enqueue-scripts! q ["a" "b"])
+      (let [result (rq/drain! q)]
+        (is (= [] (:scripts-before-render result)))
+        (is (= ["a" "b"] (:scripts result)))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Concurrent writer stress test — no data loss
 ;; ---------------------------------------------------------------------------
@@ -201,7 +229,8 @@
         ;; Everything should be in one batch since all enqueued before drain
         (is (true? (:full-render? result)))
         (is (contains? (:dirty-ids result) "comp-fast"))
-        (is (= ["fast.js"] (:scripts result)))))))
+        ;; Enqueue order is nondeterministic, so the script may precede a render
+        (is (= ["fast.js"] (into (:scripts-before-render result) (:scripts result))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Shutdown event

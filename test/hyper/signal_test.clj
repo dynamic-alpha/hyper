@@ -448,6 +448,21 @@
         (is (clojure.string/includes?
               js "'retries-failed' ? ($_hyperConnection = 'error', $_hyperConnected = false)"))))))
 
+(deftest navigating-deref-test
+  (testing "in render context, navigating?* derefs to its $-expression"
+    (is (= "$_hyperNavigating" @signal/navigating?*)))
+  (testing "in action context, navigating?* throws (client-only)"
+    (binding [context/*signals* {}]
+      (is (thrown? clojure.lang.ExceptionInfo @signal/navigating?*)))))
+
+(deftest navigation-attrs-test
+  (testing "navigation-attrs declares the signal and sets it from the DOM event"
+    (let [attrs (signal/navigation-attrs)]
+      (is (= "false"
+             (get attrs (keyword "data-signals:_hyper-navigating__ifmissing"))))
+      (is (= "$_hyperNavigating = evt.detail === true"
+             (get attrs (keyword (str "data-on:" signal/navigating-event))))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Optimistic — derived naming
 ;; ---------------------------------------------------------------------------

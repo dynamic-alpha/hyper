@@ -57,28 +57,38 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- categorize
-  "Reduce a drained buffer of events into the categorized result map."
+  "Reduce a drained buffer of events into the categorized result map.
+   Scripts enqueued before the batch's first render event (full or partial)
+   are returned as :scripts-before-render; when the batch has no render event
+   all scripts are returned as :scripts."
   [^ArrayList buf]
   (let [n (.size buf)]
     (loop [i        0
            shutdown false
            full?    false
            ids      (transient #{})
-           scripts  (transient [])]
+           before   (transient [])
+           scripts  (transient [])
+           render?  false]
       (if (< i n)
         (let [evt (.get buf i)]
           (case (:type evt)
-            :shutdown    (recur (inc i) true     full? ids                              scripts)
-            :full-render (recur (inc i) shutdown true  ids                              scripts)
-            :partial     (recur (inc i) shutdown full? (conj! ids (:component-id evt))  scripts)
-            :script      (recur (inc i) shutdown full? ids                              (conj! scripts (:js evt)))
+            :shutdown    (recur (inc i) true     full? ids                             before scripts render?)
+            :full-render (recur (inc i) shutdown true  ids                             before scripts true)
+            :partial     (recur (inc i) shutdown full? (conj! ids (:component-id evt)) before scripts true)
+            :script      (if render?
+                           (recur (inc i) shutdown full? ids before (conj! scripts (:js evt)) render?)
+                           (recur (inc i) shutdown full? ids (conj! before (:js evt)) scripts render?))
             ;; Unknown event types are silently skipped
-            (recur (inc i) shutdown full? ids scripts)))
-        {:idle?        false
-         :shutdown?    shutdown
-         :full-render? full?
-         :dirty-ids    (persistent! ids)
-         :scripts      (persistent! scripts)}))))
+            (recur (inc i) shutdown full? ids before scripts render?)))
+        (let [before  (persistent! before)
+              scripts (persistent! scripts)]
+          {:idle?                 false
+           :shutdown?             shutdown
+           :full-render?          full?
+           :dirty-ids             (persistent! ids)
+           :scripts-before-render (if render? before [])
+           :scripts               (if render? scripts (into before scripts))})))))
 
 (defn drain!
   "Block until at least one event is available, then drain all pending events.
@@ -87,7 +97,9 @@
      {:shutdown?    boolean   — true if a :shutdown event was present
       :full-render? boolean   — true if any :full-render event was present
       :dirty-ids   #{...}    — set of component IDs needing partial render
-      :scripts     [...]}    — vector of JS strings in FIFO order
+      :scripts-before-render [...] — JS strings enqueued before the batch's
+                                     first render event, in FIFO order
+      :scripts     [...]}    — the remaining JS strings in FIFO order
 
    When `timeout-ms` is given, blocks at most that long for the first event;
    if none arrives the result is flagged `:idle? true` (used to drive the
@@ -103,11 +115,12 @@
   ([^LinkedBlockingQueue q timeout-ms]
    (let [first-event (.poll q (long timeout-ms) TimeUnit/MILLISECONDS)]
      (if (nil? first-event)
-       {:idle?        true
-        :shutdown?    false
-        :full-render? false
-        :dirty-ids    #{}
-        :scripts      []}
+       {:idle?                 true
+        :shutdown?             false
+        :full-render?          false
+        :dirty-ids             #{}
+        :scripts-before-render []
+        :scripts               []}
        (let [buf (ArrayList.)]
          (.add buf first-event)
          (.drainTo q buf)

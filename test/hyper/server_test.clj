@@ -1068,7 +1068,8 @@
 
       (rendering app-state* session-id tab-id
                  (reset! (h/tab-cursor :n 0) 1))
-      (is (= {:idle? false :full-render? true :shutdown? false :dirty-ids #{} :scripts []}
+      (is (= {:idle?                 false :full-render? true :shutdown? false :dirty-ids #{}
+              :scripts-before-render []    :scripts      []}
              (rq/drain! q1))
           "connection-1 queue received the render")
 
@@ -1079,7 +1080,8 @@
 
         (rendering app-state* session-id tab-id
                    (reset! (h/tab-cursor :n 1) 2))
-        (is (= {:idle? false :full-render? true :shutdown? false :dirty-ids #{} :scripts []}
+        (is (= {:idle?                 false :full-render? true :shutdown? false :dirty-ids #{}
+                :scripts-before-render []    :scripts      []}
                (rq/drain! q2))
             "connection-2 queue received the render via the same watcher"))
       (watch/remove-watchers! app-state* tab-id))))

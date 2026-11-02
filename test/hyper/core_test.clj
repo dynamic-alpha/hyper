@@ -139,7 +139,9 @@
             (is (contains? nav-attrs :data-on:click__prevent))
             (is (.contains (str (:data-on:click__prevent nav-attrs)) "@post"))
             (is (.contains (str (:data-on:click__prevent nav-attrs)) "/hyper/actions"))
-            (is (.contains (str (:data-on:click__prevent nav-attrs)) "pushState")))))
+            (is (.contains (str (:data-on:click__prevent nav-attrs)) "pushState"))
+            (is (.contains (str (:data-on:click__prevent nav-attrs))
+                           "window.hyper.startNavigation('/');")))))
 
       (testing "with path params"
         (binding [context/*request* ctx]
@@ -1165,6 +1167,7 @@
   (testing "core re-exports the connection signals and token set from hyper.signal"
     (is (identical? signal/connected?* hy/connected?*))
     (is (identical? signal/connection* hy/connection*))
+    (is (identical? signal/navigating?* hy/navigating?*))
     (is (= signal/connection-states hy/connection-states))))
 
 (deftest test-reconnect

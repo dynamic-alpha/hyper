@@ -70,7 +70,8 @@
 
    Performs the server-side route transition (updates render-fn and route
    state, which triggers a re-render via SSE) and queues a pushState
-   call to update the browser URL bar.
+   call to update the browser URL bar.  Sets the client's `navigating?*`
+   signal before the new route renders.
 
    route-name: Keyword name of the route
    params: Optional map of path parameters
@@ -101,6 +102,12 @@
              render-fn   (routes/find-render-fn route-index route-name)
              title-spec  (routes/find-route-title route-index route-name)
              title       (routes/resolve-title title-spec req)]
+         ;; Mark the navigation pending on the client.  Enqueued straight to
+         ;; the renderer, ahead of the render the route change triggers, so it
+         ;; arrives before that render rather than after the action returns.
+         (when-let [enqueue-scripts! (get-in @app-state* [:tabs tab-id :renderer :enqueue-scripts!])]
+           (enqueue-scripts! [(str "window.hyper.startNavigation('"
+                                   (utils/escape-js-string href) "')")]))
          ;; Server-side state transition
          (when render-fn
            (render/register-render-fn! app-state* tab-id render-fn))

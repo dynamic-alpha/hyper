@@ -1,10 +1,13 @@
 (ns hyper.effects-test
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [hyper.context :as context]
             [hyper.core :as h]
             [hyper.effects :as effects]
+            [hyper.render.queue :as rq]
             [hyper.state :as state]
-            [hyper.test :as ht]))
+            [hyper.test :as ht]
+            [hyper.watch :as watch]))
 
 ;; ---------------------------------------------------------------------------
 ;; Unit tests — effects namespace internals
@@ -185,6 +188,31 @@
       ;; Should have a pushState script queued
       (is (seq (get-in after [:effects :scripts])))
       (is (some #(str/includes? % "pushState") (get-in after [:effects :scripts]))))))
+
+(deftest test-navigate-marks-navigation-before-render
+  (testing "navigate! enqueues startNavigation ahead of the render its route change triggers"
+    (let [routes     [["/" {:name :home :get (fn [_] [:div "Home"])}]
+                      ["/about" {:name :about :get (fn [_] [:div "About"])}]]
+          app-state* (atom (state/init-state))
+          _handler   (h/create-handler routes :app-state app-state*)
+          session-id "s-nav"
+          tab-id     "tab-nav"
+          q          (rq/make-queue)]
+      (state/get-or-create-tab! app-state* session-id tab-id)
+      (swap! app-state* assoc-in [:tabs tab-id :renderer]
+             {:enqueue-scripts! #(rq/enqueue-scripts! q %)})
+      (watch/setup-watchers! app-state* session-id tab-id #(rq/enqueue-full-render! q))
+      (try
+        (binding [context/*request* {:hyper/app-state  app-state*
+                                     :hyper/session-id session-id
+                                     :hyper/tab-id     tab-id}
+                  effects/*pending* (effects/init-pending)]
+          (effects/navigate! :about))
+        (let [{:keys [full-render? scripts-before-render]} (rq/drain! q)]
+          (is full-render?)
+          (is (= ["window.hyper.startNavigation('/about')"] scripts-before-render)))
+        (finally
+          (watch/remove-watchers! app-state* tab-id))))))
 
 (deftest test-multiple-effects-in-one-action
   (testing "multiple effects accumulate together"

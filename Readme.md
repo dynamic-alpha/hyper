@@ -2415,6 +2415,32 @@ read them in `data-show`/`data-class`/`data-text` and `expr`.
 > `:error` is reached only when Datastar's retries are exhausted; a transient
 > blip surfaces as `:reconnecting`.
 
+### Navigation status signal
+
+**`h/navigating?*`** is a client-only boolean that is `true` while a client-side
+navigation is in flight — from the moment an [`h/navigate`](#navigation) link is
+clicked (or the browser's back/forward fires, or an action calls
+`effects/navigate!`) until the new route's render arrives over SSE. Use it for a progress bar or to dim stale content:
+
+```clojure
+[:div.progress-bar {:data-show (h/expr @h/navigating?*)}]
+
+[:main {:data-class (h/expr {:stale @h/navigating?*})}
+ (page-content req)]
+```
+
+Like the connection signals, it lives in the browser: deref in render/`expr`
+yields `$_hyperNavigating`; deref in an action throws.
+
+- Clicking a link to the route that is already rendered doesn't set it, since
+  there is nothing to wait for.
+- A back/forward request the server rejects (e.g. no route matched and
+  `:not-found` is disabled) clears it.
+- Navigations started from an action with [`effects/navigate!`](#navigate) set
+  it too, once the action reaches `navigate!` — the server sends it over SSE
+  ahead of the new route's render. Work the action does before `navigate!` is
+  not covered.
+
 ### Triggering a reconnect — `h/reconnect`
 
 Datastar auto-retries network errors, but it does **not** auto-retry the

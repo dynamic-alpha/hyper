@@ -589,6 +589,34 @@
      (keyword "data-on:datastar-fetch")
      (connection-tracking-js)}))
 
+(def navigating?*
+  "Static client-only boolean signal: true from the moment a client-side
+   navigation starts (an `h/navigate` link click, browser back/forward, or an
+   action calling `effects/navigate!`) until the new route's render arrives
+   over SSE.  Client-maintained, like `connection*`.
+
+     [:div.progress {:data-show (h/expr @h/navigating?*)}]"
+  (->LocalSignal "_hyperNavigating" "_hyper-navigating" false))
+
+(def navigating-event
+  "Name of the DOM event, dispatched on `<body>` with a boolean `detail`, that
+   sets `navigating?*`.  Fired by the page scripts."
+  "hyper-navigating")
+
+(defn navigation-attrs
+  "Hiccup attribute map for the page `<body>` that declares the client-only
+   `navigating?*` signal (with its default) and sets it from the
+   `navigating-event` DOM event.  Merged into the body attrs by the page
+   scaffolding."
+  []
+  (let [html-name (.-html-name ^LocalSignal navigating?*)
+        js-name   (.-sig-name ^LocalSignal navigating?*)]
+    {(keyword (str "data-signals:" html-name "__ifmissing"))
+     (clj->js-literal (.-default-val ^LocalSignal navigating?*))
+
+     (keyword (str "data-on:" navigating-event))
+     (str "$" js-name " = evt.detail === true")}))
+
 ;; ---------------------------------------------------------------------------
 ;; Signal parsing (from Datastar request bodies)
 ;; ---------------------------------------------------------------------------

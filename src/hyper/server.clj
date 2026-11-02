@@ -278,7 +278,8 @@
           ;; Main render loop — tracks the last-sent signal snapshot so
           ;; we only emit datastar-patch-signals for actual changes.
           (loop [last-sent-signals nil]
-            (let [{:keys [idle? shutdown? full-render? dirty-ids scripts]}
+            (let [{:keys [idle? shutdown? full-render? dirty-ids
+                          scripts-before-render scripts]}
                   (if heartbeat-ms
                     (rq/drain! render-queue heartbeat-ms)
                     (rq/drain! render-queue))]
@@ -293,6 +294,13 @@
                 (let [sent? (send-sse! os br-out br-stream (render/format-heartbeat))]
                   (when-not (false? sent?)
                     (recur last-sent-signals)))
+
+                ;; Scripts enqueued ahead of a render (e.g. effects/navigate!
+                ;; marking a navigation pending) go out before rendering, so
+                ;; the client sees them while a slow render is computed.
+                (false? (send-pending-scripts! scripts-before-render tab-id
+                                               os br-out br-stream))
+                nil
 
                 :else
                 (let [[client-reported
@@ -803,6 +811,9 @@
      does not survive browser history restoration.
    - popstate listener handles browser back/forward by posting to /hyper/navigate
      and restoring document.title from history state.
+   - hyper.startNavigation(url) sets the client-only navigating signal; it is
+     cleared when a render changes data-hyper-url, when url is already the
+     rendered URL, or when a back/forward request fails.
 
    Uses c/raw to prevent Chassis from HTML-escaping the JavaScript content
    (e.g., && would become &amp;&amp; which breaks JS syntax)."
@@ -849,6 +860,17 @@
     xhr.send(fd);
     return undefined;
   };
+  var setNavigating = function(v) {
+    document.body.dispatchEvent(new CustomEvent('" signal/navigating-event "', {detail: v}));
+  };
+  // Marks a navigation to url as pending.  When url is already the rendered
+  // URL (a same-route click, or A -> B -> A before B rendered) it clears the
+  // flag instead: the render that lands will not change data-hyper-url, so
+  // nothing else would clear it.
+  window.hyper.startNavigation = function(url) {
+    var el = document.getElementById('hyper-app');
+    setNavigating(!el || url !== el.getAttribute('data-hyper-url'));
+  };
   var appEl = document.getElementById('hyper-app');
   if (appEl) {
     // Seed the initial history entry with the current title so back-navigation restores it
@@ -862,6 +884,7 @@
           }
         }
         if (mutations[i].attributeName === 'data-hyper-url') {
+          setNavigating(false);
           var url = appEl.getAttribute('data-hyper-url');
           if (url && url !== window.location.pathname + window.location.search) {
             window.history.replaceState({title: document.title}, '', url);
@@ -881,10 +904,13 @@
     if (e.state && e.state.title) {
       document.title = e.state.title;
     }
-    fetch('" base-path "/hyper/navigate?tab-id=" tab-id "&path=' + encodeURIComponent(window.location.pathname + window.location.search), {
+    var path = window.location.pathname + window.location.search;
+    window.hyper.startNavigation(path);
+    fetch('" base-path "/hyper/navigate?tab-id=" tab-id "&path=' + encodeURIComponent(path), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'}
-    });
+    }).then(function(r) { if (!r.ok) { setNavigating(false); } },
+            function() { setNavigating(false); });
   });
 })();
 "))])
@@ -914,6 +940,7 @@
         sig-attrs                                            (signal/format-signal-attrs declared-signals)
         div-attrs                                            (cond-> {:id "hyper-app"}
                                                                tree-shake? (assoc :data-hyper-squint-version core-version)
+                                                               (:url result) (assoc :data-hyper-url (:url result))
                                                                sig-attrs (merge sig-attrs))
         ;; WebKit/Safari fetch-streaming strand workaround: inject the
         ;; EventSource shim only for affected user agents, before the datastar
@@ -943,7 +970,8 @@
                                                                     ;; ($_hyperConnected / $_hyperConnection) from Datastar's
                                                                     ;; fetch lifecycle.  Lives on <body> so it persists across
                                                                     ;; SSE re-renders (only #hyper-app and <head> are morphed).
-                                                                    (signal/connection-attrs))
+                                                                    (signal/connection-attrs)
+                                                                    (signal/navigation-attrs))
                                                                   [:div div-attrs (c/raw body-html)]
                                                                   (hyper-scripts tab-id base-path)]]])]
     {:status  status
