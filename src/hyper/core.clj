@@ -753,6 +753,16 @@
                                 (delete! (:id node)))}
       \"Delete\"]
 
+     ;; :concurrency decides what happens to a request for this action while
+     ;; another is waiting or running on the tab: :queue (default) runs every
+     ;; request in order, :drop ignores the new one (e.g. a double-clicked
+     ;; submit), :latest replaces the waiting one with the new one (e.g. a
+     ;; search box).  A running request is never cancelled.  Requests for
+     ;; different actions (including the same button in different list rows
+     ;; with different :key ids) are independent.
+     [:button {:data-on:click (action {:concurrency :drop} (save! @draft*))}
+      \"Save\"]
+
      ;; Checkbox
      [:input {:type \"checkbox\"
               :data-on:change (action (reset! (tab-cursor :dark?) $checked))}]
@@ -767,8 +777,8 @@
   [& args]
   (let [[maybe-opts & body] args
         opts-map?           (and (map? maybe-opts)
-                                 (some #{:when :as :upload :key} (keys maybe-opts)))
-        [js as-name upload-ref-form key-form body]
+                                 (some #{:when :as :upload :key :concurrency} (keys maybe-opts)))
+        [js as-name upload-ref-form key-form concurrency-form body]
         (if opts-map?
           (let [guard (:when maybe-opts)
                 ;; String literals are validated here; any other form
@@ -777,8 +787,8 @@
                 js    (cond
                         (string? guard) (when-not (str/blank? guard) guard)
                         (some? guard)   guard)]
-            [js (:as maybe-opts) (:upload maybe-opts) (:key maybe-opts) body])
-          [nil nil nil nil args])
+            [js (:as maybe-opts) (:upload maybe-opts) (:key maybe-opts) (:concurrency maybe-opts) body])
+          [nil nil nil nil nil args])
         _                   (when (and opts-map? (contains? maybe-opts :when))
                               (actions/warn-deprecated-when!))
         used-params         (find-client-params body)
@@ -820,7 +830,10 @@
                                       (subview/scoped-id "a_" tab-id# (subview/key->token key#))
                                       (str "a_" tab-id# "_" idx#))
            _#                       (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#
-                                                              ~(when as-name {:as as-name}))
+                                                              ~(when (or as-name concurrency-form)
+                                                                 (cond-> {}
+                                                                   as-name          (assoc :as as-name)
+                                                                   concurrency-form (assoc :concurrency concurrency-form))))
            ;; Stash the upload status ref so the /hyper/upload handler can
            ;; transition its phase/result; nil for non-upload actions.
            _#                       (when upload-ref#

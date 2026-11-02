@@ -1,6 +1,8 @@
 (ns hyper.action-order-test
   (:require [clojure.test :refer [deftest is testing]]
             [hyper.actions :as actions]
+            [hyper.context :as context]
+            [hyper.core :as h]
             [hyper.server :as server]
             [hyper.state :as state]))
 
@@ -14,11 +16,13 @@
 
 (defn- post!
   "Invoke the action handler for `action-id` on a future, optionally with a
-   JSON signals body."
+   JSON signals body and extra query params (client params)."
   ([handler action-id]
    (post! handler action-id nil))
   ([handler action-id body]
-   (future (handler (cond-> {:query-params {"action-id" action-id}}
+   (post! handler action-id body nil))
+  ([handler action-id body params]
+   (future (handler (cond-> {:query-params (merge {"action-id" action-id} params)}
                       body (assoc :body body))))))
 
 (defn- slow-action
@@ -143,3 +147,125 @@
         (is (true? (deref navigated 0 :pending)))
         (deliver release true)
         (is (= 204 (:status @fa)))))))
+
+(defn- blocker!
+  "Register an action \"block\" on tab \"t\" that holds the queue until
+   `release` is delivered.  Returns a promise delivered once it is running."
+  [app-state* release]
+  (let [started (promise)]
+    (actions/register-action! app-state* "s" "t"
+                              (fn [_] (deliver started true) (deref release 2000 nil))
+                              "block")
+    started))
+
+(defn- wait-queued!
+  "Wait until `n` requests are waiting in tab \"t\"'s action queue."
+  [app-state* n]
+  (let [deadline (+ (System/currentTimeMillis) 1000)]
+    (while (and (< (count (get-in @app-state* [:tabs "t" :action-queue :queue])) n)
+                (< (System/currentTimeMillis) deadline))
+      (Thread/sleep 2))))
+
+(deftest test-drop-ignores-repeats-while-in-flight
+  (testing ":drop ignores a request for the same action while one is waiting
+            or running, and accepts it again once that one finishes"
+    (let [app-state* (new-app "t")
+          release    (promise)
+          ran        (atom 0)
+          handler    (server/action-handler app-state*)
+          started    (blocker! app-state* release)]
+      (actions/register-action! app-state* "s" "t" (fn [_] (swap! ran inc))
+                                "save" {:concurrency :drop})
+      (let [fb (post! handler "block")
+            _  (deref started 1000 :timeout)
+            f1 (post! handler "save")
+            _  (wait-queued! app-state* 1)
+            f2 (post! handler "save")]
+        (is (= 204 (:status (deref f2 500 :timeout)))
+            "the repeat is answered at once, without waiting its turn")
+        (deliver release true)
+        @fb @f1)
+      (is (= 1 @ran) "only the first of the two ran")
+      @(post! handler "save")
+      (is (= 2 @ran) "accepted again once nothing is in flight"))))
+
+(deftest test-drop-applies-signals-of-dropped-requests
+  (testing "a dropped request still applies its signals, in order"
+    (let [app-state* (new-app "t")
+          release    (promise)
+          handler    (server/action-handler app-state*)
+          started    (blocker! app-state* release)]
+      (actions/register-action! app-state* "s" "t" (fn [_] nil) "save" {:concurrency :drop})
+      (let [fb (post! handler "block")
+            _  (deref started 1000 :timeout)
+            f1 (post! handler "save" "{\"x\": 1}")
+            _  (wait-queued! app-state* 1)
+            f2 (post! handler "save" "{\"x\": 2}")]
+        (is (nil? (get-in @app-state* [:tabs "t" :signals :x]))
+            "not applied ahead of the requests before it")
+        (deliver release true)
+        @fb @f1 @f2)
+      ;; The dropped request is answered before its signals are applied, so
+      ;; send one more action through the queue to wait for them.
+      @(post! handler "block")
+      (is (= 2 (get-in @app-state* [:tabs "t" :signals :x]))))))
+
+(deftest test-latest-replaces-waiting-request
+  (testing ":latest replaces a waiting request for the same action with the
+            newest one, which moves to the back of the queue"
+    (let [app-state* (new-app "t")
+          release    (promise)
+          log        (atom [])
+          handler    (server/action-handler app-state*)
+          started    (blocker! app-state* release)]
+      (actions/register-action! app-state* "s" "t" (fn [{:keys [q]}] (swap! log conj [:search q]))
+                                "search" {:concurrency :latest})
+      (actions/register-action! app-state* "s" "t" (fn [_] (swap! log conj :other)) "other")
+      (let [fb (post! handler "block")
+            _  (deref started 1000 :timeout)
+            f1 (post! handler "search" nil {"q" "1"})
+            _  (wait-queued! app-state* 1)
+            fo (post! handler "other")
+            _  (wait-queued! app-state* 2)
+            f2 (post! handler "search" nil {"q" "2"})]
+        (is (= 204 (:status (deref f1 500 :timeout)))
+            "the replaced request is answered at once")
+        (deliver release true)
+        @fb @fo @f2)
+      (is (= [:other [:search 2]] @log)
+          "only the newest search ran, after the action queued before it"))))
+
+(deftest test-latest-does-not-cancel-running-request
+  (testing ":latest leaves a running request alone; the new one runs after it"
+    (let [app-state* (new-app "t")
+          release    (promise)
+          started    (promise)
+          log        (atom [])
+          handler    (server/action-handler app-state*)]
+      (actions/register-action! app-state* "s" "t"
+                                (fn [{:keys [q]}]
+                                  (when (= 1 q) (deliver started true) (deref release 2000 nil))
+                                  (swap! log conj q))
+                                "search" {:concurrency :latest})
+      (let [f1 (post! handler "search" nil {"q" "1"})
+            _  (deref started 1000 :timeout)
+            f2 (post! handler "search" nil {"q" "2"})]
+        (deliver release true)
+        @f1 @f2)
+      (is (= [1 2] @log)))))
+
+(deftest test-invalid-concurrency-throws
+  (testing "an unknown :concurrency value is rejected when registering"
+    (let [app-state* (new-app "t")]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #":concurrency"
+                            (actions/register-action! app-state* "s" "t" (fn [_] nil)
+                                                      "x" {:concurrency :sometimes}))))))
+
+(deftest test-action-macro-passes-concurrency
+  (testing "(h/action {:concurrency ...} ...) records it on the action"
+    (let [app-state* (new-app "t")]
+      (binding [context/*request*    {:hyper/session-id "s"        :hyper/tab-id "t"
+                                      :hyper/app-state  app-state* :hyper/router nil}
+                context/*action-idx* (atom 0)]
+        (h/action {:concurrency :drop} nil))
+      (is (= :drop (get-in @app-state* [:actions "a_t_1" :concurrency]))))))

@@ -56,6 +56,10 @@
              "@post('" base-path "/hyper/actions?action-id=" action-id
              "&' + hyper.encodeClientParams({" obj-entries "}))")))))
 
+(def concurrency-values
+  "Accepted values for an action's :concurrency option."
+  #{:queue :drop :latest})
+
 (defn register-action!
   "Register an action function and return its ID.
    Stores in app-state under [:actions action-id].
@@ -66,7 +70,11 @@
    opts may include:
    - :as          — a human-readable name for the action, useful for testing
    - :navigation? — the action changes the tab's route, so it runs
-                    immediately rather than on the tab's action queue"
+                    immediately rather than on the tab's action queue
+   - :concurrency — what happens to a request for this action while another
+                    one is waiting or running: :queue (default) runs every
+                    request in order, :drop ignores the new one, :latest
+                    replaces the waiting one with the new one"
   ([app-state* session-id tab-id action-fn]
    (register-action! app-state* session-id tab-id action-fn
                      (str "act_" (uuid/str (java.util.UUID/randomUUID)))
@@ -74,6 +82,10 @@
   ([app-state* session-id tab-id action-fn action-id]
    (register-action! app-state* session-id tab-id action-fn action-id nil))
   ([app-state* session-id tab-id action-fn action-id opts]
+   (when-let [c (:concurrency opts)]
+     (when-not (concurrency-values c)
+       (throw (ex-info (str "action :concurrency must be one of " (pr-str concurrency-values))
+                       {:concurrency c :hyper/action-id action-id}))))
    (swap! app-state* (fn [state]
                        (-> state
                            (assoc-in [:actions action-id]
@@ -81,7 +93,8 @@
                                               :session-id session-id
                                               :tab-id     tab-id}
                                        (:as opts)          (assoc :as (:as opts))
-                                       (:navigation? opts) (assoc :navigation? true)))
+                                       (:navigation? opts) (assoc :navigation? true)
+                                       (:concurrency opts) (assoc :concurrency (:concurrency opts))))
                            (update-in [:actions-by-tab tab-id]
                                       (fnil conj #{}) action-id))))
    (when-let [acc context/*registered-action-ids*]
@@ -147,10 +160,27 @@
   "Actions that hold their tab's queue longer than this log a warning."
   100)
 
-(defn- new-action-queue []
-  {:queue    (java.util.concurrent.LinkedBlockingQueue.)
-   :thread   (atom nil)
-   :stopped? (atom false)})
+(defn- new-action-queue
+  "`:in-flight` counts the waiting and running requests per action id; it and
+   the queue's contents change together under `:lock`."
+  []
+  {:queue     (java.util.concurrent.LinkedBlockingQueue.)
+   :lock      (java.util.concurrent.locks.ReentrantLock.)
+   :in-flight (atom {})
+   :thread    (atom nil)
+   :stopped?  (atom false)})
+
+(defmacro ^:private with-lock [lock & body]
+  `(let [^java.util.concurrent.locks.ReentrantLock l# ~lock]
+     (.lock l#)
+     (try ~@body (finally (.unlock l#)))))
+
+(defn- release-in-flight!
+  "Count one request for `action-id` as no longer waiting or running."
+  [in-flight action-id]
+  (swap! in-flight (fn [m]
+                     (let [n (dec (get m action-id 0))]
+                       (if (pos? n) (assoc m action-id n) (dissoc m action-id))))))
 
 (defn- fail-waiting!
   "Deliver an error to every entry still waiting in `queue`."
@@ -164,9 +194,9 @@
 (defn- run-entry
   "Run one queued entry's job, returning {:value v} or {:error e}, and warn
    when it ran longer than `slow-action-ms`."
-  [tab-id {:keys [job action-id as]}]
+  [tab-id {:keys [job action-id as run-action?]}]
   (let [start  (System/nanoTime)
-        result (try {:value (job)}
+        result (try {:value (job run-action?)}
                     (catch Throwable e {:error e}))
         ms     (quot (- (System/nanoTime) start) 1000000)]
     (when (> ms slow-action-ms)
@@ -182,15 +212,18 @@
     result))
 
 (defn- worker-loop
-  [tab-id {:keys [^java.util.concurrent.LinkedBlockingQueue queue stopped?]}]
+  [tab-id {:keys [^java.util.concurrent.LinkedBlockingQueue queue lock in-flight stopped?]}]
   (try
     (loop []
       (let [entry (.take queue)]
         (cond
           (= ::stop entry) nil
           @stopped?        (do (.put queue entry) (fail-waiting! queue))
-          :else            (do (deliver (:result entry) (run-entry tab-id entry))
-                               (recur)))))
+          :else            (let [result (run-entry tab-id entry)]
+                             (when (:run-action? entry)
+                               (with-lock lock (release-in-flight! in-flight (:action-id entry))))
+                             (some-> (:result entry) (deliver result))
+                             (recur)))))
     (catch InterruptedException _ nil)))
 
 (defn- ensure-worker!
@@ -212,28 +245,58 @@
                             state)))
       (get-in [:tabs tab-id :action-queue])))
 
+(defn- enqueue!
+  "Put a request on the queue according to its action's :concurrency.
+   Returns the promise to wait on, or nil when the request was dropped (its
+   job is still queued, with `run-action?` false, so its signals apply in
+   order)."
+  [{:keys [^java.util.concurrent.LinkedBlockingQueue queue lock in-flight]}
+   {:keys [action-id concurrency] :as entry}]
+  (with-lock lock
+    (if (and (= :drop concurrency) (pos? (get @in-flight action-id 0)))
+      (do (.put queue (assoc entry :run-action? false :result nil))
+          nil)
+      (let [result (promise)]
+        (when (= :latest concurrency)
+          (doseq [waiting (vec queue)
+                  :when   (and (map? waiting)
+                               (:run-action? waiting)
+                               (= action-id (:action-id waiting)))]
+            (when (.remove queue waiting)
+              (release-in-flight! in-flight action-id)
+              (some-> (:result waiting) (deliver {:value nil})))))
+        (swap! in-flight update action-id (fnil inc 0))
+        (.put queue (assoc entry :run-action? true :result result))
+        result))))
+
 (defn run-in-order!
-  "Run `job`, a zero-arg fn, after every job already submitted for `tab-id`,
-   one at a time, and return its value (or rethrow what it threw).  The job
-   runs with the caller's dynamic bindings.
+  "Run `job` after every job already submitted for `tab-id`, one at a time,
+   and return its value (or rethrow what it threw).  The job runs with the
+   caller's dynamic bindings.
+
+   `job` takes one argument, `run-action?`.  It is false when the request was
+   dropped (:concurrency :drop): the job still runs in order so it can apply
+   the request's state, but must not run the action.
+
+   Returns nil without waiting when the request was dropped, or once it is
+   replaced by a newer one (:concurrency :latest).
 
    Runs `job` directly when the tab does not exist, or when called from the
    tab's own worker (an action invoking another action).
 
-   `info` is a map with :action-id and :as, used in the slow-action warning."
+   `info` is a map with :action-id, :as and :concurrency."
   [app-state* tab-id info job]
   (let [{:keys [queue thread stopped?] :as action-queue} (tab-action-queue app-state* tab-id)]
     (if (or (nil? action-queue)
             (identical? (Thread/currentThread) @thread))
-      (job)
-      (let [result (promise)]
+      (job true)
+      (do
         (ensure-worker! tab-id action-queue)
-        (.put ^java.util.concurrent.LinkedBlockingQueue queue
-              (assoc info :job (bound-fn* job) :result result))
-        ;; Covers a put that lands after stop-action-queue! drained the queue.
-        (when @stopped? (fail-waiting! queue))
-        (let [{:keys [value error]} @result]
-          (if error (throw error) value))))))
+        (when-let [result (enqueue! action-queue (assoc info :job (bound-fn* job)))]
+          ;; Covers a put that lands after stop-action-queue! drained the queue.
+          (when @stopped? (fail-waiting! queue))
+          (let [{:keys [value error]} @result]
+            (if error (throw error) value)))))))
 
 (defn stop-action-queue!
   "Stop `tab-id`'s action worker and fail any requests still waiting.  The
