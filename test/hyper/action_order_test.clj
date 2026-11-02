@@ -121,10 +121,29 @@
           handler    (server/action-handler app-state*)]
       (is (= 409 (:status (handler {:query-params {"action-id" "nope"}})))))))
 
-(deftest test-action-removed-while-waiting-409s
-  (testing "an action removed while its request waited in the queue returns
-            409 instead of running or erroring"
+(deftest test-action-made-stale-while-waiting-still-runs
+  (testing "an action dropped from the page while its request waited in the
+            queue still runs the handler the click was rendered with"
     (let [app-state* (new-app "t")
+          release    (promise)
+          ran        (atom 0)
+          handler    (server/action-handler app-state*)
+          started    (blocker! app-state* release)]
+      (actions/register-action! app-state* "s" "t" (fn [_] (swap! ran inc)) "gone")
+      (let [fb (post! handler "block")
+            _  (deref started 1000 :timeout)
+            fg (post! handler "gone")]
+        (wait-queued! app-state* 1)
+        (actions/sweep-stale-tab-actions! app-state* "t" #{"block"})
+        (deliver release true)
+        @fb
+        (is (= 204 (:status (deref fg 1000 :timeout))))
+        (is (= 1 @ran))))))
+
+(deftest test-action-expired-while-waiting-409s
+  (testing "an action removed for good while its request waited returns 409"
+    (let [app-state* (new-app "t")
+          _          (swap! app-state* assoc :keep-stale-actions-ms 0)
           release    (promise)
           handler    (server/action-handler app-state*)
           started    (blocker! app-state* release)]

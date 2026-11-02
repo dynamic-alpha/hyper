@@ -709,7 +709,7 @@
               ;; latest value for changed-signals diffing).  Recording
               ;; them under :client-signals too keeps the render loop
               ;; from echoing them back as patches.
-              action-data    (get-in @app-state* [:actions action-id])
+              action-data    (actions/find-action app-state* action-id)
               tab-id         (:tab-id action-data)]
           (if-not action-data
             (action-gone-response action-id)
@@ -740,8 +740,9 @@
                    (not run-action?)
                    {:status 204}
 
-                 ;; Removed (e.g. by a re-render) while the request waited
-                   (not (get-in @app-state* [:actions action-id]))
+                 ;; Gone for good (stale past :keep-stale-actions-ms) while
+                 ;; the request waited
+                   (not (actions/find-action app-state* action-id))
                    (action-gone-response action-id)
 
                  ;; A navigation sent before one already applied
@@ -799,7 +800,7 @@
   [app-state*]
   (fn [req]
     (let [action-id   (get-in req [:query-params "action-id"])
-          action-data (when action-id (get-in @app-state* [:actions action-id]))]
+          action-data (when action-id (actions/find-action app-state* action-id))]
       (cond
         (not action-id)
         {:status  400
@@ -1413,6 +1414,12 @@
                         state loss and no mount/unmount churn; only after it
                         elapses is the tab fully torn down.  Defaults to
                         180000 (3 minutes).
+   - :keep-stale-actions-ms
+                        How long (ms) an action that a re-render no longer
+                        shows is kept, so a click sent from the page that
+                        showed it still runs the handler it was rendered with
+                        instead of being dropped.  Defaults to 60000 (60s);
+                        0 removes such actions at once.
    - :heartbeat-ms      How often (ms) an idle SSE connection emits a keepalive
                         comment.  Keeps connections warm through reverse-proxy
                         idle timeouts and surfaces dead/half-open channels on
@@ -1436,14 +1443,15 @@
   ([routes app-state*]
    (create-handler routes app-state* {:datastar-script (default-datastar-script)}))
   ([routes app-state* {:keys [watches head base-path middleware render-middleware render-error not-found render-guard
-                              disconnect-grace-ms heartbeat-ms
+                              disconnect-grace-ms heartbeat-ms keep-stale-actions-ms
                               max-file-size max-file-count upload-expires-in]
-                       :or   {render-error        render.error/minimal
-                              not-found           render.error/not-found
-                              render-guard        :warn
-                              disconnect-grace-ms default-disconnect-grace-ms
-                              heartbeat-ms        default-heartbeat-ms
-                              upload-expires-in   3600}
+                       :or   {render-error          render.error/minimal
+                              not-found             render.error/not-found
+                              render-guard          :warn
+                              disconnect-grace-ms   default-disconnect-grace-ms
+                              heartbeat-ms          default-heartbeat-ms
+                              keep-stale-actions-ms actions/default-keep-stale-actions-ms
+                              upload-expires-in     3600}
                        :as   opts}]
    (let [base-path       (or base-path "")
          opts            (assoc opts :base-path base-path)
@@ -1490,6 +1498,7 @@
                                 :not-found not-found
                                 :disconnect-grace-ms disconnect-grace-ms
                                 :heartbeat-ms heartbeat-ms
+                                :keep-stale-actions-ms keep-stale-actions-ms
                                 :open-when-hidden? (get opts :open-when-hidden? true)
                                 :tree-shake? (:tree-shake? opts)
                                 :source-map? (:source-map? opts)

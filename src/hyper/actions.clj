@@ -100,10 +100,45 @@
     (get-in (swap! claims update-in [:occurrences k] (fnil inc -1)) [:occurrences k])
     0))
 
+;; An action missing from a tab's latest render is not removed at once: it is
+;; marked :stale-at and kept for :keep-stale-actions-ms, so a click sent from
+;; the page that showed it still reaches the handler it was rendered with.
+
+(def default-keep-stale-actions-ms
+  "How long a stale action is kept when :keep-stale-actions-ms is not set."
+  60000)
+
+(def ^:private max-stale-actions-per-tab
+  "The most stale actions kept per tab; beyond it the longest-stale go."
+  1000)
+
+(defn- keep-stale-ms [state]
+  (long (or (:keep-stale-actions-ms state) default-keep-stale-actions-ms)))
+
+(defn find-action
+  "The action registered as `action-id`, current or stale, unless it has been
+   stale for longer than :keep-stale-actions-ms."
+  [app-state* action-id]
+  (let [state @app-state*]
+    (when-let [action (get-in state [:actions action-id])]
+      (let [stale-at (:stale-at action)]
+        (when (or (nil? stale-at)
+                  (< (- (System/currentTimeMillis) stale-at) (keep-stale-ms state)))
+          action)))))
+
+(defn- held-by-other?
+  "True when `id` belongs to a kept action other than the one identified by
+   `identity-key`."
+  [id identity-key]
+  (when-let [app-state* (:hyper/app-state context/*request*)]
+    (when-let [held (:identity-key (find-action app-state* id))]
+      (not= held identity-key))))
+
 (defn- claim-id!
   "Claim `id` for the action identified by `identity-key` in this render.
-   An id already claimed by a different action gets a numeric suffix, so
-   colliding ids are told apart in render order."
+   An id already claimed in this render by a different action, or still held
+   by a different kept action, gets a numeric suffix, so colliding ids are
+   told apart."
   [id identity-key]
   (if-let [claims context/*action-id-claims*]
     (loop [n 1]
@@ -112,6 +147,7 @@
         (cond
           (= claimed identity-key) candidate
           (and (= ::none claimed)
+               (not (held-by-other? candidate identity-key))
                (= identity-key
                   (get-in (swap! claims update-in [:claimed candidate] #(or % identity-key))
                           [:claimed candidate])))
@@ -160,17 +196,23 @@
      (when-not (concurrency-values c)
        (throw (ex-info (str "action :concurrency must be one of " (pr-str concurrency-values))
                        {:concurrency c :hyper/action-id action-id}))))
-   (swap! app-state* (fn [state]
-                       (-> state
-                           (assoc-in [:actions action-id]
-                                     (cond-> {:fn         action-fn
-                                              :session-id session-id
-                                              :tab-id     tab-id}
-                                       (:as opts)          (assoc :as (:as opts))
-                                       (:navigation? opts) (assoc :navigation? true)
-                                       (:concurrency opts) (assoc :concurrency (:concurrency opts))))
-                           (update-in [:actions-by-tab tab-id]
-                                      (fnil conj #{}) action-id))))
+   ;; What a derived id was derived from, so claim-id! can tell a different
+   ;; action apart from this one while it is kept
+   (let [identity-key (some-> context/*action-id-claims* deref (get-in [:claimed action-id]))]
+     (swap! app-state* (fn [state]
+                         (-> state
+                             (assoc-in [:actions action-id]
+                                       (cond-> {:fn         action-fn
+                                                :session-id session-id
+                                                :tab-id     tab-id}
+                                         identity-key        (assoc :identity-key identity-key)
+                                         (:as opts)          (assoc :as (:as opts))
+                                         (:navigation? opts) (assoc :navigation? true)
+                                         (:concurrency opts) (assoc :concurrency (:concurrency opts))))
+                             (update-in [:actions-by-tab tab-id]
+                                        (fnil conj #{}) action-id)
+                             (cond-> (get-in state [:stale-actions-by-tab tab-id action-id])
+                               (update-in [:stale-actions-by-tab tab-id] dissoc action-id))))))
    (when-let [acc context/*registered-action-ids*]
      (swap! acc conj action-id))
    action-id))
@@ -181,7 +223,7 @@
   ([app-state* action-id]
    (execute-action! app-state* action-id nil))
   ([app-state* action-id client-params]
-   (if-let [action-data (get-in @app-state* [:actions action-id])]
+   (if-let [action-data (find-action app-state* action-id)]
      (let [{:keys [fn]} action-data]
        (t/catch->error! :hyper.error/execute-action
                         (fn client-params))
@@ -194,33 +236,59 @@
        (throw (ex-info "Action not found" {:hyper/action-id action-id}))))))
 
 (defn sweep-stale-tab-actions!
-  "Remove actions for a tab that were not re-registered during the last
-   render cycle.  `live-action-ids` is the set of IDs collected by
-   `*registered-action-ids*` during render.  Actions in that set are
-   kept; any other action belonging to this tab is removed.
-
-   This replaces the old cleanup-before-render pattern with a
-   cleanup-after-render approach that eliminates the window where
-   actions are missing."
+  "Mark the tab's actions that were not re-registered during the last render
+   as stale.  `live-action-ids` is the set of IDs collected by
+   `*registered-action-ids*` during render.  Stale actions are kept for
+   :keep-stale-actions-ms (at most `max-stale-actions-per-tab` of them) so a
+   click from the page that showed them still runs; with 0 they are removed
+   at once."
   [app-state* tab-id live-action-ids]
-  (swap! app-state* (fn [state]
-                      (let [all-tab-ids (get-in state [:actions-by-tab tab-id] #{})
-                            stale-ids   (clojure.set/difference all-tab-ids live-action-ids)]
-                        (if (seq stale-ids)
-                          (-> state
-                              (update :actions #(apply dissoc % stale-ids))
-                              (assoc-in [:actions-by-tab tab-id] live-action-ids))
-                          (assoc-in state [:actions-by-tab tab-id] live-action-ids)))))
+  (let [now (System/currentTimeMillis)]
+    (swap! app-state*
+           (fn [state]
+             (let [keep-ms   (keep-stale-ms state)
+                   stale-ids (clojure.set/difference (get-in state [:actions-by-tab tab-id] #{})
+                                                     live-action-ids)
+                   index     (apply dissoc (or (get-in state [:stale-actions-by-tab tab-id]) {})
+                                    live-action-ids)
+                   index     (if (pos? keep-ms)
+                               (into index (map (fn [id] [id now])) stale-ids)
+                               index)
+                   expired   (for [[id t] index
+                                   :when  (or (not (pos? keep-ms)) (>= (- now t) keep-ms))]
+                               id)
+                   index     (apply dissoc index expired)
+                   over      (when (> (count index) max-stale-actions-per-tab)
+                               (map key (take (- (count index) max-stale-actions-per-tab)
+                                              (sort-by val index))))
+                   index     (apply dissoc index over)
+                   removed   (concat expired over (when-not (pos? keep-ms) stale-ids))
+                   mark      (fn [actions id]
+                               (if (contains? actions id) (assoc-in actions [id :stale-at] now) actions))
+                   remove-id (fn [actions id]
+                               ;; An id rendered again since is current; leave it
+                               (if (or (get-in actions [id :stale-at]) (contains? stale-ids id))
+                                 (dissoc actions id)
+                                 actions))]
+               (-> state
+                   (assoc-in [:actions-by-tab tab-id] live-action-ids)
+                   (update :actions #(reduce remove-id
+                                             (reduce mark % (when (pos? keep-ms) stale-ids))
+                                             removed))
+                   (assoc-in [:stale-actions-by-tab tab-id] index))))))
   nil)
 
 (defn cleanup-tab-actions!
-  "Remove all actions for a tab.  Used during tab disconnect."
+  "Remove all actions for a tab, current and stale.  Used during tab
+   disconnect."
   [app-state* tab-id]
   (swap! app-state* (fn [state]
-                      (let [action-ids (get-in state [:actions-by-tab tab-id])]
+                      (let [action-ids (concat (get-in state [:actions-by-tab tab-id])
+                                               (keys (get-in state [:stale-actions-by-tab tab-id])))]
                         (-> state
                             (update :actions #(apply dissoc % action-ids))
-                            (update :actions-by-tab dissoc tab-id)))))
+                            (update :actions-by-tab dissoc tab-id)
+                            (update :stale-actions-by-tab dissoc tab-id)))))
   nil)
 
 ;; ---------------------------------------------------------------------------
