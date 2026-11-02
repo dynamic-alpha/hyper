@@ -929,7 +929,8 @@
                                (state/set-tab-route! app-state* tab-id route)))
              nav-idx       (if *action-idx* (swap! *action-idx* inc) (hash nav-fn))
              action-id     (actions/register-action! app-state* session-id tab-id nav-fn
-                                                     (str "a_" tab-id "_" nav-idx))
+                                                     (str "a_" tab-id "_" nav-idx)
+                                                     {:navigation? true})
              escaped-title (or (utils/escape-js-string title) "")
              escaped-href  (utils/escape-js-string href)]
          {:href href

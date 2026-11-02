@@ -122,3 +122,24 @@
         (is (some? (:status (deref fa 1000 nil))) "running request answered")
         (is (= 500 (:status (deref fb 1000 nil))) "waiting request failed")
         (is (false? @ran-second?) "waiting action never ran")))))
+
+(deftest test-navigation-skips-the-queue
+  (testing "a navigation action runs immediately, without waiting behind a
+            running action"
+    (let [app-state* (new-app "t")
+          release    (promise)
+          started    (promise)
+          navigated  (promise)
+          handler    (server/action-handler app-state*)]
+      (actions/register-action! app-state* "s" "t"
+                                (fn [_] (deliver started true) (deref release 2000 nil))
+                                "a_t_1")
+      (actions/register-action! app-state* "s" "t" (fn [_] (deliver navigated true))
+                                "a_t_2" {:navigation? true})
+      (let [fa (post! handler "a_t_1")
+            _  (deref started 1000 :timeout)
+            fb (post! handler "a_t_2")]
+        (is (= 204 (:status (deref fb 500 :timeout))) "navigation answered while the action runs")
+        (is (true? (deref navigated 0 :pending)))
+        (deliver release true)
+        (is (= 204 (:status @fa)))))))

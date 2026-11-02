@@ -64,7 +64,9 @@
    When omitted a random UUID is generated (legacy / dynamic actions).
 
    opts may include:
-   - :as  — a human-readable name for the action, useful for testing"
+   - :as          — a human-readable name for the action, useful for testing
+   - :navigation? — the action changes the tab's route, so it runs
+                    immediately rather than on the tab's action queue"
   ([app-state* session-id tab-id action-fn]
    (register-action! app-state* session-id tab-id action-fn
                      (str "act_" (uuid/str (java.util.UUID/randomUUID)))
@@ -78,7 +80,8 @@
                                      (cond-> {:fn         action-fn
                                               :session-id session-id
                                               :tab-id     tab-id}
-                                       (:as opts) (assoc :as (:as opts))))
+                                       (:as opts)          (assoc :as (:as opts))
+                                       (:navigation? opts) (assoc :navigation? true)))
                            (update-in [:actions-by-tab tab-id]
                                       (fnil conj #{}) action-id))))
    (when-let [acc context/*registered-action-ids*]

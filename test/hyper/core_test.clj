@@ -176,6 +176,8 @@
               _         (do (is (some? action-id))
                             ((get-in @app-state* [:actions action-id :fn]) nil))
               route     (state/get-tab-route app-state* tab-id)]
+          (is (true? (get-in @app-state* [:actions action-id :navigation?]))
+              "navigate marks its action so it skips the action queue")
           ;; Route state should be updated
           (is (= :about (:name route)))
           (is (= "/about" (:path route)))
