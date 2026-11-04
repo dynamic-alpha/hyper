@@ -3,7 +3,7 @@
 
    An upload is just an `h/action` whose body uses a file client param ($form
    or $files) — the macro then routes the request through a multipart/form-data
-   transport instead of Datastar's JSON @post().  Files cannot ride the JSON
+   transport instead of the JSON action queue.  Files cannot ride the JSON
    channel, so this is a real `fetch`/XHR multipart POST to `/hyper/upload`,
    parsed server-side by Ring's multipart middleware (streaming each part to a
    temp file on disk).
@@ -65,7 +65,8 @@
 
 (defn build-upload-expr
   "Build the Datastar expression that performs a multipart upload via the
-   `window.hyper.upload` helper.
+   `window.hyper.upload` helper, which sends it with the render the element
+   `el` was made on.
 
    `form-data-js` is JS evaluating to a `FormData` (the multipart param's :js).
    When `upload-ref` is a signal, progress/phase callbacks are wired to write
@@ -80,14 +81,14 @@
                       (str ",start:function(){$" n ".phase='uploading';$" n ".percent=0}"
                            ",progress:function(p){$" n ".percent=p}"
                            ",error:function(){$" n ".phase='error'}")))
-        call      (str "hyper.upload(" form-data-js ",{url:'" url "'" callbacks "})")]
+        call      (str "hyper.upload(" form-data-js ",{url:'" url "',el:el" callbacks "})")]
     (if guard-js
       (str guard-js " && " call)
       call)))
 
 (defn build-expr
   "Dispatch used by the `action` macro: when the body uses a multipart param
-   ($form/$files) emit an upload expression; otherwise the normal @post action
+   ($form/$files) emit an upload expression; otherwise the normal @hyperAction
    expression.  `used-params` is the sym->definition map collected by the
    macro.
 

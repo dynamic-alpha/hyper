@@ -527,7 +527,7 @@
    During render, `@signal*` returns the Datastar expression string (e.g.
    `\"$userName\"`), suitable for use in `data-text`, `data-show`, etc.
    During action execution, `@signal*` returns the live value sent by
-   Datastar in the `@post()` request body.
+   the client with the action.
 
    `reset!` and `swap!` update the signal value on the server, which
    triggers a `datastar-patch-signals` SSE event to push the new value
@@ -695,7 +695,7 @@
    bound on the server to an EDN map with :x and :y keys. Methods must be
    defined before any action that references the symbol. A definition
    marked :multipart? true switches the action's transport to a
-   multipart/form-data upload instead of the default JSON @post()."
+   multipart/form-data upload instead of the default JSON action queue."
   client-params/client-param)
 
 (defn- find-client-params
@@ -821,12 +821,11 @@
            action-id#               (if (some? key#)
                                       (subview/scoped-id "a_" tab-id# (subview/key->token key#))
                                       (str "a_" tab-id# "_" idx#))
+           ;; The upload status ref lets the /hyper/upload handler transition
+           ;; its phase/result; nil for non-upload actions.
            _#                       (actions/register-action! app-state*# session-id# tab-id# action-fn# action-id#
-                                                              ~(when as-name {:as as-name}))
-           ;; Stash the upload status ref so the /hyper/upload handler can
-           ;; transition its phase/result; nil for non-upload actions.
-           _#                       (when upload-ref#
-                                      (swap! app-state*# assoc-in [:actions action-id# :upload-ref] upload-ref#))
+                                                              (cond-> ~(when as-name {:as as-name})
+                                                                upload-ref# (assoc :upload-ref upload-ref#)))
            base-path#               (get @app-state*# :base-path "")]
        (uploads/build-expr action-id# '~used-params (actions/sanitize-guard ~js) base-path# upload-ref#))))
 
@@ -850,7 +849,7 @@
               (expr (when (= evt.key \"Enter\") (@post \"/search\")))}]
 
    A server `action` composes as a client-side value — it registers at render
-   time and contributes its raw @post(...), so it can be gated by client-side
+   time and contributes its raw @hyperAction(...), so it can be gated by client-side
    control flow (subsuming the action `:when` guard):
 
      [:input {:data-on:keydown
@@ -914,7 +913,6 @@
          tab-id     (:hyper/tab-id *request*)]
      (when-let [route (routes/tab-route router route-name params query-params)]
        (let [href          (routes/route-url router route)
-             base-path     (get @app-state* :base-path "")
              ;; Use live-routes to always get the latest route metadata
              route-index   (routes/live-route-index app-state*)
              ;; Resolve title eagerly for the pushState call
@@ -937,7 +935,7 @@
          {:href href
           :data-on:click__prevent
           (str "window.hyper.startNavigation('" escaped-href "');"
-               " @post('" base-path "/hyper/actions?action-id=" action-id "');"
+               " @hyperAction('" action-id "');"
                " window.history.pushState({title: '" escaped-title "'}, '', '" escaped-href "');"
                (when title
                  (str " document.title = '" escaped-title "'")))})))))
@@ -964,7 +962,8 @@
    Options (keyword arguments):
    - :app-state         — Atom for application state (default: fresh atom)
    - :datastar-url      - URL the page loads the Datastar module from (default:
-                          a CDN build).
+                          a CDN build).  It must serve Datastar's ES module
+                          bundle: Hyper imports that URL to register its action.
    - :squint-core-url   - URL the page imports squint core from, for h/expr and
                           components (default: /hyper/squint-core.js, served by hyper).
    - :tree-shake?       - Serve only the squint core functions that h/expr output

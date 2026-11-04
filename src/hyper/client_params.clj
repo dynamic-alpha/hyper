@@ -6,7 +6,7 @@
   The built-in parameters are $value, $checked, $key, $detail, $form-data,
   and the file-upload params $form and $files.
 
-  Most params are JSON-encoded into the @post() request — but binary file
+  Most params are JSON-encoded into the action's request — but binary file
   content cannot ride that channel.  A param marked `:multipart? true` instead
   switches the action's transport to a multipart/form-data upload (see
   hyper.uploads): its `:js` must evaluate to a `FormData` object (the request
@@ -68,6 +68,6 @@
 (defn multipart-param?
   "True when `sym` is a client param whose transport is a multipart/form-data
    upload (its definition carries `:multipart? true`) rather than the default
-   JSON @post() channel.  File params ($form, $files) are multipart."
+   JSON action queue.  File params ($form, $files) are multipart."
   [sym]
   (boolean (:multipart? (client-param sym))))

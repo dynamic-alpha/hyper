@@ -313,6 +313,45 @@
      [:span#when-let {:data-text (h/expr (when-let [x (or @a* @b*)] x))}]
      [:span#re-find {:data-text (h/expr (let [s (or @a* "xa;by")] (re-find #"a;b" s)))}]]))
 
+(defn- action-retry-get [_]
+  (let [clicks* (h/tab-cursor :clicks [])]
+    [:div
+     [:h1 "Test Action Retry"]
+     (for [label ["a" "b" "c"]]
+       [:button {:id (str "click-" label) :data-on:click (h/action (swap! clicks* conj label))} label])
+     [:span#clicks (str/join "," @clicks*)]]))
+
+(defn- upload-get [_]
+  (let [status* (h/signal :avatar-upload {:phase :idle :percent 0})]
+    [:div
+     [:h1 "Test Upload"]
+     [:form {:data-on:submit__prevent (h/action {:upload status*}
+                                                (reset! (h/tab-cursor :uploaded) (:filename (:avatar $form))))}
+      [:input#avatar {:type "file" :name "avatar"}]
+      [:button#upload-btn {:type "submit"} "Upload"]]
+     [:span#uploaded @(h/tab-cursor :uploaded "none")]]))
+
+(defn- data-init-get [_]
+  [:div
+   [:h1 "Test Data Init"]
+   [:div#init {:data-init (h/action (reset! (h/tab-cursor :inited) "yes"))}]
+   [:span#inited @(h/tab-cursor :inited "no")]])
+
+(def ^:private indicator-gate
+  "Holds the promise the /indicator action waits on, so a test decides how
+   long its request stays in flight."
+  (atom (promise)))
+
+(defn- indicator-get [_]
+  [:div
+   [:h1 "Test Indicator"]
+   [:button#save {:data-indicator "_saving"
+                  :data-on:click  (h/action (deref @indicator-gate 5000 nil)
+                                            (swap! (h/tab-cursor :saves 0) inc))}
+    "Save"]
+   [:span#saving {:data-text "$_saving"}]
+   [:span#saves @(h/tab-cursor :saves 0)]])
+
 (defn default-routes []
   [["/" {:name  :home
          :title "Home"
@@ -364,7 +403,23 @@
    ["/expr-nested"
     {:name  :expr-nested
      :title "Expr Nested"
-     :get   #'expr-nested-get}]])
+     :get   #'expr-nested-get}]
+   ["/action-retry"
+    {:name  :action-retry
+     :title "Action Retry"
+     :get   #'action-retry-get}]
+   ["/upload"
+    {:name  :upload
+     :title "Upload"
+     :get   #'upload-get}]
+   ["/data-init"
+    {:name  :data-init
+     :title "Data Init"
+     :get   #'data-init-get}]
+   ["/indicator"
+    {:name  :indicator
+     :title "Indicator"
+     :get   #'indicator-get}]])
 
 (def ^:dynamic *test-routes* (default-routes))
 
@@ -1577,4 +1632,220 @@
             (wait-for-cookie "test-effect-cookie" "combo-value")))
 
         (finally
+          (close-browser! browser-info))))))
+
+;; ---------------------------------------------------------------------------
+;; Test: a failed action request is carried by the next one
+;; ---------------------------------------------------------------------------
+
+(defn- intercept-action-requests!
+  "Answer the page's action requests as `respond` says: a fn of the request's
+   1-based number returning :abort (it never reaches the server), :error (a
+   500 response) or :pass.  Returns an atom counting the requests."
+  [page respond]
+  (let [requests (atom 0)]
+    (.route page (java.util.regex.Pattern/compile ".*/hyper/actions\\?tab-id=.*")
+            (reify java.util.function.Consumer
+              (accept [_ route]
+                (let [^com.microsoft.playwright.Route route route]
+                  (case (respond (swap! requests inc))
+                    :abort (.abort route)
+                    :error (.fulfill route (doto (com.microsoft.playwright.Route$FulfillOptions.)
+                                             (.setStatus 500)))
+                    (.resume route))))))
+    requests))
+
+(defn- record-fetch-events!
+  "Start recording the types of the `datastar-fetch` events dispatched for the
+   element with id `id` in the current page."
+  [id]
+  (eval-js (str "(() => { window.__fetchEvents = [];"
+                " document.addEventListener('datastar-fetch', (e) => {"
+                "   if (e.detail.el && e.detail.el.id === '" id "') window.__fetchEvents.push(e.detail.type);"
+                " }); })()")))
+
+(defn- fetch-events
+  "The event types recorded since `record-fetch-events!`."
+  []
+  (vec (eval-js "window.__fetchEvents")))
+
+(defn- server-clicks []
+  (some :clicks (map :data (vals (:tabs @@test-state*)))))
+
+(deftest ^:e2e failed-action-response-is-not-retried-test
+  (testing "an action whose request got an error response is not retried, and
+            is sent again with the next action"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page         (new-page ctx)
+          requests     (intercept-action-requests! page #(if (= 1 %) :error :pass))]
+      (try
+        (w/with-page page
+          (w/navigate (str base-url "/action-retry"))
+          (wait-for-sse)
+          (record-fetch-events! "click-a")
+          (w/click "#click-a")
+          (is (wait-for-pred #(= ["started" "error" "finished"] (fetch-events))))
+          ;; longer than the first retry interval
+          (Thread/sleep 1500)
+          (is (= 1 @requests) "the request is not sent again on its own")
+          (w/click "#click-b")
+          (is (wait-for-text "#clicks" "a,b"))
+          (is (= ["a" "b"] (server-clicks))
+              "the server ran both actions once, in click order"))
+        (finally
+          (close-browser! browser-info))))))
+
+(deftest ^:e2e unreachable-action-request-is-retried-test
+  (testing "an action whose request did not reach the server is retried"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page         (new-page ctx)
+          requests     (intercept-action-requests! page #(if (= 1 %) :abort :pass))]
+      (try
+        (w/with-page page
+          (w/navigate (str base-url "/action-retry"))
+          (wait-for-sse)
+          (record-fetch-events! "click-a")
+          (w/click "#click-a")
+          (is (wait-for-text "#clicks" "a") "it runs without another action")
+          (is (wait-for-pred #(= ["started" "retrying" "finished"] (fetch-events))))
+          (is (= 2 @requests))
+          (is (= ["a"] (server-clicks)) "the server ran it once"))
+        (finally
+          (close-browser! browser-info))))))
+
+(deftest ^:e2e action-retries-give-up-test
+  (testing "after ten retries a request gives up, and its action is sent with
+            the next one"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page         (new-page ctx)
+          down?        (atom true)
+          requests     (intercept-action-requests! page (fn [_] (if @down? :abort :pass)))
+          retrying     #(count (filter #{"retrying"} (fetch-events)))]
+      (try
+        ;; A fake clock, so the waits between retries can be skipped.
+        (.install (.clock page))
+        (w/with-page page
+          (w/navigate (str base-url "/action-retry"))
+          (wait-for-sse)
+          (record-fetch-events! "click-a")
+          (w/click "#click-a")
+          (dotimes [n 10]
+            (is (wait-for-pred #(= (inc n) (retrying))) (str "retry " (inc n)))
+            ;; longer than the longest wait between retries
+            (.fastForward (.clock page) 31000))
+          (is (wait-for-pred #(= ["retries-failed" "finished"] (take-last 2 (fetch-events)))))
+          (is (= 10 (retrying)))
+          (is (= 11 @requests) "the request and its ten retries")
+          (is (empty? (server-clicks)) "nothing reached the server")
+          (reset! down? false)
+          (w/click "#click-b")
+          (is (wait-for-text "#clicks" "a,b"))
+          (is (= ["a" "b"] (server-clicks))
+              "the server ran both actions once, in click order"))
+        (finally
+          (close-browser! browser-info))))))
+
+(deftest ^:e2e waiting-action-retry-ends-when-delivered-test
+  (testing "an action waiting to retry stops waiting once another request has
+            delivered it"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page         (new-page ctx)
+          down?        (atom true)
+          requests     (intercept-action-requests! page (fn [_] (if @down? :abort :pass)))
+          retrying     #(count (filter #{"retrying"} (fetch-events)))]
+      (try
+        (.install (.clock page))
+        (w/with-page page
+          (w/navigate (str base-url "/action-retry"))
+          (wait-for-sse)
+          (record-fetch-events! "click-a")
+          (w/click "#click-a")
+          ;; Five retries in, the next wait is the longest one: thirty seconds.
+          (dotimes [n 5]
+            (is (wait-for-pred #(= (inc n) (retrying))) (str "retry " (inc n)))
+            (.fastForward (.clock page) 31000))
+          (is (wait-for-pred #(= 6 (retrying))))
+          (is (= 6 @requests))
+          (reset! down? false)
+          (w/click "#click-b")
+          (is (wait-for-text "#clicks" "a,b"))
+          (is (wait-for-pred #(= "finished" (last (fetch-events))))
+              "the first action's request finishes without waiting out its retry")
+          (is (= 7 @requests) "and is not sent again"))
+        (finally
+          (close-browser! browser-info))))))
+
+(deftest ^:e2e upload-test
+  (testing "an upload runs its action with the posted file"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page         (new-page ctx)
+          urls         (atom [])
+          file         (doto (java.io.File/createTempFile "avatar" ".txt")
+                         (.deleteOnExit)
+                         (spit "hello"))]
+      (try
+        (w/with-page page
+          (.onRequest page (reify java.util.function.Consumer
+                             (accept [_ request]
+                               (let [url (.url ^com.microsoft.playwright.Request request)]
+                                 (when (str/includes? url "/hyper/upload")
+                                   (swap! urls conj url))))))
+          (w/navigate (str base-url "/upload"))
+          (wait-for-sse)
+          (.setInputFiles (.locator page "#avatar") (.toPath file))
+          (w/click "#upload-btn")
+          (is (wait-for-text "#uploaded" (.getName file)))
+          (is (re-find #"\?action-id=a_[^&]+&tab-id=[^&]+&v=\d+$" (first @urls))
+              "the upload names its tab and the render it was made on"))
+        (finally
+          (close-browser! browser-info))))))
+
+(deftest ^:e2e data-init-action-test
+  (testing "an action in the initial HTML's data-init runs on page load"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page         (new-page ctx)
+          errors       (atom [])]
+      (try
+        (.onConsoleMessage page (reify java.util.function.Consumer
+                                  (accept [_ msg]
+                                    (let [msg ^com.microsoft.playwright.ConsoleMessage msg]
+                                      (when (= "error" (.type msg))
+                                        (swap! errors conj (.text msg)))))))
+        (w/with-page page
+          (w/navigate (str base-url "/data-init"))
+          (wait-for-sse)
+          (is (wait-for-text "#inited" "yes"))
+          (is (= ["yes"] (keep (comp :inited :data) (vals (:tabs @@test-state*))))
+              "the action ran once on the server")
+          (is (empty? @errors) (str "console errors: " @errors)))
+        (finally
+          (close-browser! browser-info))))))
+
+(deftest ^:e2e action-indicator-test
+  (testing "data-indicator on an element is true while its action's request is
+            in flight"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page         (new-page ctx)
+          gate         (promise)]
+      (reset! indicator-gate gate)
+      (try
+        (w/with-page page
+          (w/navigate (str base-url "/indicator"))
+          (wait-for-sse)
+          (is (wait-for-text "#saving" "false"))
+          (w/click "#save")
+          (is (wait-for-text "#saving" "true"))
+          (is (= "0" (w/text-content "#saves")) "the action is still running")
+          (deliver gate true)
+          (is (wait-for-text "#saves" "1"))
+          (is (wait-for-text "#saving" "false")))
+        (finally
+          (deliver gate true)
           (close-browser! browser-info))))))

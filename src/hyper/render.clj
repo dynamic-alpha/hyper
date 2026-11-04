@@ -4,6 +4,7 @@
    Handles rendering hiccup to HTML and formatting Datastar SSE events."
   (:require [clojure.string :as string]
             [dev.onionpancakes.chassis.core :as c]
+            [hyper.actions :as actions]
             [hyper.component.bundle :as component.bundle]
             [hyper.context :as context]
             [hyper.lifecycle :as lifecycle]
@@ -291,6 +292,8 @@
        :body-html         - HTML string of the rendered page body
        :url               - current route URL string, or nil
        :declared-signals  - vector of signal declaration maps for HTML injection
+       :render-version    - the version the render's actions are kept under
+                            (see hyper.actions/record-render!)
 
    Binds `context/*request*` and `context/*action-idx*` for the duration
    of both rendering and HTML serialization, so lazy hiccup sequences
@@ -395,7 +398,11 @@
                 :url                    url
                 :declared-signals       declared
                 :registered-action-ids  action-ids
-                :registered-subview-ids subview-ids})))
+                :registered-subview-ids subview-ids
+                :render-version         (actions/record-render!
+                                          app-state* tab-id
+                                          {:html    body-html
+                                           :actions @context/*rendered-actions*})})))
          (finally
            (pop-thread-bindings)))))))
 

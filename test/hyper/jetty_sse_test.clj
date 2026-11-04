@@ -4,7 +4,8 @@
    path that browser e2e tests depend on (but without a browser).
 
    Not tagged :e2e — these need no browser, just a JVM + a socket."
-  (:require [clojure.string :as str]
+  (:require [cheshire.core :as json]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [hyper.brotli :as br]
             [hyper.core :as h]
@@ -163,6 +164,25 @@
         (finally
           (h/stop! stop))))))
 
+(defn- post-action!
+  "POST action `action-id` of tab `tab-id`'s latest page render, numbered
+   `seq`, with `signals`, as the queue @hyperAction posts."
+  [^HttpClient client base tab-id action-id seq signals]
+  (.send client
+         (.. (HttpRequest/newBuilder
+               (URI/create (str base "/hyper/actions?tab-id=" tab-id)))
+             (header "Content-Type" "application/json")
+             (POST (HttpRequest$BodyPublishers/ofString
+                     (json/generate-string
+                       {:base    nil
+                        :actions [{:id      action-id
+                                   :seq     seq
+                                   :v       nil
+                                   :signals (json/generate-string signals)
+                                   :params  nil}]})))
+             (build))
+         (HttpResponse$BodyHandlers/ofString)))
+
 (deftest sse-push-via-action-post
   (testing "an action POST (the browser-click path) triggers a re-render that
             streams over the live SSE connection"
@@ -177,14 +197,14 @@
                                      "+"]])}]]
                     :app-state app*)
           stop    (h/start! handler {:port port})
-          client  (HttpClient/newHttpClient)
+          client  (cookie-client)
           base    (str "http://localhost:" port)]
       (try
         ;; GET registers the render-fn + the action; grab its action-id.
         (let [page      (.body ^java.net.http.HttpResponse
                           (GET client (str base "/?tab-id=T")
                             (HttpResponse$BodyHandlers/ofString)))
-              action-id (second (re-find #"action-id=(a_T_\d+)" page))]
+              action-id (second (re-find #"hyperAction\(&apos;(a_T_\d+)" page))]
           (is (some? action-id) "the page renders an action with an id")
           ;; Open SSE and wait for the initial render (n=0).
           (let [resp                (GET client (str base "/hyper/events?tab-id=T")
@@ -192,13 +212,8 @@
                 {:keys [text stop]} (sse-reader (.body ^java.net.http.HttpResponse resp))]
             (try
               (wait-until text #(str/includes? % "n=0") 5000)
-              ;; POST the action exactly like Datastar's @post would.
-              (let [ar (.send client
-                              (.. (HttpRequest/newBuilder
-                                    (URI/create (str base "/hyper/actions?action-id=" action-id)))
-                                  (POST (HttpRequest$BodyPublishers/noBody))
-                                  (build))
-                              (HttpResponse$BodyHandlers/ofString))]
+              ;; POST the action exactly like @hyperAction would.
+              (let [ar (post-action! client base "T" action-id 1 {})]
                 (is (= 204 (.statusCode ar)) "action POST returns 204"))
               ;; The re-render must stream over the SAME SSE connection.
               (let [t (wait-until text #(str/includes? % "n=1") 5000)]
@@ -225,27 +240,22 @@
                                        "+"]]))}]]
                     :app-state app*)
           stop    (h/start! handler {:port port})
-          client  (HttpClient/newHttpClient)
+          client  (cookie-client)
           base    (str "http://localhost:" port)]
       (try
         (let [page      (.body ^java.net.http.HttpResponse
                           (GET client (str base "/?tab-id=T")
                             (HttpResponse$BodyHandlers/ofString)))
-              action-id (second (re-find #"action-id=(a_T_\d+)" page))]
+              action-id (second (re-find #"hyperAction\(&apos;(a_T_\d+)" page))]
           (is (some? action-id) "the page renders an action with an id")
           (let [resp                (GET client (str base "/hyper/events?tab-id=T")
                                       (HttpResponse$BodyHandlers/ofInputStream))
                 {:keys [text stop]} (sse-reader (.body ^java.net.http.HttpResponse resp))]
             (try
               (wait-until text #(str/includes? % "n=0") 5000)
-              ;; 1. POST the action with a signal body, exactly like Datastar's
-              ;;    @post: the client reports colW=110 (e.g. a drag in flight).
-              (let [ar (.send client
-                              (.. (HttpRequest/newBuilder
-                                    (URI/create (str base "/hyper/actions?action-id=" action-id)))
-                                  (POST (HttpRequest$BodyPublishers/ofString "{\"colW\": 110}"))
-                                  (build))
-                              (HttpResponse$BodyHandlers/ofString))]
+              ;; 1. POST the action with its signals, exactly like
+              ;;    @hyperAction: the client reports colW=110 (e.g. a drag in flight).
+              (let [ar (post-action! client base "T" action-id 1 {:colW 110})]
                 (is (= 204 (.statusCode ar)) "action POST returns 204"))
               (wait-until text #(str/includes? % "n=1") 5000)
               ;; 2. A server-initiated signal write must still patch down.
@@ -316,16 +326,6 @@
   [t]
   (re-seq #"data: signals \{[^\n]*\}" t))
 
-(defn- post-signals!
-  "POST an action with a JSON signal body, as Datastar's @post does."
-  [^HttpClient client base action-id body]
-  (.send client
-         (.. (HttpRequest/newBuilder
-               (URI/create (str base "/hyper/actions?action-id=" action-id)))
-             (POST (HttpRequest$BodyPublishers/ofString body))
-             (build))
-         (HttpResponse$BodyHandlers/ofString)))
-
 (defn- poll-until
   "Poll f until pred matches or timeout; returns the last value."
   [f pred timeout-ms]
@@ -358,7 +358,7 @@
         (let [page                 (.body ^java.net.http.HttpResponse
                                      (GET client (str base "/?tab-id=T")
                                        (HttpResponse$BodyHandlers/ofString)))
-              [commit-id clamp-id] (distinct (map second (re-seq #"action-id=(a_T_\d+)" page)))
+              [commit-id clamp-id] (distinct (map second (re-seq #"hyperAction\(&apos;(a_T_\d+)" page)))
               session-id           (first (keys (:sessions @app*)))
               resp                 (GET client (str base "/hyper/events?tab-id=T")
                                      (HttpResponse$BodyHandlers/ofInputStream))
@@ -367,12 +367,12 @@
           (try
             (wait-until text #(str/includes? % "sessionColW") 5000)
             ;; 1. Clean commit — cursor moves, nothing patches back.
-            (post-signals! client base commit-id "{\"sessionColW\": 150}")
+            (post-action! client base "T" commit-id 1 {:sessionColW 150})
             (is (= 150 (poll-until #(get-in @app* [:sessions session-id :data :col-w])
                                    #(= 150 %) 5000))
                 "commit! persists the reported value")
             ;; 2. Clamped commit — reported 900, committed (min 900 300) = 300.
-            (post-signals! client base clamp-id "{\"sessionColW\": 900}")
+            (post-action! client base "T" clamp-id 2 {:sessionColW 900})
             (let [t (wait-until text #(some (fn [e] (str/includes? e ":300")) (signal-events %)) 5000)]
               (is (some #(str/includes? % ":300") (signal-events t))
                   "the clamped value is patched down")
@@ -405,7 +405,7 @@
         (let [page                (.body ^java.net.http.HttpResponse
                                     (GET client (str base "/?tab-id=T")
                                       (HttpResponse$BodyHandlers/ofString)))
-              action-id           (second (re-find #"action-id=(a_T_\d+)" page))
+              action-id           (second (re-find #"hyperAction\(&apos;(a_T_\d+)" page))
               session-id          (first (keys (:sessions @app*)))
               resp                (GET client (str base "/hyper/events?tab-id=T")
                                     (HttpResponse$BodyHandlers/ofInputStream))
@@ -413,7 +413,7 @@
           (try
             (wait-until text #(str/includes? % "sessionColW") 5000)
             ;; The action body is empty — the signal riding the POST is the payload.
-            (post-signals! client base action-id "{\"sessionColW\": 175}")
+            (post-action! client base "T" action-id 1 {:sessionColW 175})
             (is (= 175 (poll-until #(get-in @app* [:sessions session-id :data :col-w])
                                    #(= 175 %) 5000))
                 "auto-commit persists without commit! in the action body")
@@ -451,7 +451,7 @@
                              (HttpResponse$BodyHandlers/ofString)))
               _page-b    (GET client (str base "/?tab-id=TB")
                            (HttpResponse$BodyHandlers/ofString))
-              commit-a   (second (re-find #"action-id=(a_TA_\d+)" page-a))
+              commit-a   (second (re-find #"hyperAction\(&apos;(a_TA_\d+)" page-a))
               session-id (first (keys (:sessions @app*)))
               resp-a     (GET client (str base "/hyper/events?tab-id=TA")
                            (HttpResponse$BodyHandlers/ofInputStream))
@@ -463,8 +463,8 @@
             (wait-until (:text sse-a) #(str/includes? % "sessionColW") 5000)
             (wait-until (:text sse-b) #(str/includes? % "sessionColW") 5000)
             ;; 1. TA commits cleanly (base = committed = 100) → 250.
-            (post-signals! client base commit-a
-                           "{\"sessionColW\": 250, \"sessionColWBase\": 100}")
+            (post-action! client base "TA" commit-a 1
+                          {:sessionColW 250 :sessionColWBase 100})
             (let [tb (wait-until (:text sse-b)
                                  #(some (fn [e] (str/includes? e "\"sessionColW\":250")) (signal-events %)) 5000)]
               (is (some #(str/includes? % "\"sessionColW\":250") (signal-events tb))
@@ -480,8 +480,8 @@
                   "but its base signal advances, keeping the next commit clean"))
             ;; 3. TA commits off a stale base (100, committed now 260) → rejected.
             (let [mark (count ((:text sse-a)))]
-              (post-signals! client base commit-a
-                             "{\"sessionColW\": 400, \"sessionColWBase\": 100}")
+              (post-action! client base "TA" commit-a 2
+                            {:sessionColW 400 :sessionColWBase 100})
               (let [tail (wait-until #(subs ((:text sse-a)) (min mark (count ((:text sse-a)))))
                                      #(some (fn [e] (str/includes? e "\"sessionColW\":260")) (signal-events %)) 5000)]
                 (is (some #(str/includes? % "\"sessionColW\":260") (signal-events tail))

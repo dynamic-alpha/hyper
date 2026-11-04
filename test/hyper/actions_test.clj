@@ -1,6 +1,9 @@
 (ns hyper.actions-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [cheshire.core :as json]
+            [clojure.test :refer [deftest is testing]]
             [hyper.actions :as actions]
+            [hyper.context :as context]
+            [hyper.server :as server]
             [hyper.state :as state]))
 
 (deftest register-action-test
@@ -24,28 +27,61 @@
           id2        (actions/register-action! app-state* "sess1" "tab1" action-fn)]
       (is (not= id1 id2)))))
 
-(deftest execute-action-test
-  (testing "executes registered action"
+(defn- render-actions!
+  "Register `action-fns` as a render of tab tab1's page would, as
+   {action-id action-fn}, and return the render's version."
+  [app-state* action-fns]
+  (state/get-or-create-tab! app-state* "sess1" "tab1")
+  (binding [context/*rendered-actions* (atom {})]
+    (doseq [[action-id action-fn] action-fns]
+      (actions/register-action! app-state* "sess1" "tab1" action-fn action-id))
+    (actions/record-render! app-state* "tab1" {:html    (pr-str (keys action-fns))
+                                               :actions @context/*rendered-actions*})))
+
+(defn- run-queued!
+  "Post action `action-id` of render `v` of tab tab1, with `params`, as the
+   tab's action queue."
+  ([app-state* v action-id]
+   (run-queued! app-state* v action-id nil))
+  ([app-state* v action-id params]
+   ((server/action-handler app-state*)
+    {:query-params     {"tab-id" "tab1"}
+     :hyper/session-id "sess1"
+     :body             (json/generate-string
+                         {:base    v
+                          :actions [{:id      action-id
+                                     :seq     (inc (get-in @app-state* [:tabs "tab1" :action-seq] 0))
+                                     :v       v
+                                     :signals "{}"
+                                     :params  (some-> params json/generate-string)}]})})))
+
+(deftest run-queued-action-test
+  (testing "runs a rendered action"
     (let [app-state* (atom (state/init-state))
           executed   (atom false)
-          action-fn  (fn [_] (reset! executed true))
-          action-id  (actions/register-action! app-state* "sess1" "tab1" action-fn)]
-      (actions/execute-action! app-state* action-id)
+          v          (render-actions! app-state* {"a_tab1_1" (fn [_] (reset! executed true))})]
+      (is (= 204 (:status (run-queued! app-state* v "a_tab1_1"))))
       (is @executed)))
 
   (testing "action can access closures"
     (let [app-state*     (atom (state/init-state))
           result         (atom nil)
           captured-value 42
-          action-fn      (fn [_] (reset! result captured-value))
-          action-id      (actions/register-action! app-state* "sess1" "tab1" action-fn)]
-      (actions/execute-action! app-state* action-id)
+          v              (render-actions! app-state* {"a_tab1_1" (fn [_] (reset! result captured-value))})]
+      (run-queued! app-state* v "a_tab1_1")
       (is (= 42 @result))))
 
-  (testing "throws exception for missing action"
-    (let [app-state* (atom (state/init-state))]
-      (is (thrown? Exception
-                   (actions/execute-action! app-state* "nonexistent-action"))))))
+  (testing "a missing action runs nothing and is not an error"
+    (let [app-state* (atom (state/init-state))
+          v          (render-actions! app-state* {})]
+      (is (= 204 (:status (run-queued! app-state* v "nonexistent-action"))))))
+
+  (testing "passes client params through"
+    (let [app-state* (atom (state/init-state))
+          result     (atom nil)
+          v          (render-actions! app-state* {"a_tab1_1" (fn [params] (reset! result (:value params)))})]
+      (run-queued! app-state* v "a_tab1_1" {:value "test-value"})
+      (is (= "test-value" @result)))))
 
 (deftest cleanup-tab-actions-test
   (testing "removes all actions for a tab"
@@ -64,12 +100,3 @@
       (is (not (contains? (:actions @app-state*) action-id-1)))
       (is (not (contains? (:actions @app-state*) action-id-2)))
       (is (contains? (:actions @app-state*) action-id-3))))) ;; Other tab's action remains
-
-(deftest test-execute-action-with-client-params
-  (testing "executes action with client params passed through"
-    (let [app-state* (atom (state/init-state))
-          result     (atom nil)
-          action-fn  (fn [params] (reset! result (:value params)))
-          action-id  (actions/register-action! app-state* "sess1" "tab1" action-fn)]
-      (actions/execute-action! app-state* action-id {:value "test-value"})
-      (is (= "test-value" @result)))))
