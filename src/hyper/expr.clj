@@ -25,7 +25,7 @@
    - `~form` explicitly splices any other Clojure expression.
    - `(h/action ...)` (any var tagged `:hyper/datastar-expr`) runs as Clojure
      at render time — registering the action — and contributes its raw
-     `@post(...)` expression, so actions compose inside client-side control
+     `@hyperAction(...)` expression, so actions compose inside client-side control
      flow: `(->expr (when (= $key \"Enter\") (h/action ...)))`.
    - Client-param symbols (`$value`, `$checked`, `$key`, `$detail`,
      `$form-data`, and any registered via `hyper.client-params`) expand to

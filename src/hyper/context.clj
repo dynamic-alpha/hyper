@@ -20,7 +20,7 @@
 ;; partial re-render.
 (def ^:dynamic *region-path* [])
 
-;; Datastar signal values parsed from the @post() request body during
+;; Datastar signal values the client sent with the action, during
 ;; action execution.  Bound to a keyword-keyed map by the action handler
 ;; so that Signal/deref can return the live client-side value.  nil
 ;; outside of an action context (i.e. during render).
@@ -38,6 +38,12 @@
 ;; (present in the previous cycle but absent from this one) are removed
 ;; in a single atomic swap — no cleanup-before-render gap needed.
 (def ^:dynamic *registered-action-ids* nil)
+
+;; The actions a render pass registered, as {action-id action-data}.
+;; Bound to (atom {}) before each render; stored afterwards under the
+;; render's version, so a click resolves its action id against the render
+;; it was made on (see hyper.actions/record-render!).
+(def ^:dynamic *rendered-actions* nil)
 
 ;; State overlay for cursor read/write indirection.
 ;;
@@ -180,6 +186,7 @@
    #'*region-path*            []
    #'*declared-signals*       (atom [])
    #'*registered-action-ids*  (atom #{})
+   #'*rendered-actions*       (atom {})
    #'*registered-subview-ids* (atom #{})
    #'*render-guard*           (make-guard (get @app-state* :render-guard :warn))
    #'*state-overlay*          {:state* (atom @app-state*)
@@ -195,6 +202,7 @@
    #'*region-path*            []
    #'*declared-signals*       (atom [])
    #'*registered-action-ids*  (atom #{})
+   #'*rendered-actions*       (atom {})
    #'*registered-subview-ids* (atom #{})
    ;; Partial reactive renders have no setup phase — the body is a pure
    ;; render fn, so the guard is active immediately.

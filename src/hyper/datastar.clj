@@ -2,7 +2,7 @@
   "The Datastar-expression boundary type.
 
    `RawExpr` wraps a finished Datastar/JS expression string (e.g. the
-   `@post(...)` an `h/action` produces).  It exists so the same value can be
+   `@hyperAction(...)` an `h/action` produces).  It exists so the same value can be
    used in two contexts without the caller choosing between them:
 
    - as a hiccup attribute value — it renders like the string it wraps,

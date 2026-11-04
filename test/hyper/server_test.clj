@@ -162,6 +162,7 @@
       (is (match?
             {:status 200
              :body   (m/pred #(and (string/includes? % "<script type=\"module\" src=\"/js/something-else.js\">")
+                                   (string/includes? % "import { action, filtered } from '/js/something-else.js'")
                                    (not (string/includes? % server/default-datastar-url))))}
             response))))
 
@@ -180,7 +181,8 @@
                                           {})
           response (handler {:uri "/" :request-method :get})]
       (is (string/includes? (:body response)
-                            (str "<script type=\"module\" src=\"" server/default-datastar-url "\">")))))
+                            (str "<script type=\"module\" src=\"" server/default-datastar-url "\">")))
+      (is (string/includes? (:body response) "name: 'hyperAction'"))))
 
   (testing "the :datastar-script option it replaced is rejected"
     (is (thrown-with-msg?
@@ -194,12 +196,20 @@
                             :app-state (atom (state/init-state))
                             :datastar-script nil))))
 
+  (testing "a default h/create-handler page registers @hyperAction"
+    (let [handler  (h/create-handler [["/" {:name :home :get (fn [_req] [:div "Home"])}]]
+                                     :app-state (atom (state/init-state)))
+          response (handler {:uri "/" :request-method :get :headers {}})]
+      (is (string/includes? (:body response) "name: 'hyperAction'"))
+      (is (string/includes? (:body response)
+                            (str "import { action, filtered } from '" server/default-datastar-url "'")))))
+
   (testing "h/create-handler passes :datastar-url on"
     (let [handler  (h/create-handler [["/" {:name :home :get (fn [_req] [:div "Home"])}]]
                                      :app-state (atom (state/init-state))
                                      :datastar-url "/js/ds.js")
           response (handler {:uri "/" :request-method :get :headers {}})]
-      (is (string/includes? (:body response) "<script type=\"module\" src=\"/js/ds.js\">"))))
+      (is (string/includes? (:body response) "import { action, filtered } from '/js/ds.js'"))))
 
   (testing "Allows :head to be a Var containing a function"
     (let [app-state* (atom (state/init-state))

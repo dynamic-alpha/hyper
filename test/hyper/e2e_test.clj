@@ -313,6 +313,30 @@
      [:span#when-let {:data-text (h/expr (when-let [x (or @a* @b*)] x))}]
      [:span#re-find {:data-text (h/expr (let [s (or @a* "xa;by")] (re-find #"a;b" s)))}]]))
 
+(defn- action-retry-get [_]
+  (let [clicks* (h/tab-cursor :clicks [])]
+    [:div
+     [:h1 "Test Action Retry"]
+     (for [label ["a" "b" "c"]]
+       [:button {:id (str "click-" label) :data-on:click (h/action (swap! clicks* conj label))} label])
+     [:span#clicks (str/join "," @clicks*)]]))
+
+(defn- upload-get [_]
+  (let [status* (h/signal :avatar-upload {:phase :idle :percent 0})]
+    [:div
+     [:h1 "Test Upload"]
+     [:form {:data-on:submit__prevent (h/action {:upload status*}
+                                                (reset! (h/tab-cursor :uploaded) (:filename (:avatar $form))))}
+      [:input#avatar {:type "file" :name "avatar"}]
+      [:button#upload-btn {:type "submit"} "Upload"]]
+     [:span#uploaded @(h/tab-cursor :uploaded "none")]]))
+
+(defn- data-init-get [_]
+  [:div
+   [:h1 "Test Data Init"]
+   [:div#init {:data-init (h/action (reset! (h/tab-cursor :inited) "yes"))}]
+   [:span#inited @(h/tab-cursor :inited "no")]])
+
 (defn default-routes []
   [["/" {:name  :home
          :title "Home"
@@ -364,7 +388,19 @@
    ["/expr-nested"
     {:name  :expr-nested
      :title "Expr Nested"
-     :get   #'expr-nested-get}]])
+     :get   #'expr-nested-get}]
+   ["/action-retry"
+    {:name  :action-retry
+     :title "Action Retry"
+     :get   #'action-retry-get}]
+   ["/upload"
+    {:name  :upload
+     :title "Upload"
+     :get   #'upload-get}]
+   ["/data-init"
+    {:name  :data-init
+     :title "Data Init"
+     :get   #'data-init-get}]])
 
 (def ^:dynamic *test-routes* (default-routes))
 
@@ -1576,5 +1612,90 @@
             ;; Verify cookie was set via document.cookie
             (wait-for-cookie "test-effect-cookie" "combo-value")))
 
+        (finally
+          (close-browser! browser-info))))))
+
+;; ---------------------------------------------------------------------------
+;; Test: a failed action request is carried by the next one
+;; ---------------------------------------------------------------------------
+
+(deftest ^:e2e failed-action-request-is-resent-test
+  (testing "actions whose request failed are sent again with the next action
+            and run on the server in click order"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page         (new-page ctx)
+          requests     (atom 0)]
+      (try
+        (.route page (java.util.regex.Pattern/compile ".*/hyper/actions\\?tab-id=.*")
+                (reify java.util.function.Consumer
+                  (accept [_ route]
+                    (let [^com.microsoft.playwright.Route route route]
+                      (case (int (swap! requests inc))
+                        1 (.abort route)
+                        2 (.fulfill route (doto (com.microsoft.playwright.Route$FulfillOptions.)
+                                            (.setStatus 500)))
+                        (.resume route))))))
+        (w/with-page page
+          (w/navigate (str base-url "/action-retry"))
+          (wait-for-sse)
+
+          (w/click "#click-a")
+          (is (wait-for-pred #(= 1 @requests)) "the first request is aborted")
+          (w/click "#click-b")
+          (is (wait-for-pred #(= 2 @requests)) "the second request gets a 500")
+          (w/click "#click-c")
+          (is (wait-for-text "#clicks" "a,b,c"))
+          (is (= ["a" "b" "c"]
+                 (some :clicks (map :data (vals (:tabs @@test-state*)))))
+              "the server ran every action once, in click order"))
+        (finally
+          (close-browser! browser-info))))))
+
+(deftest ^:e2e upload-test
+  (testing "an upload runs its action with the posted file"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page         (new-page ctx)
+          urls         (atom [])
+          file         (doto (java.io.File/createTempFile "avatar" ".txt")
+                         (.deleteOnExit)
+                         (spit "hello"))]
+      (try
+        (w/with-page page
+          (.onRequest page (reify java.util.function.Consumer
+                             (accept [_ request]
+                               (let [url (.url ^com.microsoft.playwright.Request request)]
+                                 (when (str/includes? url "/hyper/upload")
+                                   (swap! urls conj url))))))
+          (w/navigate (str base-url "/upload"))
+          (wait-for-sse)
+          (.setInputFiles (.locator page "#avatar") (.toPath file))
+          (w/click "#upload-btn")
+          (is (wait-for-text "#uploaded" (.getName file)))
+          (is (re-find #"\?action-id=a_[^&]+&tab-id=[^&]+&v=\d+$" (first @urls))
+              "the upload names its tab and the render it was made on"))
+        (finally
+          (close-browser! browser-info))))))
+
+(deftest ^:e2e data-init-action-test
+  (testing "an action in the initial HTML's data-init runs on page load"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page         (new-page ctx)
+          errors       (atom [])]
+      (try
+        (.onConsoleMessage page (reify java.util.function.Consumer
+                                  (accept [_ msg]
+                                    (let [msg ^com.microsoft.playwright.ConsoleMessage msg]
+                                      (when (= "error" (.type msg))
+                                        (swap! errors conj (.text msg)))))))
+        (w/with-page page
+          (w/navigate (str base-url "/data-init"))
+          (wait-for-sse)
+          (is (wait-for-text "#inited" "yes"))
+          (is (= ["yes"] (keep (comp :inited :data) (vals (:tabs @@test-state*))))
+              "the action ran once on the server")
+          (is (empty? @errors) (str "console errors: " @errors)))
         (finally
           (close-browser! browser-info))))))

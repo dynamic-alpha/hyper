@@ -36,25 +36,23 @@
                        "Client-param symbols like $key/$value work inside h/expr.")}))
 
 (defn build-action-expr
-  "Build the Datastar/JS expression string for an action.
-   Always uses Datastar's @post() so that all non-underscore signals are
-   automatically sent in the request body.  When client params are present,
-   they are URL-encoded into the query string via the hyper.encodeClientParams helper
-   so the server can read them from query-params.
-   Optionally injects a custom Datastar expression to conditionally prevent the post.
-   base-path is prepended to the /hyper/actions endpoint (empty string when not set)."
-  [action-id used-params js base-path]
+  "Build the Datastar/JS expression string for an action: hyper's
+   `@hyperAction(id, clientParams)` (see `hyper.server/action-script`), which
+   queues the action with the page's signals, the render it was made on and
+   the next sequence number, and posts the tab's queued actions so the
+   server runs each once, in the order they were made.
+   Optionally injects a custom Datastar expression to conditionally prevent
+   the action.  base-path is unused: the client script knows the endpoint."
+  [action-id used-params js _base-path]
   (let [js-injection (when js (str js " && "))]
     (if (empty? used-params)
-      (str js-injection "@post('" base-path "/hyper/actions?action-id=" action-id "')")
+      (str js-injection "@hyperAction('" action-id "')")
       (let [obj-entries (->> used-params
                              vals
                              (map (fn [{:keys [js key]}]
                                     (str key ":" js)))
                              (str/join ","))]
-        (str js-injection
-             "@post('" base-path "/hyper/actions?action-id=" action-id
-             "&' + hyper.encodeClientParams({" obj-entries "}))")))))
+        (str js-injection "@hyperAction('" action-id "', {" obj-entries "})")))))
 
 (defn register-action!
   "Register an action function and return its ID.
@@ -64,7 +62,8 @@
    When omitted a random UUID is generated (legacy / dynamic actions).
 
    opts may include:
-   - :as  — a human-readable name for the action, useful for testing"
+   - :as         — a human-readable name for the action, useful for testing
+   - :upload-ref — the status ref of an upload action (see hyper.uploads)"
   ([app-state* session-id tab-id action-fn]
    (register-action! app-state* session-id tab-id action-fn
                      (str "act_" (uuid/str (java.util.UUID/randomUUID)))
@@ -72,36 +71,159 @@
   ([app-state* session-id tab-id action-fn action-id]
    (register-action! app-state* session-id tab-id action-fn action-id nil))
   ([app-state* session-id tab-id action-fn action-id opts]
-   (swap! app-state* (fn [state]
-                       (-> state
-                           (assoc-in [:actions action-id]
-                                     (cond-> {:fn         action-fn
-                                              :session-id session-id
-                                              :tab-id     tab-id}
-                                       (:as opts) (assoc :as (:as opts))))
-                           (update-in [:actions-by-tab tab-id]
-                                      (fnil conj #{}) action-id))))
-   (when-let [acc context/*registered-action-ids*]
-     (swap! acc conj action-id))
+   (let [action-data (cond-> {:fn         action-fn
+                              :session-id session-id
+                              :tab-id     tab-id}
+                       (:as opts)         (assoc :as (:as opts))
+                       (:upload-ref opts) (assoc :upload-ref (:upload-ref opts)))]
+     (swap! app-state* (fn [state]
+                         (-> state
+                             (assoc-in [:actions action-id] action-data)
+                             (update-in [:actions-by-tab tab-id]
+                                        (fnil conj #{}) action-id))))
+     (when-let [acc context/*registered-action-ids*]
+       (swap! acc conj action-id))
+     (when-let [acc context/*rendered-actions*]
+       (swap! acc assoc action-id action-data)))
    action-id))
 
-(defn execute-action!
-  "Execute an action by ID with error handling.
-   When client-params are provided they are passed to the action fn."
-  ([app-state* action-id]
-   (execute-action! app-state* action-id nil))
-  ([app-state* action-id client-params]
-   (if-let [action-data (get-in @app-state* [:actions action-id])]
-     (let [{:keys [fn]} action-data]
-       (t/catch->error! :hyper.error/execute-action
-                        (fn client-params))
-       true)
-     (do
-       (t/log! {:level :warn
-                :id    :hyper.error/action-not-found
-                :data  {:hyper/action-id action-id}
-                :msg   "Action not found"})
-       (throw (ex-info "Action not found" {:hyper/action-id action-id}))))))
+;; ---------------------------------------------------------------------------
+;; Render versions
+;; ---------------------------------------------------------------------------
+;; Action ids count the actions in a render, so the same id means different
+;; actions in different renders.  Each render that changes the page gets a
+;; version, sent with the HTML (`data-hyper-render-version` on #hyper-app, or
+;; on a reactive region's root for a partial render), and its actions are
+;; kept under it.  A click names the version of the HTML it was made on, and
+;; the region it was read from, so it runs the action that HTML showed.
+;;
+;; The page and each region keep their own renders, so one view's renders
+;; never push out another's.  Versions are numbered across the tab.
+;;
+;; Kept under [:tabs tab-id :renders]:
+;;   :last-version the latest version handed out
+;;   :page         the full renders
+;;   :regions      {region-id renders} the partial renders of each region
+;; where the renders of a view are
+;;   {:html html :version v :versions {version {:actions {action-id action-data}}}}
+;; with :html and :version those of its latest render.
+;;
+;; Renders are dropped once the client reports having moved past them: the
+;; page version it shows (`evict-renders-before!`), or a click on a newer
+;; render of the same region (`evict-region-renders-before!`).
+
+(def max-renders-per-view
+  "The most render versions kept for one view (the page, or one region);
+   beyond it the oldest are dropped, except the view's latest."
+  64)
+
+(defn- trim-versions [{:keys [versions version] :as view}]
+  (if (<= (count versions) max-renders-per-view)
+    view
+    (let [drop (->> (keys versions)
+                    (remove #{version})
+                    sort
+                    (take (- (count versions) max-renders-per-view)))]
+      (update view :versions #(apply dissoc % drop)))))
+
+(defn- drop-versions-before
+  "`view` without its versions before `version`, keeping `keep-v`.  nil when
+   no version is left."
+  [view version keep-v]
+  (let [view (update view :versions
+                     #(into {} (remove (fn [[v _]] (and (< v version) (not= v keep-v)))) %))]
+    (when (seq (:versions view))
+      view)))
+
+(defn- drop-renders-before
+  "`renders` without the page's and the regions' versions before `version`.
+   The page's latest version is kept."
+  [{:keys [page regions] :as renders} version]
+  (cond-> renders
+    page    (update :page drop-versions-before version (:version page))
+    regions (update :regions
+                    #(into {}
+                           (keep (fn [[region view]]
+                                   (some->> (drop-versions-before view version nil)
+                                            (vector region))))
+                           %))))
+
+(defn- update-renders
+  "Apply `f` to tab `tab-id`'s renders, unless the tab is gone."
+  [app-state* tab-id f]
+  (swap! app-state*
+         (fn [state]
+           (if (contains? (:tabs state) tab-id)
+             (update-in state [:tabs tab-id :renders] f)
+             state))))
+
+(defn record-render!
+  "Store the `actions` a render registered under its version and return the
+   version.  A render of the page (`region` nil) keeps the version of the
+   page's previous render when it produced the same `html`; a render of a
+   region keeps the region's previous version for the same `html` only while
+   that version is newer than the page's.  Otherwise it gets a new version.
+   A render of the page also drops the region renders made before the oldest
+   page render still kept."
+  [app-state* tab-id {:keys [region html actions]}]
+  (let [k     (if region [:regions region] [:page])
+        state (update-renders
+                app-state* tab-id
+                (fn [renders]
+                  (let [{last-html :html last-v :version :as view} (get-in renders k)
+                        page-v                                     (get-in renders [:page :version] 0)
+                        last-version                               (:last-version renders 0)
+                        same?                                      (and (= html last-html)
+                                                                        (contains? (:versions view) last-v)
+                                                                        (or (nil? region) (< page-v last-v)))
+                        v                                          (if same? last-v (inc last-version))
+                        renders                                    (-> renders
+                                                                       (assoc :last-version (max v last-version))
+                                                                       (assoc-in k (-> view
+                                                                                       (assoc :html html :version v)
+                                                                                       (assoc-in [:versions v :actions] actions)
+                                                                                       trim-versions)))]
+                    (if region
+                      renders
+                      ;; A region's render is only ever shown on top of an
+                      ;; older page render, so once every page render before
+                      ;; it is gone no click can name it.  This bounds what a
+                      ;; tab that never reports its page version keeps.
+                      (drop-renders-before renders (apply min (keys (get-in renders [:page :versions]))))))))]
+    (get-in state (into [:tabs tab-id :renders] (conj k :version)))))
+
+(defn evict-renders-before!
+  "Drop the render versions before `version`, the page version the client
+   has applied: a full render replaces the page and every region rendered
+   before it, so no click can name them any more.  The latest page version
+   is always kept."
+  [app-state* tab-id version]
+  (when version
+    (update-renders app-state* tab-id #(drop-renders-before % version)))
+  nil)
+
+(defn evict-region-renders-before!
+  "Drop region `region`'s render versions before `version`, which the client
+   has applied to that region."
+  [app-state* tab-id region version]
+  (update-renders
+    app-state* tab-id
+    (fn [renders]
+      (if-let [view (get-in renders [:regions region])]
+        (assoc-in renders [:regions region] (drop-versions-before view version version))
+        renders)))
+  nil)
+
+(defn find-rendered-action
+  "The action `action-id` named in render `version` of region `region` of
+   tab `tab-id`, or of its page when `region` is nil, or in its latest page
+   render when `version` is nil.  nil when that render is gone."
+  [app-state* tab-id region version action-id]
+  (let [renders (get-in @app-state* [:tabs tab-id :renders])]
+    (if (nil? version)
+      (get-in renders [:page :versions (get-in renders [:page :version]) :actions action-id])
+      (get-in renders (-> (if region [:regions region] [:page])
+                          (into [:versions version :actions action-id]))))))
 
 (defn sweep-stale-tab-actions!
   "Remove actions for a tab that were not re-registered during the last
