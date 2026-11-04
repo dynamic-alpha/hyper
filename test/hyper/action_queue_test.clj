@@ -35,11 +35,11 @@
 
 (defn- queued
   "An action as @hyperAction queues it."
-  [{:keys [id seq v value]}]
+  [{:keys [id seq v value signals]}]
   {:id      id
    :seq     seq
    :v       v
-   :signals "{}"
+   :signals (json/generate-string (or signals {}))
    :params  (when value (json/generate-string {:value value}))})
 
 (defn- rerender! [app*]
@@ -105,6 +105,38 @@
           (is (= 1 (get-in @app* [:tabs "T" :data :n])) "a click on a dropped render runs nothing")
           (post-queue! handler v2 [(queued {:id id :seq 3 :v v2})])
           (is (= 2 (get-in @app* [:tabs "T" :data :n]))))))))
+
+(deftest test-server-writes-win-over-older-client-copies
+  (let [!status        (atom nil)
+        [handler app*] (page-handler (fn [_]
+                                       (let [status (h/signal :status "idle")]
+                                         (reset! !status status)
+                                         [:div [:button {:data-on:click (h/action (reset! (h/tab-cursor :seen) @status))}
+                                                "look"]])))
+        html           (get-page handler)
+        v              (render-version html)
+        id             (action-id html "look")
+        page-seq       (some-> (re-find #"data-signals:hyper-signal-seq=\"(\d+)\"" html) second parse-long)
+        drain!         #(#'hyper.server/drain-client-signals! app* "T")
+        status         #(get-in @app* [:tabs "T" :signals :status])
+        seen           #(get-in @app* [:tabs "T" :data :seen])]
+    (is (some? page-seq) "the page carries the signal patch number")
+    (testing "the server writes while an action made before seeing the write is on its way"
+      (reset! @!status "done")
+      (post-queue! handler v [(queued {:id id :seq 1 :v v :signals {:status "uploading" :hyperSignalSeq page-seq}})])
+      (is (= "done" (seen)) "the action sees the server's value")
+      (is (= "done" (status)) "and the server keeps it")
+      (let [[client-reported current] (drain!)]
+        (is (= "uploading" (:status client-reported)) "the client is known to hold its own value")
+        (is (= "done" (:status current)) "so the server's is patched to it")
+        (testing "once the client applied that patch, its values count again"
+          (post-queue! handler v [(queued {:id id :seq 2 :v v :signals {:status "typed" :hyperSignalSeq (:hyper-signal-seq current)}})])
+          (is (= "typed" (seen)))
+          (is (= "typed" (status))))))
+    (testing "a client that sends no patch number is taken as is"
+      (reset! @!status "done")
+      (post-queue! handler v [(queued {:id id :seq 3 :v v :signals {:status "old"}})])
+      (is (= "old" (seen))))))
 
 (deftest test-unknown-tab
   (let [[handler _] (page-handler (fn [_] [:div]))]

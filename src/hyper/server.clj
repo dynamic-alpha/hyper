@@ -229,17 +229,21 @@
 
 (defn- drain-client-signals!
   "Atomically remove and return this tab's client-reported signals together
-   with its current signal state.  Returns [client-reported current-signals]."
+   with its current signal state, numbered as the next patch (see
+   `signal/advance-seq`).  Returns [client-reported current-signals]."
   [app-state* tab-id]
   ;; Consumed, not kept — a stale report must not suppress a later server
   ;; write back to the same value.
   (let [[old new] (swap-vals! app-state*
                               (fn [state]
-                                (if (get-in state [:tabs tab-id :client-signals])
-                                  (update-in state [:tabs tab-id] dissoc :client-signals)
-                                  state)))]
+                                (if (contains? (:tabs state) tab-id)
+                                  (update-in state [:tabs tab-id]
+                                             #(-> % (dissoc :client-signals) signal/advance-seq))
+                                  state)))
+        tab       (get-in new [:tabs tab-id])]
     [(get-in old [:tabs tab-id :client-signals])
-     (get-in new [:tabs tab-id :signals])]))
+     (when-let [signals (:signals tab)]
+       (signal/with-seq tab signals))]))
 
 (defn- -renderer-loop!
   "Render loop for a single tab, run inside the SSE response's
@@ -687,19 +691,25 @@
   (let [tab-id         (:tab-id action-data)
         req-with-state (assoc req
                               :hyper/app-state app-state*
-                              :hyper/router (get @app-state* :router))]
-    ;; Sync client signal values into server state so the
-    ;; render loop can detect changes (e.g. when a user types
-    ;; into a data-bind input, the server needs to know the
-    ;; latest value for changed-signals diffing).  Recording
-    ;; them under :client-signals too keeps the render loop
-    ;; from echoing them back as patches.
+                              :hyper/router (get @app-state* :router))
+        ;; Sync client signal values into server state so the
+        ;; render loop can detect changes (e.g. when a user types
+        ;; into a data-bind input, the server needs to know the
+        ;; latest value for changed-signals diffing).  Recording
+        ;; them under :client-signals too keeps the render loop
+        ;; from echoing them back as patches.  A path the server
+        ;; wrote after the client's last patch keeps the server's
+        ;; value, which is then patched to the client.
+        signals        (if (and signals tab-id)
+                         (-> (swap! app-state* update-in [:tabs tab-id]
+                                    (fn [tab]
+                                      (-> tab
+                                          (update :signals merge (signal/without-unseen-writes tab signals))
+                                          (update :client-signals merge signals))))
+                             (get-in [:tabs tab-id])
+                             (signal/without-unseen-writes signals))
+                         signals)]
     (when (and signals tab-id)
-      (swap! app-state* update-in [:tabs tab-id]
-             (fn [tab]
-               (-> tab
-                   (update :signals merge signals)
-                   (update :client-signals merge signals))))
       ;; Persist auto-commit optimistics before the action body runs,
       ;; so cursor reads in the action see the committed value.
       (signal/auto-commit! app-state* tab-id signals))
@@ -1073,7 +1083,7 @@ action({
    Shared by page-handler and not-found-handler so both emit identical document
    scaffolding, differing only in `status` and `fallback-title` (the <title>
    used when the result has no :title)."
-  [result {:keys [datastar-script open-when-hidden? base-path webkit-sse-shim? core-version tree-shake? squint-core-url]
+  [result {:keys [datastar-script open-when-hidden? base-path webkit-sse-shim? core-version tree-shake? squint-core-url signal-seq]
            :or   {open-when-hidden? true
                   base-path         ""
                   webkit-sse-shim?  true}}
@@ -1085,7 +1095,8 @@ action({
                                                                tree-shake? (assoc :data-hyper-squint-version core-version)
                                                                (:url result) (assoc :data-hyper-url (:url result))
                                                                (:render-version result) (assoc :data-hyper-render-version (:render-version result))
-                                                               sig-attrs (merge sig-attrs))
+                                                               sig-attrs (merge sig-attrs)
+                                                               signal-seq (assoc (keyword (str "data-signals:" (name signal/seq-key))) signal-seq))
         ;; WebKit/Safari fetch-streaming strand workaround: inject the
         ;; EventSource shim only for affected user agents, before the datastar
         ;; script so window.fetch is patched before datastar opens the stream.
@@ -1126,6 +1137,16 @@ action({
      :headers {"Content-Type" "text/html; charset=utf-8"}
      :body    html}))
 
+(defn- page-opts
+  "`opts` for `page-response` of a render of tab `tab-id`, with the signal
+   patch number its signals stand at."
+  [app-state* tab-id opts]
+  (assoc opts
+         :core-version (squint-core-version app-state*)
+         :tree-shake? (:tree-shake? @app-state*)
+         :signal-seq (-> (swap! app-state* update-in [:tabs tab-id] signal/advance-seq)
+                         (get-in [:tabs tab-id :signal-seq] 0))))
+
 (defn page-handler
   "Wrap a page render function to provide full HTML response.
    Delegates rendering to render/render-tab so initial page loads share
@@ -1150,7 +1171,7 @@ action({
           ;; Ring response passthrough (e.g. a 302 redirect)
           (if (:status result)
             result
-            (page-response result (assoc opts :core-version (squint-core-version app-state*) :tree-shake? (:tree-shake? @app-state*)) req tab-id 200 "Hyper App")))))))
+            (page-response result (page-opts app-state* tab-id opts) req tab-id 200 "Hyper App")))))))
 
 (defn- not-found-handler
   "Reitit default-handler for unmatched routes: renders the configured
@@ -1176,7 +1197,7 @@ action({
         ;; Ring response passthrough (e.g. a redirect from render middleware)
         (if (:status result)
           result
-          (page-response result (assoc opts :core-version (squint-core-version app-state*) :tree-shake? (:tree-shake? @app-state*)) req tab-id 404 "Not Found"))))))
+          (page-response result (page-opts app-state* tab-id opts) req tab-id 404 "Not Found"))))))
 
 (defn- components-js-handler
   "Serve the assembled client-components ES module bundle.

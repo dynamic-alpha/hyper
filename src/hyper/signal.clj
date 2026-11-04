@@ -84,6 +84,58 @@
     :else        (str "'" (utils/escape-js-string (str v)) "'")))
 
 ;; ---------------------------------------------------------------------------
+;; Server writes vs. the client's copy
+;; ---------------------------------------------------------------------------
+;; An action brings the page's signals as they were when it was made, which
+;; may predate a server write still on its way to the client.  So the server
+;; numbers its signal patches (sent as the `hyperSignalSeq` signal), notes for
+;; each path it writes the first patch that can carry the write, and keeps its
+;; own value at those paths over an action's from before that patch.
+;;
+;; Kept in tab state:
+;;   :signal-seq    the number of the latest patch
+;;   :signal-writes {store-path patch-number}
+
+(def seq-key
+  "The signal holding the number of the latest signal patch the client applied."
+  :hyper-signal-seq)
+
+(defn write
+  "`tab` with signal `store-path` set to `v` by the server."
+  [tab store-path v]
+  (-> tab
+      (assoc-in (into [:signals] store-path) v)
+      (assoc-in [:signal-writes store-path] (inc (:signal-seq tab 0)))))
+
+(defn advance-seq
+  "`tab` with its signal seq moved past its writes when the current seq
+   doesn't cover them all, so the next patch carries the new number."
+  [tab]
+  (let [n (:signal-seq tab 0)]
+    (if (some #(> % n) (vals (:signal-writes tab)))
+      (assoc tab :signal-seq (inc n))
+      tab)))
+
+(defn with-seq
+  "`signals` as the client should hold them: with `tab`'s signal seq."
+  [tab signals]
+  (assoc signals seq-key (:signal-seq tab 0)))
+
+(defn without-unseen-writes
+  "Client `signals` with `tab`'s value at every path the server wrote after
+   the last patch the client applied.  Unchanged when they carry no patch
+   number."
+  [tab signals]
+  (if-let [seen (get signals seq-key)]
+    (reduce-kv (fn [signals path n]
+                 (if (> n seen)
+                   (assoc-in signals path (get-in tab (into [:signals] path)))
+                   signals))
+               (dissoc signals seq-key)
+               (:signal-writes tab))
+    signals))
+
+;; ---------------------------------------------------------------------------
 ;; Signal types
 ;; ---------------------------------------------------------------------------
 
@@ -103,7 +155,7 @@
 
   clojure.lang.IAtom
   (reset [_ newv]
-    (swap! app-state* assoc-in (into [:tabs tab-id :signals] store-path) newv)
+    (swap! app-state* update-in [:tabs tab-id] write store-path newv)
     newv)
 
   (swap [this f]
