@@ -708,7 +708,7 @@
     (->> (client-params/defined-client-params)
          (filter all-syms)
          (reduce (fn [m sym]
-                   (assoc m sym (client-params/client-param sym)))
+                   (assoc m sym (client-params/definition sym)))
                  {}))))
 
 (defmacro ^{:hyper/datastar-expr true} action

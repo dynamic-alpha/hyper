@@ -280,3 +280,24 @@
                                      (h/action (reset! (h/tab-cursor :q) $value))))]
                    (is (str/includes? out "evt.key === \"Enter\""))
                    (is (str/includes? out "@hyperAction('a_t_1', {value:evt.target.value})")))))))
+
+(deftest test-client-param-with-statements
+  ;; An h/expr with a `;` returns through __hyper_r, which only works as a whole
+  ;; handler.  The param is registered only for this test (other tests list the
+  ;; defined params), so the forms using it are compiled with eval.
+  (let [js (->expr {:meta (or (.-metaKey evt) (.-ctrlKey evt))})]
+    (is (str/ends-with? js "return __hyper_r;"))
+    (.addMethod ^clojure.lang.MultiFn hyper.client-params/client-param '$test-mods
+                (fn [_] {:js js :key "testMods"}))
+    (try
+      (let [wrapped (str "(() => { " js " })()")]
+        (testing "an action passes it as an expression"
+          (let [app-state* (new-tab)]
+            (rendering app-state*
+                       (is (= (str "@hyperAction('a_t_1', {testMods:" wrapped "})")
+                              (:js (eval `(h/action (prn ~'$test-mods)))))))))
+
+        (testing "an expression embeds it as an expression"
+          (is (str/includes? (eval `(->expr (.-meta ~'$test-mods))) (str wrapped ".meta")))))
+      (finally
+        (remove-method hyper.client-params/client-param '$test-mods)))))
