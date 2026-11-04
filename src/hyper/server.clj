@@ -182,7 +182,7 @@
       ;; Normal render — assemble and send SSE payload
       (let [{:keys [title head-html body-html url
                     declared-signals registered-action-ids
-                    registered-subview-ids]}               render-result]
+                    registered-subview-ids render-version]} render-result]
         ;; Sweep stale actions + render-scoped subviews (reactive regions)
         (actions/sweep-stale-tab-actions! app-state* tab-id registered-action-ids)
         (subview/sweep-stale! app-state* tab-id registered-subview-ids)
@@ -196,8 +196,9 @@
               sig-attrs    (signal/format-signal-attrs declared-signals)
               div-attrs    (cond-> {:id "hyper-app"}
                              (:tree-shake? @app-state*) (assoc :data-hyper-squint-version (squint-core-version app-state*))
-                             url       (assoc :data-hyper-url url)
-                             sig-attrs (merge sig-attrs))
+                             url            (assoc :data-hyper-url url)
+                             render-version (assoc :data-hyper-render-version render-version)
+                             sig-attrs      (merge sig-attrs))
               wrapped-html (c/html [:div div-attrs (c/raw body-html)])
               body-event   (render/format-datastar-fragment wrapped-html)
               ;; Keep only patches that add information beyond the body
@@ -616,12 +617,15 @@
                  {}
                  qp))))
 
+(declare read-body run-action! queued-actions-handler)
+
 (defn action-handler
   "Handler for action POST requests.
 
-   All actions use Datastar's `@post()`, which sends all non-underscore
-   signals as a JSON body.  Client params ($value, $checked, etc.) are
-   passed as URL query parameters.
+   Pages post their action queue as `?tab-id=` (see `queued-actions-handler`).
+   A single action can also be posted as `?action-id=`, with the signals as
+   the JSON body and client params ($value, $checked, etc.) as URL query
+   parameters:
 
    - Parses the body as signal values and binds them to `context/*signals*`
    - Extracts client params from URL query parameters (JSON-decoded)
@@ -631,60 +635,26 @@
    - Queues any pending scripts to the renderer for SSE delivery"
   [app-state*]
   (fn [req]
-    (let [action-id (get-in req [:query-params "action-id"])]
+    (let [action-id (get-in req [:query-params "action-id"])
+          tab-id    (get-in req [:query-params "tab-id"])]
 
-      (if-not action-id
+      (cond
+        (and (not action-id) tab-id)
+        (queued-actions-handler app-state* req tab-id)
+
+        (not action-id)
         {:status  400
          :headers {"Content-Type" "application/json"}
          :body    "{\"error\": \"Missing action-id\"}"}
 
-        (let [req-with-state (assoc req
-                                    :hyper/app-state app-state*
-                                    :hyper/router (get @app-state* :router))
-              raw-body       (try
-                               (when-let [body (:body req)]
-                                 (let [s (if (string? body) body (slurp body))]
-                                   (when-not (clojure.string/blank? s) s)))
-                               (catch Exception _ nil))
-              signals        (when raw-body
-                               (signal/parse-signals raw-body))
-              client-params  (parse-client-query-params req)
-              ;; Sync client signal values into server state so the
-              ;; render loop can detect changes (e.g. when a user types
-              ;; into a data-bind input, the server needs to know the
-              ;; latest value for changed-signals diffing).  Recording
-              ;; them under :client-signals too keeps the render loop
-              ;; from echoing them back as patches.
-              action-data    (get-in @app-state* [:actions action-id])
-              tab-id         (:tab-id action-data)]
-          (when (and signals tab-id)
-            (swap! app-state* update-in [:tabs tab-id]
-                   (fn [tab]
-                     (-> tab
-                         (update :signals merge signals)
-                         (update :client-signals merge signals))))
-            ;; Persist auto-commit optimistics before the action body runs,
-            ;; so cursor reads in the action see the committed value.
-            (signal/auto-commit! app-state* tab-id signals))
-          (when-let [env (:hyper/env req)]
-            (when tab-id
-              (swap! app-state* assoc-in [:tabs tab-id :env] env)))
-          (push-thread-bindings {#'context/*request*     req-with-state
-                                 #'context/*signals*     signals
-                                 #'context/*action-name* (:as action-data)
-                                 #'effects/*pending*     (effects/init-pending)})
-          (try
-            (actions/execute-action! app-state* action-id client-params)
+        :else
 
-            ;; Collect accumulated effects
-            (let [pending  (effects/collect-pending!)
-                  ;; Queue pending scripts for SSE delivery via the renderer thread
-                  _        (when-let [scripts (seq (:scripts pending))]
-                             (when-let [renderer (get-in @app-state* [:tabs tab-id :renderer])]
-                               ((:enqueue-scripts! renderer) scripts)))
-                  ;; Build response — 204 with any cookies from effects
-                  response {:status 204}]
-              (effects/apply-cookies-to-response response pending))
+        (let [signals       (some-> (read-body req) signal/parse-signals)
+              client-params (parse-client-query-params req)
+              action-data   (get-in @app-state* [:actions action-id])]
+          (try
+            (let [pending (run-action! app-state* req action-id action-data signals client-params)]
+              (effects/apply-cookies-to-response {:status 204} pending))
             (catch Exception e
               (t/error! {:id   :hyper.error/action-handler
                          :msg  "Error executing action handler"
@@ -692,9 +662,126 @@
                         e)
               {:status  500
                :headers {"Content-Type" "application/json"}
-               :body    (json/generate-string {:error (.getMessage e)})})
-            (finally
-              (pop-thread-bindings))))))))
+               :body    (json/generate-string {:error (.getMessage e)})})))))))
+
+(defn- read-body
+  "The request body as a string, or nil when it is empty or unreadable."
+  [req]
+  (try
+    (when-let [body (:body req)]
+      (let [s (if (string? body) body (slurp body))]
+        (when-not (clojure.string/blank? s) s)))
+    (catch Exception _ nil)))
+
+(defn- run-action!
+  "Run `action-data`'s fn as the action `action-id` with the request's
+   `signals` and `client-params`, and return its pending effects, after
+   queueing its scripts for the renderer.  Throws when the action is gone."
+  [app-state* req action-id action-data signals client-params]
+  (when-not action-data
+    (t/log! {:level :warn
+             :id    :hyper.error/action-not-found
+             :data  {:hyper/action-id action-id}
+             :msg   "Action not found"})
+    (throw (ex-info "Action not found" {:hyper/action-id action-id})))
+  (let [tab-id         (:tab-id action-data)
+        req-with-state (assoc req
+                              :hyper/app-state app-state*
+                              :hyper/router (get @app-state* :router))]
+    ;; Sync client signal values into server state so the
+    ;; render loop can detect changes (e.g. when a user types
+    ;; into a data-bind input, the server needs to know the
+    ;; latest value for changed-signals diffing).  Recording
+    ;; them under :client-signals too keeps the render loop
+    ;; from echoing them back as patches.
+    (when (and signals tab-id)
+      (swap! app-state* update-in [:tabs tab-id]
+             (fn [tab]
+               (-> tab
+                   (update :signals merge signals)
+                   (update :client-signals merge signals))))
+      ;; Persist auto-commit optimistics before the action body runs,
+      ;; so cursor reads in the action see the committed value.
+      (signal/auto-commit! app-state* tab-id signals))
+    (when-let [env (:hyper/env req)]
+      (when tab-id
+        (swap! app-state* assoc-in [:tabs tab-id :env] env)))
+    (binding [context/*request*     req-with-state
+              context/*signals*     signals
+              context/*action-name* (:as action-data)
+              effects/*pending*     (effects/init-pending)]
+      (t/catch->error! :hyper.error/execute-action
+                       ((:fn action-data) client-params))
+      (let [pending (effects/collect-pending!)]
+        ;; Queue pending scripts for SSE delivery via the renderer thread
+        (when-let [scripts (seq (:scripts pending))]
+          (when-let [renderer (get-in @app-state* [:tabs tab-id :renderer])]
+            ((:enqueue-scripts! renderer) scripts)))
+        pending))))
+
+(defn- action-lock
+  "The lock a tab's queued actions run under, created on first use; nil when
+   the tab is gone."
+  ^java.util.concurrent.locks.ReentrantLock [app-state* tab-id]
+  (-> (swap! app-state* (fn [state]
+                          (if (and (contains? (:tabs state) tab-id)
+                                   (nil? (get-in state [:tabs tab-id :action-lock])))
+                            (assoc-in state [:tabs tab-id :action-lock]
+                                      (java.util.concurrent.locks.ReentrantLock.))
+                            state)))
+      (get-in [:tabs tab-id :action-lock])))
+
+(defn- run-queued-action!
+  "Run one action from a tab's queue: action `id` of render `v`, with the
+   signals and client params it was made with.  Returns its pending effects,
+   or nil when that render is gone."
+  [app-state* req tab-id {:keys [id v signals params]}]
+  (if-let [action-data (actions/find-rendered-action app-state* tab-id v id)]
+    (run-action! app-state* req id action-data
+                 (some-> signals signal/parse-signals)
+                 (some-> params (json/parse-string true)))
+    (t/log! {:level :warn
+             :id    :hyper.error/action-not-found
+             :data  {:hyper/action-id id :hyper/render-version v :hyper/tab-id tab-id}
+             :msg   "Action not found: the render it was made on is gone"})))
+
+(defn queued-actions-handler
+  "Handler for the queue `@hyperAction` posts for tab `tab-id`:
+   `{base, actions}`, where `actions` are the tab's actions whose requests have
+   not completed, `{id, seq, v, signals, params}` in the order they were made,
+   and `base` is the page render version the client shows.
+
+   A tab's requests run one at a time.  Actions with a sequence number the tab
+   has already run are skipped, so an action sent again, or a request that
+   arrives after a later one, runs nothing twice and nothing out of order.
+   Afterwards renders before `base` are dropped: no click can name them."
+  [app-state* req tab-id]
+  (let [lock (action-lock app-state* tab-id)]
+    (if (or (nil? lock)
+            ;; A tab is linked to its session once its SSE stream connects
+            (when-let [session-id (get-in @app-state* [:tabs tab-id :session-id])]
+              (not= session-id (:hyper/session-id req))))
+      {:status  404
+       :headers {"Content-Type" "application/json"}
+       :body    "{\"error\": \"Unknown tab\"}"}
+      (let [{:keys [base actions]} (json/parse-string (read-body req) true)]
+        (.lock lock)
+        (try
+          (let [last-seq (get-in @app-state* [:tabs tab-id :action-seq] 0)
+                pendings (->> actions
+                              (filter #(< last-seq (:seq %)))
+                              (sort-by :seq)
+                              (mapv (fn [{:keys [seq] :as queued}]
+                                      (swap! app-state* assoc-in [:tabs tab-id :action-seq] seq)
+                                      (run-queued-action! app-state* req tab-id queued))))]
+            (actions/evict-renders-before! app-state* tab-id base)
+            (reduce (fn [response pending]
+                      (cond-> response
+                        pending (effects/apply-cookies-to-response pending)))
+                    {:status 204}
+                    pendings))
+          (finally
+            (.unlock lock)))))))
 
 (defn- trigger-tab-render!
   "Enqueue a full render for `tab-id` on its currently attached renderer (if
@@ -915,6 +1002,62 @@
 })();
 "))])
 
+(defn datastar-src
+  "The module URL Datastar is loaded from: the `:src` of the (first) script
+   in the `:datastar-script` hiccup, or nil."
+  [datastar-script]
+  (->> (tree-seq sequential? seq datastar-script)
+       (some (fn [node]
+               (when (and (vector? node) (= :script (first node)) (map? (second node)))
+                 (:src (second node)))))))
+
+(defn action-script
+  "A module script that adds the `@hyperAction(id, clientParams)` Datastar
+   action, imported from the same module URL as Datastar so it registers with
+   the page's Datastar.  Nil, with a warning, when that URL is unknown.
+
+   Each call numbers the action and queues it with the page's signals as they
+   are now, the client params, and the render version of the HTML it was made
+   on (`data-hyper-render-version` on the nearest region or #hyper-app).  Every
+   request posts all actions whose requests have not completed, so the server,
+   which skips sequence numbers it has already run, runs each action once and
+   in the order they were made, whichever request arrives first."
+  [datastar-script tab-id base-path]
+  (if-let [src (datastar-src datastar-script)]
+    [:script {:type "module"}
+     (c/raw
+       (str "
+import { action, filtered } from '" (utils/escape-js-string src) "';
+const url = '" base-path "/hyper/actions?tab-id=" tab-id "';
+let lastSeq = 0;
+let queue = [];
+const versionOf = (el) => {
+  const v = (el && el.closest && el.closest('[data-hyper-render-version]')
+             || document.getElementById('hyper-app'))
+            ?.getAttribute('data-hyper-render-version');
+  return v == null ? null : parseInt(v, 10);
+};
+action({
+  name: 'hyperAction',
+  apply({ el, error }, id, params) {
+    if (!id) throw error('HyperActionNoIdProvided');
+    const seq = ++lastSeq;
+    queue.push({ id, seq, v: versionOf(el),
+                 signals: JSON.stringify(filtered({ include: /.*/, exclude: /(^|\\.)_/ })),
+                 params: params === undefined ? null : JSON.stringify(params) });
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base: versionOf(document.getElementById('hyper-app')), actions: queue })
+    }).catch((e) => console.error('hyper: action request failed', e))
+      .finally(() => { queue = queue.filter((a) => a.seq > seq); });
+  }
+});
+"))]
+    (t/log! {:level :warn
+             :id    :hyper.warn/no-datastar-src
+             :msg   "No Datastar module URL in :datastar-script, so @hyperAction is not registered and actions won't run."})))
+
 (defn sse-connect-expr
   "The Datastar `@get` expression that opens (or re-opens) this tab's SSE
    connection.  Shared by the initial `<body>` `data-init` and `h/reconnect`
@@ -941,6 +1084,7 @@
         div-attrs                                            (cond-> {:id "hyper-app"}
                                                                tree-shake? (assoc :data-hyper-squint-version core-version)
                                                                (:url result) (assoc :data-hyper-url (:url result))
+                                                               (:render-version result) (assoc :data-hyper-render-version (:render-version result))
                                                                sig-attrs (merge sig-attrs))
         ;; WebKit/Safari fetch-streaming strand workaround: inject the
         ;; EventSource shim only for affected user agents, before the datastar
@@ -962,6 +1106,7 @@
                                                                                "window.hyper_sc = sc;"
                                                                                (when tree-shake? (str "\nwindow.hyper_squint_version = '" core-version "';"))))]
                                                                   datastar-script
+                                                                  (action-script datastar-script tab-id base-path)
                                                                   (when head-html (c/raw head-html))]
                                                                  [:body
                                                                   (merge

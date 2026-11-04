@@ -184,7 +184,7 @@
         (let [page      (.body ^java.net.http.HttpResponse
                           (GET client (str base "/?tab-id=T")
                             (HttpResponse$BodyHandlers/ofString)))
-              action-id (second (re-find #"action-id=(a_T_\d+)" page))]
+              action-id (second (re-find #"hyperAction\(&apos;(a_T_\d+)" page))]
           (is (some? action-id) "the page renders an action with an id")
           ;; Open SSE and wait for the initial render (n=0).
           (let [resp                (GET client (str base "/hyper/events?tab-id=T")
@@ -231,7 +231,7 @@
         (let [page      (.body ^java.net.http.HttpResponse
                           (GET client (str base "/?tab-id=T")
                             (HttpResponse$BodyHandlers/ofString)))
-              action-id (second (re-find #"action-id=(a_T_\d+)" page))]
+              action-id (second (re-find #"hyperAction\(&apos;(a_T_\d+)" page))]
           (is (some? action-id) "the page renders an action with an id")
           (let [resp                (GET client (str base "/hyper/events?tab-id=T")
                                       (HttpResponse$BodyHandlers/ofInputStream))
@@ -358,7 +358,7 @@
         (let [page                 (.body ^java.net.http.HttpResponse
                                      (GET client (str base "/?tab-id=T")
                                        (HttpResponse$BodyHandlers/ofString)))
-              [commit-id clamp-id] (distinct (map second (re-seq #"action-id=(a_T_\d+)" page)))
+              [commit-id clamp-id] (distinct (map second (re-seq #"hyperAction\(&apos;(a_T_\d+)" page)))
               session-id           (first (keys (:sessions @app*)))
               resp                 (GET client (str base "/hyper/events?tab-id=T")
                                      (HttpResponse$BodyHandlers/ofInputStream))
@@ -405,7 +405,7 @@
         (let [page                (.body ^java.net.http.HttpResponse
                                     (GET client (str base "/?tab-id=T")
                                       (HttpResponse$BodyHandlers/ofString)))
-              action-id           (second (re-find #"action-id=(a_T_\d+)" page))
+              action-id           (second (re-find #"hyperAction\(&apos;(a_T_\d+)" page))
               session-id          (first (keys (:sessions @app*)))
               resp                (GET client (str base "/hyper/events?tab-id=T")
                                     (HttpResponse$BodyHandlers/ofInputStream))
@@ -451,7 +451,7 @@
                              (HttpResponse$BodyHandlers/ofString)))
               _page-b    (GET client (str base "/?tab-id=TB")
                            (HttpResponse$BodyHandlers/ofString))
-              commit-a   (second (re-find #"action-id=(a_TA_\d+)" page-a))
+              commit-a   (second (re-find #"hyperAction\(&apos;(a_TA_\d+)" page-a))
               session-id (first (keys (:sessions @app*)))
               resp-a     (GET client (str base "/hyper/events?tab-id=TA")
                            (HttpResponse$BodyHandlers/ofInputStream))

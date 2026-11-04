@@ -39,6 +39,12 @@
 ;; in a single atomic swap — no cleanup-before-render gap needed.
 (def ^:dynamic *registered-action-ids* nil)
 
+;; The actions a render pass registered, as {action-id action-data}.
+;; Bound to (atom {}) before each render; stored afterwards under the
+;; render's version, so a click resolves its action id against the render
+;; it was made on (see hyper.actions/record-render!).
+(def ^:dynamic *rendered-actions* nil)
+
 ;; State overlay for cursor read/write indirection.
 ;;
 ;; When non-nil, a map with:
@@ -180,6 +186,7 @@
    #'*region-path*            []
    #'*declared-signals*       (atom [])
    #'*registered-action-ids*  (atom #{})
+   #'*rendered-actions*       (atom {})
    #'*registered-subview-ids* (atom #{})
    #'*render-guard*           (make-guard (get @app-state* :render-guard :warn))
    #'*state-overlay*          {:state* (atom @app-state*)
@@ -195,6 +202,7 @@
    #'*region-path*            []
    #'*declared-signals*       (atom [])
    #'*registered-action-ids*  (atom #{})
+   #'*rendered-actions*       (atom {})
    #'*registered-subview-ids* (atom #{})
    ;; Partial reactive renders have no setup phase — the body is a pure
    ;; render fn, so the guard is active immediately.

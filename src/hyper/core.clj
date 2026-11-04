@@ -912,7 +912,6 @@
          tab-id     (:hyper/tab-id *request*)]
      (when-let [route (routes/tab-route router route-name params query-params)]
        (let [href          (routes/route-url router route)
-             base-path     (get @app-state* :base-path "")
              ;; Use live-routes to always get the latest route metadata
              route-index   (routes/live-route-index app-state*)
              ;; Resolve title eagerly for the pushState call
@@ -935,7 +934,7 @@
          {:href href
           :data-on:click__prevent
           (str "window.hyper.startNavigation('" escaped-href "');"
-               " @post('" base-path "/hyper/actions?action-id=" action-id "');"
+               " @hyperAction('" action-id "');"
                " window.history.pushState({title: '" escaped-title "'}, '', '" escaped-href "');"
                (when title
                  (str " document.title = '" escaped-title "'")))})))))

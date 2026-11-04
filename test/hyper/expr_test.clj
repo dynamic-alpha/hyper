@@ -229,10 +229,10 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest test-action-in-expr
-  (testing "a bare action splices its raw @post(...) into the expression"
+  (testing "a bare action splices its raw @hyperAction(...) into the expression"
     (let [app-state* (new-tab)]
       (rendering app-state*
-                 (is (= "@post('/hyper/actions?action-id=a_t_1')"
+                 (is (= "@hyperAction('a_t_1')"
                         (h/expr (h/action (reset! (h/tab-cursor :q) 1))))))))
 
   (testing "an action guarded by a client-side condition compiles to a ternary"
@@ -241,7 +241,7 @@
                  (let [out (h/expr (when (= evt.key "Enter")
                                      (h/action (reset! (h/tab-cursor :q) 2))))]
                    (is (str/includes? out "evt.key === \"Enter\""))
-                   (is (str/includes? out "@post('/hyper/actions?action-id=a_t_1')"))
+                   (is (str/includes? out "@hyperAction('a_t_1')"))
                    (is (str/includes? out "?"))
                    (is (not (str/includes? out "action(")))))))
 
@@ -279,4 +279,4 @@
                  (let [out (h/expr (when (= $key "Enter")
                                      (h/action (reset! (h/tab-cursor :q) $value))))]
                    (is (str/includes? out "evt.key === \"Enter\""))
-                   (is (str/includes? out "hyper.encodeClientParams({value:evt.target.value})")))))))
+                   (is (str/includes? out "@hyperAction('a_t_1', {value:evt.target.value})")))))))
