@@ -109,10 +109,10 @@
       (let [expr (uploads/build-expr "a_t_1" {'$form (client-params/client-param '$form)}
                                      nil "" ref)]
         (is (string/starts-with? expr "hyper.upload("))))
-    (testing "no multipart param -> ordinary @post action expression"
+    (testing "no multipart param -> ordinary @hyperAction expression"
       (let [expr (uploads/build-expr "a_t_1" {'$value (client-params/client-param '$value)}
                                      nil "" nil)]
-        (is (string/starts-with? expr "@post("))))))
+        (is (string/starts-with? expr "@hyperAction("))))))
 
 ;; ===========================================================================
 ;; Upload endpoint handler

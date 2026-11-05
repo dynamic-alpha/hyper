@@ -340,7 +340,7 @@
                    (fn [_req] [:a (h/navigate :about) "About"])
                    {:routes nav-routes})]
       (is (str/includes? (:body-html result) "href=\"/about\""))
-      (is (str/includes? (:body-html result) "/hyper/actions"))
+      (is (str/includes? (:body-html result) "@hyperAction("))
       (is (str/includes? (:body-html result) "pushState")))))
 
 (deftest test-page-navigate-resolves-named-routes

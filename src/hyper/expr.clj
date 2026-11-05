@@ -89,7 +89,7 @@
     (walk/postwalk
       (fn [node]
         (if (and (symbol? node) (contains? params node))
-          (list 'js* (:js (client-params/client-param node)))
+          (list 'js* (:js (client-params/definition node)))
           node))
       form)))
 

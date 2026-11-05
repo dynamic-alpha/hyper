@@ -1,11 +1,13 @@
 (ns hyper.core-test
   (:require [clojure.string :as string]
             [clojure.test :refer [deftest is testing]]
+            [dev.onionpancakes.chassis.core :as c]
             [hyper.context :as context]
             [hyper.core :as hy]
             [hyper.datastar :as datastar]
             [hyper.render :as render]
             [hyper.render.error :as render.error]
+            [hyper.server :as server]
             [hyper.signal :as signal]
             [hyper.state :as state]
             [hyper.test :as ht]
@@ -99,12 +101,10 @@
         (let [action-expr (hy/action (reset! executed true))
               action-js   (str action-expr)]
           (is (datastar/datastar-expr? action-expr))
-          (is (.contains action-js "@post"))
-          (is (.contains action-js "/hyper/actions"))
-          (is (.contains action-js "action-id="))
+          (is (.contains action-js "@hyperAction('"))
 
           ;; Extract action ID and execute it
-          (let [action-id (second (re-find #"action-id=([^']+)" action-js))]
+          (let [action-id (second (re-find #"@hyperAction\('([^']+)'" action-js))]
             (is (some? action-id))
             ((get-in @app-state* [:actions action-id :fn]) nil)
             (is @executed)))))))
@@ -137,8 +137,7 @@
             (is (map? nav-attrs))
             (is (= "/" (:href nav-attrs)))
             (is (contains? nav-attrs :data-on:click__prevent))
-            (is (.contains (str (:data-on:click__prevent nav-attrs)) "@post"))
-            (is (.contains (str (:data-on:click__prevent nav-attrs)) "/hyper/actions"))
+            (is (.contains (str (:data-on:click__prevent nav-attrs)) "@hyperAction('"))
             (is (.contains (str (:data-on:click__prevent nav-attrs)) "pushState"))
             (is (.contains (str (:data-on:click__prevent nav-attrs))
                            "window.hyper.startNavigation('/');")))))
@@ -171,7 +170,7 @@
 
       (binding [context/*request* ctx]
         (let [nav-attrs (hy/navigate :about)
-              action-id (second (re-find #"action-id=([^']+)"
+              action-id (second (re-find #"@hyperAction\('([^']+)'"
                                          (str (:data-on:click__prevent nav-attrs))))
               _         (do (is (some? action-id))
                             ((get-in @app-state* [:actions action-id :fn]) nil))
@@ -366,7 +365,7 @@
           (is (= 11 @cursor)))))))
 
 (deftest test-action-with-client-params
-  (testing "$value client param generates @post expression with hyper.encodeClientParams"
+  (testing "$value client param generates an @hyperAction expression with client params"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-cp"
           tab-id     "test_tab_cp"]
@@ -376,15 +375,14 @@
                                    :hyper/app-state  app-state*}]
         (let [action-expr (str (hy/action (reset! (hy/tab-cursor :query) $value)))]
           (is (string? action-expr))
-          (is (.contains action-expr "@post("))
-          (is (.contains action-expr "hyper.encodeClientParams"))
-          (is (.contains action-expr "value:evt.target.value"))
-          (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
+          (is (.contains action-expr "@hyperAction("))
+          (is (.contains action-expr "{value:evt.target.value}"))
+          (let [action-id (second (re-find #"@hyperAction\('([^']+)'" action-expr))]
             (is (some? action-id))
             ((get-in @app-state* [:actions action-id :fn]) {:value "hello"})
             (is (= "hello" (get-in @app-state* [:tabs tab-id :data :query]))))))))
 
-  (testing "$checked client param generates @post expression"
+  (testing "$checked client param generates an @hyperAction expression"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-cp"
           tab-id     "test_tab_cp"]
@@ -394,12 +392,12 @@
                                    :hyper/app-state  app-state*}]
         (let [action-expr (str (hy/action (reset! (hy/tab-cursor :dark?) $checked)))]
           (is (.contains action-expr "checked:evt.target.checked"))
-          (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
+          (let [action-id (second (re-find #"@hyperAction\('([^']+)'" action-expr))]
             (is (some? action-id))
             ((get-in @app-state* [:actions action-id :fn]) {:checked true})
             (is (= true (get-in @app-state* [:tabs tab-id :data :dark?]))))))))
 
-  (testing "$key client param generates @post expression"
+  (testing "$key client param generates an @hyperAction expression"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-cp"
           tab-id     "test_tab_cp"]
@@ -409,12 +407,12 @@
                                    :hyper/app-state  app-state*}]
         (let [action-expr (str (hy/action (reset! (hy/tab-cursor :last-key) $key)))]
           (is (.contains action-expr "key:evt.key"))
-          (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
+          (let [action-id (second (re-find #"@hyperAction\('([^']+)'" action-expr))]
             (is (some? action-id))
             ((get-in @app-state* [:actions action-id :fn]) {:key "Enter"})
             (is (= "Enter" (get-in @app-state* [:tabs tab-id :data :last-key]))))))))
 
-  (testing "$form-data client param generates @post expression"
+  (testing "$form-data client param generates an @hyperAction expression"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-cp"
           tab-id     "test_tab_cp"]
@@ -424,13 +422,13 @@
                                    :hyper/app-state  app-state*}]
         (let [action-expr (str (hy/action (reset! (hy/tab-cursor :form) $form-data)))]
           (is (.contains action-expr "formData:Object.fromEntries"))
-          (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
+          (let [action-id (second (re-find #"@hyperAction\('([^']+)'" action-expr))]
             (is (some? action-id))
             ((get-in @app-state* [:actions action-id :fn]) {:formData {:email "a@b.com" :name "Alice"}})
             (is (= {:email "a@b.com" :name "Alice"}
                    (get-in @app-state* [:tabs tab-id :data :form]))))))))
 
-  (testing "no client params uses simple @post expression"
+  (testing "no client params uses a plain @hyperAction expression"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-cp"
           tab-id     "test_tab_cp"]
@@ -439,8 +437,8 @@
                                    :hyper/tab-id     tab-id
                                    :hyper/app-state  app-state*}]
         (let [action-expr (str (hy/action (swap! (hy/tab-cursor :count 0) inc)))]
-          (is (.contains action-expr "@post("))
-          (is (not (.contains action-expr "hyper.encodeClientParams")))))))
+          (is (.contains action-expr "@hyperAction("))
+          (is (not (.contains action-expr ", {")))))))
 
   (testing "multiple client params in single action"
     (let [app-state* (atom (state/init-state))
@@ -452,12 +450,12 @@
                                    :hyper/app-state  app-state*}]
         (let [action-expr (str (hy/action (do (reset! (hy/tab-cursor :val) $value)
                                               (reset! (hy/tab-cursor :k) $key))))]
-          (is (.contains action-expr "@post("))
-          (is (.contains action-expr "hyper.encodeClientParams"))
+          (is (.contains action-expr "@hyperAction("))
+          (is (.contains action-expr ", {"))
           (is (.contains action-expr "value:evt.target.value"))
           (is (.contains action-expr "key:evt.key"))))))
 
-  (testing "JS string with client params injects guard before @post"
+  (testing "JS string with client params injects guard before @hyperAction"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-js"
           tab-id     "test_tab_js"]
@@ -469,12 +467,12 @@
                                           (reset! (hy/tab-cursor :val) $value)))]
           (is (string? action-expr))
           (is (.contains action-expr "evt.key === 'Enter'"))
-          (is (.contains action-expr "@post("))
-          (is (.contains action-expr "hyper.encodeClientParams"))
+          (is (.contains action-expr "@hyperAction("))
+          (is (.contains action-expr ", {"))
           (is (.contains action-expr "value:evt.target.value"))
           (is (.startsWith action-expr "evt.key === 'Enter' && "))
           ;; Verify action executes correctly with client params
-          (let [action-id (second (re-find #"action-id=([^'&\"]+)" action-expr))]
+          (let [action-id (second (re-find #"@hyperAction\('([^']+)'" action-expr))]
             (is (some? action-id))
             ((get-in @app-state* [:actions action-id :fn]) {:value "hello"})
             (is (= "hello" (get-in @app-state* [:tabs tab-id :data :val]))))))))
@@ -488,8 +486,8 @@
                                    :hyper/tab-id     tab-id
                                    :hyper/app-state  app-state*}]
         (let [action-expr (str (hy/action {:when ""} (reset! (hy/tab-cursor :val) $value)))]
-          (is (.contains action-expr "@post("))
-          (is (.contains action-expr "hyper.encodeClientParams"))
+          (is (.contains action-expr "@hyperAction("))
+          (is (.contains action-expr ", {"))
           (is (.contains action-expr "value:evt.target.value"))
           (is (not (.contains action-expr " && ")))))))
 
@@ -504,7 +502,7 @@
         (let [action-expr (str (hy/action {:when (hy/expr (= evt.key "Enter"))}
                                           (reset! (hy/tab-cursor :val) $value)))]
           (is (.startsWith action-expr "(evt.key === \"Enter\") && "))
-          (is (.contains action-expr "@post("))))))
+          (is (.contains action-expr "@hyperAction("))))))
 
   (testing ":when guard evaluating to a non-string throws"
     (let [app-state* (atom (state/init-state))
@@ -519,43 +517,20 @@
               (hy/action {:when 42} (reset! (hy/tab-cursor :val) $value))))))))
 
 (deftest test-base-path-action
-  (testing "action macro uses /hyper/actions without :base-path"
+  (testing "the action script posts to /hyper/actions without :base-path"
+    (is (string/includes? (c/html (server/action-script (server/default-datastar-script) "t1" ""))
+                          "'/hyper/actions?tab-id=t1'")))
+
+  (testing "the action script prefixes /hyper/actions with :base-path"
+    (is (string/includes? (c/html (server/action-script (server/default-datastar-script) "t1" "/my-app"))
+                          "'/my-app/hyper/actions?tab-id=t1'")))
+
+  (testing "the action script imports the page's Datastar"
+    (is (string/includes? (c/html (server/action-script [:script {:type "module" :src "/js/ds.js"}] "t1" ""))
+                          "from '/js/ds.js'")))
+
+  (testing "action macro with :when guard"
     (let [app-state* (atom (state/init-state))
-          session-id "test-session-bp"
-          tab-id     "test_tab_bp"]
-      (state/get-or-create-tab! app-state* session-id tab-id)
-      (binding [context/*request* {:hyper/session-id session-id
-                                   :hyper/tab-id     tab-id
-                                   :hyper/app-state  app-state*}]
-        (let [action-expr (str (hy/action (swap! (hy/tab-cursor :n 0) inc)))]
-          (is (string/includes? action-expr "@post('/hyper/actions?"))))))
-
-  (testing "action macro prefixes /hyper/actions with :base-path"
-    (let [app-state* (atom (assoc (state/init-state) :base-path "/my-app"))
-          session-id "test-session-bp"
-          tab-id     "test_tab_bp"]
-      (state/get-or-create-tab! app-state* session-id tab-id)
-      (binding [context/*request* {:hyper/session-id session-id
-                                   :hyper/tab-id     tab-id
-                                   :hyper/app-state  app-state*}]
-        (let [action-expr (str (hy/action (swap! (hy/tab-cursor :n 0) inc)))]
-          (is (string/includes? action-expr "@post('/my-app/hyper/actions?"))
-          (is (not (string/includes? action-expr "@post('/hyper/actions?")))))))
-
-  (testing "action macro with client params also prefixes the URL"
-    (let [app-state* (atom (assoc (state/init-state) :base-path "/sub"))
-          session-id "test-session-bp2"
-          tab-id     "test_tab_bp2"]
-      (state/get-or-create-tab! app-state* session-id tab-id)
-      (binding [context/*request* {:hyper/session-id session-id
-                                   :hyper/tab-id     tab-id
-                                   :hyper/app-state  app-state*}]
-        (let [action-expr (str (hy/action (reset! (hy/tab-cursor :v) $value)))]
-          (is (string/includes? action-expr "@post('/sub/hyper/actions?"))
-          (is (string/includes? action-expr "hyper.encodeClientParams"))))))
-
-  (testing "action macro with :when guard and :base-path"
-    (let [app-state* (atom (assoc (state/init-state) :base-path "/app"))
           session-id "test-session-bp3"
           tab-id     "test_tab_bp3"]
       (state/get-or-create-tab! app-state* session-id tab-id)
@@ -564,37 +539,7 @@
                                    :hyper/app-state  app-state*}]
         (let [action-expr (str (hy/action {:when "evt.key === 'Enter'"}
                                           (swap! (hy/tab-cursor :n 0) inc)))]
-          (is (string/includes? action-expr "@post('/app/hyper/actions?"))
-          (is (string/starts-with? action-expr "evt.key === 'Enter' && ")))))))
-
-(deftest test-base-path-navigate
-  (testing "navigate uses /hyper/actions without :base-path"
-    (let [routes [["/" {:name :home :get (fn [_] [:div "Home"])}]
-                  ["/about" {:name :about :get (fn [_] [:div "About"])}]]
-          ctx    (make-test-context routes)]
-      (binding [context/*request* ctx]
-        (let [nav-attrs (hy/navigate :about)]
-          (is (string/includes? (str (:data-on:click__prevent nav-attrs))
-                                "@post('/hyper/actions?"))))))
-
-  (testing "navigate prefixes /hyper/actions with :base-path"
-    (let [routes     [["/" {:name :home :get (fn [_] [:div "Home"])}]
-                      ["/about" {:name :about :get (fn [_] [:div "About"])}]]
-          app-state* (atom (assoc (state/init-state) :base-path "/my-app"))
-          session-id "test-session-nav-bp"
-          tab-id     "test_tab_nav_bp"
-          router     (ring/router routes {:conflicts nil})]
-      (state/get-or-create-tab! app-state* session-id tab-id)
-      (swap! app-state* assoc :router router :routes routes)
-      (binding [context/*request* {:hyper/session-id session-id
-                                   :hyper/tab-id     tab-id
-                                   :hyper/app-state  app-state*
-                                   :hyper/router     router}]
-        (let [nav-attrs (hy/navigate :about)]
-          (is (string/includes? (str (:data-on:click__prevent nav-attrs))
-                                "@post('/my-app/hyper/actions?"))
-          (is (not (string/includes? (str (:data-on:click__prevent nav-attrs))
-                                     "@post('/hyper/actions?"))))))))
+          (is (string/starts-with? action-expr "evt.key === 'Enter' && @hyperAction('")))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Batch

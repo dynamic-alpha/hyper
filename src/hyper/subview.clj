@@ -22,7 +22,9 @@
    re-renders just this subview (a targeted Datastar fragment), `:full`
    triggers a full page re-render."
   (:require [clojure.set]
+            [clojure.string :as str]
             [dev.onionpancakes.chassis.core :as c]
+            [hyper.actions :as actions]
             [hyper.context :as context]
             [hyper.protocols :as proto]
             [hyper.watch :as watch]
@@ -88,6 +90,13 @@
       (if (= id root-id)
         [id hiccup]
         [id (into [tag (assoc attrs :id id)] children)]))))
+
+(defn with-render-version
+  "`html`, a single rooted element, with `data-hyper-render-version` set to
+   `version` on its root."
+  [version html]
+  (str/replace-first html #"^<([A-Za-z][A-Za-z0-9-]*)"
+                     (str "<$1 data-hyper-render-version=\"" version "\"")))
 
 (defn- check-region-unique!
   "Throw when `id` was already registered by an earlier region in this render.
@@ -193,13 +202,20 @@
           (let [body         (binding [context/*region-path* (:region-path spec [])]
                                (render-fn))
                 [_id hiccup] (resolve-region-id sid sid body)
-                html         (c/html hiccup)]
+                html         (c/html hiccup)
+                version      (actions/record-render! app-state* tab-id
+                                                     {:region  sid
+                                                      :html    html
+                                                      :actions @context/*rendered-actions*})]
             (swap! app-state* assoc-in [:tabs tab-id :subviews sid]
                    (assoc spec
                           :dep-vals    (mapv deref deps)
                           :cached-html html
                           :html-id     sid))
-            html)
+            ;; The region's actions are counted from zero, so a click in it
+            ;; names this render's version rather than the page's.
+            (cond->> html
+              version (with-render-version version)))
           (finally
             (pop-thread-bindings)))))))
 

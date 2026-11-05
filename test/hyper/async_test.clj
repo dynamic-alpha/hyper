@@ -80,7 +80,7 @@
             "cell flips to :ready when the worker lands")
         (is (= {:status :ready :result :rows} @(cell app-state* "t" "async_t_1")))
         (is (= 1 @fetched) "fetched exactly once")
-        (is (= "<div id=\"async_t_1\" class=\"region\">:ready|:rows</div>"
+        (is (= "<div data-hyper-render-version=\"1\" id=\"async_t_1\" class=\"region\">:ready|:rows</div>"
                (subview/partial-render app-state* "t" "async_t_1"))
             "a partial re-render renders the ready result")
         (subview/teardown-all! app-state* "t")))))
