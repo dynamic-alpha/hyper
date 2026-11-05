@@ -3,6 +3,7 @@
             [clojure.test :refer [deftest is testing]]
             [hyper.core :as h]
             [hyper.protocols :as proto]
+            [hyper.subview :as subview]
             [hyper.test :as ht]))
 
 ;; A test source that tracks disposal.
@@ -218,3 +219,22 @@
         ;; renderer thread. The sweep still removes the component registration.
         (is (empty? (get-in @(:app-state r1) [:tabs "test-tab" :subviews]))
             "swept component should be removed")))))
+
+(deftest test-reactive-partial-render-declares-local-signal
+  (testing "a local signal first introduced by a partial re-render is declared on the fragment root"
+    (let [render-fn (fn [_req]
+                      (let [toggle* (h/tab-cursor :toggle 0)]
+                        [:div
+                         (h/reactive [toggle*]
+                                     (let [tab* (h/local-signal :tab "a")]
+                                       [:div {:data-show (str @tab* " === 'a'")}
+                                        "panel"]))]))
+          r1        (ht/test-page render-fn)
+          app-state (:app-state r1)
+          sid       (ffirst (get-in @app-state [:tabs "test-tab" :subviews]))
+          fragment  (subview/partial-render app-state "test-tab" sid)]
+      (is (some? sid) "reactive region should be registered")
+      (is (str/includes? fragment "data-signals:_tab__ifmissing")
+          "partial fragment must carry the local signal's __ifmissing declaration")
+      (is (str/includes? fragment "panel")
+          "fragment should still contain the rendered body"))))

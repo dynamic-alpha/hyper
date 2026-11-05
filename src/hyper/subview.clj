@@ -25,6 +25,7 @@
             [dev.onionpancakes.chassis.core :as c]
             [hyper.context :as context]
             [hyper.protocols :as proto]
+            [hyper.signal :as signal]
             [hyper.watch :as watch]
             [taoensso.telemere :as t]))
 
@@ -88,6 +89,16 @@
       (if (= id root-id)
         [id hiccup]
         [id (into [tag (assoc attrs :id id)] children)]))))
+
+(defn- merge-root-attrs
+  "Merge `attrs` into the attribute map of hiccup's root element, which
+   `resolve-region-id` guarantees is a single rooted element."
+  [hiccup attrs]
+  (let [[tag & more] hiccup
+        has-attrs?   (map? (first more))
+        existing     (if has-attrs? (first more) {})
+        children     (if has-attrs? (next more) more)]
+    (into [tag (merge existing attrs)] children)))
 
 (defn- check-region-unique!
   "Throw when `id` was already registered by an earlier region in this render.
@@ -193,6 +204,8 @@
           (let [body         (binding [context/*region-path* (:region-path spec [])]
                                (render-fn))
                 [_id hiccup] (resolve-region-id sid sid body)
+                sig-attrs    (signal/format-signal-attrs @context/*declared-signals*)
+                hiccup       (cond-> hiccup sig-attrs (merge-root-attrs sig-attrs))
                 html         (c/html hiccup)]
             (swap! app-state* assoc-in [:tabs tab-id :subviews sid]
                    (assoc spec
