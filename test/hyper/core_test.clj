@@ -4,6 +4,7 @@
             [hyper.context :as context]
             [hyper.core :as hy]
             [hyper.datastar :as datastar]
+            [hyper.effects :as effects]
             [hyper.render :as render]
             [hyper.render.error :as render.error]
             [hyper.signal :as signal]
@@ -1160,6 +1161,26 @@
                                           :route  route})]
       (ht/test-action result "check-route")
       (is (= route @captured)))))
+
+(deftest route-in-action-reflects-route-changes-test
+  (testing "route reflects path-cursor writes and navigate! made earlier in the same action"
+    (let [seen    (atom [])
+          page-fn (fn [_req]
+                    [:button {:data-on:click
+                              (hy/action {:as "go"}
+                                         (reset! (hy/path-cursor :q) "new")
+                                         (swap! seen conj (:query-params (hy/route)))
+                                         (effects/navigate! :y)
+                                         (swap! seen conj (:name (hy/route))))}
+                     "Go"])
+          result  (ht/test-page page-fn {:routes [["/x" {:name :x :get page-fn}]
+                                                  ["/y" {:name :y :get page-fn}]]
+                                         :route  {:name         :x
+                                                  :path         "/x"
+                                                  :path-params  {}
+                                                  :query-params {:q "old"}}})]
+      (ht/test-action result "go")
+      (is (= [{:q "new"} :y] @seen)))))
 
 (deftest env-replaced-on-action-test
   (testing "env is fully replaced (not merged) when action refreshes it"

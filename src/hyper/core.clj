@@ -269,7 +269,12 @@
    Example:
      (route)  ;; => {:name :user :path \"/user/42\" :path-params {:id \"42\"} ...}"
   []
-  (:hyper/route *request*))
+  (let [{:hyper/keys [app-state tab-id]} *request*]
+    ;; Read the tab's live route so changes made earlier in the same action
+    ;; (navigate!, path-cursor writes) are visible.
+    (or (when (and app-state tab-id)
+          (get-in @app-state [:tabs tab-id :route]))
+        (:hyper/route *request*))))
 
 ;; ---------------------------------------------------------------------------
 ;; Batched cursor updates
