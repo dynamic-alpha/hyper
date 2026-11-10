@@ -1085,7 +1085,8 @@ Hyper has three request contexts:
 1. **Initial page load** — a real Ring request with cookies, headers, etc.
 2. **SSE re-renders** — no HTTP request; a synthetic request is built from
    app-state.
-3. **Action execution** — the action macro binds its own minimal request map.
+3. **Action execution** — the action macro binds a request map built from the
+   tab's state (session, tab, route, env), without the Ring request keys.
 
 Ring middleware can enrich the request on initial page load, but that context is
 lost on SSE re-renders and inside action bodies. `:hyper/env` solves this —

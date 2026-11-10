@@ -309,11 +309,7 @@
                         :available-actions (keys (:actions result))})))
      (let [session-id (::session-id result)
            tab-id     (::tab-id result)]
-       (binding [context/*request*     {:hyper/session-id session-id
-                                        :hyper/tab-id     tab-id
-                                        :hyper/app-state  app-state*
-                                        :hyper/router     (get @app-state* :router)
-                                        :hyper/env        (get-in @app-state* [:tabs tab-id :env])}
+       (binding [context/*request*     (context/context-request app-state* tab-id session-id)
                  context/*action-name* (:as action)
                  effects/*pending*     (effects/init-pending)]
          ((:fn action) client-params)

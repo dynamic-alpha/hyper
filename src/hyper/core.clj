@@ -808,11 +808,8 @@
                                                         (let [k (keyword (:key (client-params/client-param sym)))]
                                                           [sym (list `get cp-sym k)]))
                                                       param-syms)]
-                                        (binding [context/*request* {:hyper/session-id session-id#
-                                                                     :hyper/tab-id     tab-id#
-                                                                     :hyper/app-state  app-state*#
-                                                                     :hyper/router     router#
-                                                                     :hyper/env        (get-in @app-state*# [:tabs tab-id# :env])}]
+                                        (binding [context/*request* (assoc (context/context-request app-state*# tab-id# session-id#)
+                                                                           :hyper/router router#)]
                                           ~@body)))
            idx#                     (if context/*action-idx* (swap! context/*action-idx* inc) (hash action-fn#))
            key#                     ~key-form

@@ -1147,6 +1147,20 @@
       (ht/test-action result "check-env")
       (is (= {:db :action-db :user {:role :admin}} @captured)))))
 
+(deftest route-in-action-test
+  (testing "route is available inside action handlers"
+    (let [captured (atom ::unset)
+          route    {:name :x :path "/x" :path-params {} :query-params {}}
+          page-fn  (fn [_req]
+                     [:button {:data-on:click
+                               (hy/action {:as "check-route"}
+                                          (reset! captured (hy/route)))}
+                      "Go"])
+          result   (ht/test-page page-fn {:routes [["/x" {:name :x :get page-fn}]]
+                                          :route  route})]
+      (ht/test-action result "check-route")
+      (is (= route @captured)))))
+
 (deftest env-replaced-on-action-test
   (testing "env is fully replaced (not merged) when action refreshes it"
     (let [app-state* (atom (state/init-state))
