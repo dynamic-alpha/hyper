@@ -377,11 +377,9 @@
                          :max-age   (* 60 60 24 7)}) ;; 7 days
               response)))))))
 
-(defn default-datastar-script
-  "Returns the default Datastar CDN script tag."
-  []
-  [:script {:type "module"
-            :src  "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.2/bundles/datastar.js"}])
+(def default-datastar-url
+  "The URL pages load the Datastar module from by default."
+  "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.2/bundles/datastar.js")
 
 (def ^:private webkit-sse-shim-js
   "Inline JS injected into <head> for WebKit/Safari clients: routes the GET SSE
@@ -930,7 +928,7 @@
    Shared by page-handler and not-found-handler so both emit identical document
    scaffolding, differing only in `status` and `fallback-title` (the <title>
    used when the result has no :title)."
-  [result {:keys [datastar-script open-when-hidden? base-path webkit-sse-shim? core-version tree-shake? squint-core-url]
+  [result {:keys [datastar-url open-when-hidden? base-path webkit-sse-shim? core-version tree-shake? squint-core-url]
            :or   {open-when-hidden? true
                   base-path         ""
                   webkit-sse-shim?  true}}
@@ -961,7 +959,7 @@
                                                                    (c/raw (str "import * as sc from '" (or squint-core-url (str base-path "/hyper/squint-core.js?v=" core-version)) "';\n"
                                                                                "window.hyper_sc = sc;"
                                                                                (when tree-shake? (str "\nwindow.hyper_squint_version = '" core-version "';"))))]
-                                                                  datastar-script
+                                                                  [:script {:type "module" :src datastar-url}]
                                                                   (when head-html (c/raw head-html))]
                                                                  [:body
                                                                   (merge
@@ -988,7 +986,7 @@
    re-resolution, title/head resolution).
 
    Options:
-   - :datastar-script - Hiccup content for Datastar script added to document head, or nil."
+   - :datastar-url - URL the page loads the Datastar module from."
   [app-state* opts]
   (fn [render-fn]
     (fn [req]
@@ -1252,6 +1250,21 @@
           (not-modified/wrap-not-modified))
       handler)))
 
+(defn- resolve-datastar-url
+  "The Datastar module URL for handler `opts`: their `:datastar-url`, or the
+   default when they have none.  Throws when it is not a non-blank string, or
+   when `opts` carry `:datastar-script`, the option it replaced."
+  [opts]
+  (when (contains? opts :datastar-script)
+    (throw (ex-info (str ":datastar-script is no longer supported. Pass the URL of the Datastar module "
+                         "as :datastar-url; Hyper adds the script tag itself.")
+                    {:datastar-script (:datastar-script opts)})))
+  (let [url (get opts :datastar-url default-datastar-url)]
+    (when-not (and (string? url) (not (clojure.string/blank? url)))
+      (throw (ex-info ":datastar-url must be the URL of the Datastar module. Hyper loads Datastar from it."
+                      {:datastar-url url})))
+    url))
+
 (defn create-handler
   "Create a Ring handler for the hyper application.
 
@@ -1263,7 +1276,8 @@
    Options:
    - :head              Hiccup nodes appended to the <head> (e.g. stylesheet <link>),
                         or (fn [req] ...) -> hiccup nodes appended to the <head>
-   - :datastar-script   Hiccup nodes for the Datastar script (or nil to suppress)
+   - :datastar-url      URL the page loads the Datastar module from (default:
+                        `default-datastar-url`).
    - :open-when-hidden? Keep the SSE connection open when the browser tab is hidden
                         (default true). When false, Datastar closes the connection
                         on tab hide and reopens it when the tab becomes visible.
@@ -1338,7 +1352,7 @@
    Routes should use :get handlers that return hiccup (Chassis vectors).
    Hyper will wrap them to provide full HTML responses and SSE connections."
   ([routes app-state*]
-   (create-handler routes app-state* {:datastar-script (default-datastar-script)}))
+   (create-handler routes app-state* {}))
   ([routes app-state* {:keys [watches head base-path middleware render-middleware render-error not-found render-guard
                               disconnect-grace-ms heartbeat-ms
                               max-file-size max-file-count upload-expires-in]
@@ -1350,7 +1364,9 @@
                               upload-expires-in   3600}
                        :as   opts}]
    (let [base-path       (or base-path "")
-         opts            (assoc opts :base-path base-path)
+         opts            (assoc opts
+                                :base-path base-path
+                                :datastar-url (resolve-datastar-url opts))
          page-wrapper    (page-handler app-state* opts)
          ;; Override only the genuine "no route matched" (404) case, leaving
          ;; reitit's 405/406 discrimination intact.  When :not-found is nil the

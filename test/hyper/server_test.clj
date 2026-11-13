@@ -85,14 +85,9 @@
 
       (is (.contains (:body response) "tab: tab_from_query")))))
 
-(deftest test-default-datastar-script
-  (testing "Datastar script tag generation"
-    (let [script (server/default-datastar-script)]
-      (is (vector? script))
-      (is (match?
-            [:script {:src  #".*datastar.*"
-                      :type "module"}]
-            script)))))
+(deftest test-default-datastar-url
+  (testing "the default Datastar module URL"
+    (is (re-matches #"https://.*datastar.*\.js" server/default-datastar-url))))
 
 (deftest test-initial-sse-response-headers
   (testing "the SSE handler sets the expected response headers + a streaming body"
@@ -155,33 +150,56 @@
       (is (.contains (:body response) "data-hyper-head")
           "Head elements are marked for SSE management")))
 
-  (testing "Datastar script override"
+  (testing "Datastar URL override"
     (let [app-state* (atom (state/init-state))
           routes     [["/" {:name :home
                             :get  (fn [_req] [:div "Home"])}]]
           handler    (server/create-handler routes app-state*
-                                            {:head            (fn [_req]
-                                                                [[:meta {:name "test" :content "ok"}]])
-                                             :datastar-script [:script {:src "something-else.js"}]})
+                                            {:head         (fn [_req]
+                                                             [[:meta {:name "test" :content "ok"}]])
+                                             :datastar-url "/js/something-else.js"})
           response   (handler {:uri "/" :request-method :get})]
       (is (match?
             {:status 200
-             :body   (m/pred #(string/includes? % "<script src=\"something-else.js\">"))}
+             :body   (m/pred #(and (string/includes? % "<script type=\"module\" src=\"/js/something-else.js\">")
+                                   (not (string/includes? % server/default-datastar-url))))}
             response))))
 
-  (testing "Datastar script suppress"
-    (let [app-state* (atom (state/init-state))
-          routes     [["/" {:name :home
-                            :get  (fn [_req] [:div "Home"])}]]
-          handler    (server/create-handler routes app-state*
-                                            {:head            (fn [_req]
-                                                                [[:meta {:name "test" :content "ok"}]])
-                                             :datastar-script nil})
-          response   (handler {:uri "/" :request-method :get})]
-      (is (match?
-            {:status 200
-             :body   (m/pred #(not (string/includes? % "<script src=")))}
-            response))))
+  (testing "the Datastar URL must be a non-blank string"
+    (doseq [url [nil "" "  " [:script {:src "/js/ds.js"}]]]
+      (is (thrown-with-msg?
+            clojure.lang.ExceptionInfo #":datastar-url must be the URL"
+            (server/create-handler [["/" {:name :home :get (fn [_req] [:div "Home"])}]]
+                                   (atom (state/init-state))
+                                   {:datastar-url url}))
+          (pr-str url))))
+
+  (testing "options without a Datastar URL get the default one"
+    (let [handler  (server/create-handler [["/" {:name :home :get (fn [_req] [:div "Home"])}]]
+                                          (atom (state/init-state))
+                                          {})
+          response (handler {:uri "/" :request-method :get})]
+      (is (string/includes? (:body response)
+                            (str "<script type=\"module\" src=\"" server/default-datastar-url "\">")))))
+
+  (testing "the :datastar-script option it replaced is rejected"
+    (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo #":datastar-script is no longer supported.*:datastar-url"
+          (server/create-handler [["/" {:name :home :get (fn [_req] [:div "Home"])}]]
+                                 (atom (state/init-state))
+                                 {:datastar-script [:script {:type "module" :src "/js/ds.js"}]})))
+    (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo #":datastar-script is no longer supported"
+          (h/create-handler [["/" {:name :home :get (fn [_req] [:div "Home"])}]]
+                            :app-state (atom (state/init-state))
+                            :datastar-script nil))))
+
+  (testing "h/create-handler passes :datastar-url on"
+    (let [handler  (h/create-handler [["/" {:name :home :get (fn [_req] [:div "Home"])}]]
+                                     :app-state (atom (state/init-state))
+                                     :datastar-url "/js/ds.js")
+          response (handler {:uri "/" :request-method :get :headers {}})]
+      (is (string/includes? (:body response) "<script type=\"module\" src=\"/js/ds.js\">"))))
 
   (testing "Allows :head to be a Var containing a function"
     (let [app-state* (atom (state/init-state))
