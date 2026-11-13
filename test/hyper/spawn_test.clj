@@ -236,15 +236,20 @@
     (let [app-state* (atom (state/init-state))
           session-id "s-spawn-act-dc"
           tab-id     "t_spawn_act_dc"
+          started    (promise)
           release    (promise)
           finished   (promise)]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (acting app-state* session-id tab-id
               (h/spawn! (fn []
+                          (deliver started true)
                           ;; swallow the disconnect interrupt and keep going
                           (try (deref release 1000 nil)
                                (catch InterruptedException _ nil))
                           (deliver finished true))))
+      ;; A worker interrupted before it starts never runs, so disconnect only
+      ;; once it is running.
+      (is (true? (deref started 1000 :timeout)) "worker started")
       (server/cleanup-tab! app-state* tab-id)
       (deliver release true)
       (is (true? (deref finished 1000 :timeout)))
