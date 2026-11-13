@@ -172,7 +172,7 @@ bound to any event attribute.
      [:button {:data-on:click (h/action (swap! count* dec))} "-1"]]))
 ```
 
-When the button is clicked, Datastar POSTs to the server, Hyper executes the
+When the button is clicked, Hyper posts the action to the server, executes the
 action body, the cursor mutation triggers the watcher, and the tab re-renders
 over SSE — all in one round trip with no page reload.
 
@@ -196,6 +196,28 @@ Actions are scoped to the tab that rendered them and are cleaned up automaticall
 when the tab disconnects. The body can contain arbitrary Clojure — call
 functions, hit databases, update multiple cursors — whatever happens, the
 resulting state changes trigger re-renders for the appropriate tabs.
+
+### How actions run
+
+A tab's actions run one at a time, in the order they were made, and each runs
+against the render it was made on: if the page re-rendered between a click and
+its request reaching the server, the click still runs the action the user saw.
+A request that fails is logged to the browser console, and its actions are
+sent again with the tab's next action. [File uploads](#file-uploads) are sent
+on their own, outside this order, but also run against the render they were
+made on.
+
+Because they run one at a time, a slow action holds up the actions after it.
+Put long-running work in [`h/spawn!`](#background-workers--hspawn) and let the
+action return. [`h/navigate`](#navigation) links wait in the same queue, so a
+navigation happens after the actions clicked before it.
+
+Hyper loads Datastar from a CDN by default, and registers its action by
+importing Datastar from the same URL. To serve Datastar yourself, pass its URL
+to `create-handler` as `:datastar-url`; it must be Datastar's ES module bundle.
+
+Hyper's actions are not Datastar `@post` requests, so Datastar's fetch
+lifecycle events and `data-indicator` do not fire for them.
 
 ### Action identity
 
@@ -251,7 +273,7 @@ Example usage:
  [:button "Save"]]
 ```
 
-When `$` symbols appear in the action body, the macro automatically generates a `fetch()` call instead of `@post()`, sending the extracted values as a JSON body. On the server, the action function receives these values bound to the corresponding `$` symbols.
+When `$` symbols appear in the action body, the macro sends the extracted values along with the action. On the server, the action function receives these values bound to the corresponding `$` symbols.
 
 Additional symbols can be defined by extending the `h/client-param` multimethod.
 
@@ -287,7 +309,7 @@ no network traffic otherwise.
 
 `expr` understands the same client-param vocabulary as `action` (`$key`,
 `$value`, …), so the guard reads naturally. The embedded action registers at
-render time and contributes its `@post(…)` — see
+render time and contributes its `@hyperAction(…)` — see
 [Actions inside expressions](#actions-inside-expressions).
 
 ## Signals
@@ -363,10 +385,10 @@ prefix), which is the correct format for `data-bind`:
 [:input {:data-bind name*}]                 ;; → data-bind="userName"
 ```
 
-**During action execution**, `@signal*` returns the live value sent by
-Datastar in the `@post()` request body. Datastar automatically sends all
-non-underscore signals with every backend request, so your action code can
-read the current client-side value:
+**During action execution**, `@signal*` returns the live value the client
+sent with the action. Every action carries all non-underscore signals as they
+were when it was made, so your action code can read the current client-side
+value:
 
 ```clojure
 [:button {:data-on:click (h/action
@@ -427,10 +449,10 @@ Under the hood, `h/signal` does three things:
    in actions can push updates to the client via `datastar-patch-signals` SSE
    events.
 
-3. **Reads** signal values from the `@post()` request body during action
+3. **Reads** the signal values sent with each action during action
    execution, so `@signal*` returns the live client-side value.
 
-All actions use Datastar's `@post()` under the hood, so signal values are
+Every action carries the page's signals, so signal values are
 always available — even in actions that also use client params like `$value`,
 `$key`, etc.
 
@@ -596,7 +618,7 @@ decides where code runs, not the syntax.
 | `@sig` | Signal reference (`$name`) |
 | `(:kw m)` keyword calls | Evaluated as Clojure, spliced as literals |
 | `~form` | Explicit splice (escape hatch for arbitrary Clojure) |
-| `(h/action …)` | Registers at render time; contributes its raw `@post(…)` |
+| `(h/action …)` | Registers at render time; contributes its raw `@hyperAction(…)` |
 | Client params (`$value`, `$key`, `$checked`, `$detail`, `$form-data`) | Expand to their client-side JS accessor — e.g. `$key` → `evt.key` |
 | `$signals`, `evt`, `el`, `(@post "/x")`, JS interop | Pass through to the client |
 
@@ -610,7 +632,7 @@ library through the `hyper_sc` global, which hyper serves at
 ### Actions inside expressions
 
 A server `action` composes as a client-side value: embedded in `expr`, it
-registers at render time and contributes its `@post(…)`, so you can gate it
+registers at render time and contributes its `@hyperAction(…)`, so you can gate it
 with ordinary client-side control flow — no server round-trip until the
 condition holds:
 
@@ -773,7 +795,7 @@ meaning outside of it.
 ## File uploads
 
 A file upload is just an `action` whose body uses a **file client param** —
-`$form` or `$files`. Binary content can't ride Datastar's JSON `@post()`, so
+`$form` or `$files`. Binary content can't ride the JSON action request, so
 when one of these appears the macro switches the action to a real
 `multipart/form-data` upload (a small `XMLHttpRequest` to `/hyper/upload`),
 while everything else — the trigger you bind it to, cursors, effects — works
