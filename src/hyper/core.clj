@@ -963,7 +963,8 @@
 
    Options (keyword arguments):
    - :app-state         — Atom for application state (default: fresh atom)
-   - :datastar-script   - Override of the default datastar script tag (as Hiccup) or nil to suppress
+   - :datastar-url      - URL the page loads the Datastar module from (default:
+                          a CDN build).
    - :squint-core-url   - URL the page imports squint core from, for h/expr and
                           components (default: /hyper/squint-core.js, served by hyper).
    - :tree-shake?       - Serve only the squint core functions that h/expr output
@@ -1049,15 +1050,15 @@
      ;; Later...
      (stop! app)"
   [routes & {:keys [app-state head static-resources static-dir watches
-                    datastar-script base-path middleware render-middleware
+                    datastar-url base-path middleware render-middleware
                     render-error squint-core-url tree-shake? source-map? render-guard
                     max-file-size max-file-count upload-expires-in param-transformer]
-             :or   {app-state       (atom (state/init-state))
-                    datastar-script server/default-datastar-script}
+             :or   {app-state    (atom (state/init-state))
+                    datastar-url server/default-datastar-url}
              :as   opts}]
   (server/create-handler routes app-state
                          (cond-> {:head              head
-                                  :datastar-script   datastar-script
+                                  :datastar-url      datastar-url
                                   :static-resources  static-resources
                                   :static-dir        static-dir
                                   :watches           watches
@@ -1079,7 +1080,9 @@
                            ;; absence lets the server default (true) apply.
                            (contains? opts :webkit-sse-shim?) (assoc :webkit-sse-shim? (:webkit-sse-shim? opts))
                            ;; `contains?` so an explicit `:not-found nil` (disable) is honored.
-                           (contains? opts :not-found) (assoc :not-found (:not-found opts)))))
+                           (contains? opts :not-found) (assoc :not-found (:not-found opts))
+                           ;; Forwarded so the server rejects the option :datastar-url replaced.
+                           (contains? opts :datastar-script) (assoc :datastar-script (:datastar-script opts)))))
 
 (defn start!
   "Start the hyper application server.
