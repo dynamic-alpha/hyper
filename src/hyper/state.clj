@@ -221,17 +221,23 @@
   nil)
 
 (defn get-or-create-tab!
-  "Ensure tab exists in app-state and is linked to session."
+  "Ensure tab exists in app-state and is linked to session.  A tab already
+   linked to another session keeps that link."
   [app-state* session-id tab-id]
   (get-or-create-session! app-state* session-id)
   (swap! app-state* (fn [state]
-                      (-> state
-                          (update-in [:sessions session-id :tabs] (fnil conj #{}) tab-id)
-                          (update-in [:tabs tab-id]
-                                     #(or % {:data        {}
-                                             :session-id  session-id
-                                             :render-fn   nil
-                                             :sse-channel nil})))))
+                      (let [state (update-in state [:tabs tab-id]
+                                             (fn [tab]
+                                               (cond
+                                                 (nil? tab)              {:data        {}
+                                                                          :session-id  session-id
+                                                                          :render-fn   nil
+                                                                          :sse-channel nil}
+                                                 (nil? (:session-id tab)) (assoc tab :session-id session-id)
+                                                 :else                   tab)))]
+                        (cond-> state
+                          (= session-id (get-in state [:tabs tab-id :session-id]))
+                          (update-in [:sessions session-id :tabs] (fnil conj #{}) tab-id)))))
   nil)
 
 (defn cleanup-tab!

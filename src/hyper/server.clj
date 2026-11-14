@@ -566,6 +566,18 @@
                    :msg   "Tab disconnected — starting grace window"})
           (detach-tab! app-state* tab-id))))))
 
+(def ^:private unknown-tab-response
+  {:status  404
+   :headers {"Content-Type" "application/json"}
+   :body    "{\"error\": \"Unknown tab\"}"})
+
+(defn- tab-in-session?
+  "True when tab `tab-id` exists and belongs to the session of `req`."
+  [app-state* req tab-id]
+  (let [session-id (get-in @app-state* [:tabs tab-id :session-id])]
+    (and (some? session-id)
+         (= session-id (:hyper/session-id req)))))
+
 (defn sse-events-handler
   "Handler for the SSE event stream.
 
@@ -573,7 +585,8 @@
    invokes `write-body-to-stream` on a (virtual) thread, where `run-sse-loop!`
    owns the output stream for the connection's lifetime — sending the connected
    event, wiring reactivity, and streaming re-renders.  The SSE headers are set
-   on the response map here so they are committed before the body streams."
+   on the response map here so they are committed before the body streams.
+   A tab that is not of the request's session is refused."
   [app-state*]
   (fn [req]
     (let [session-id (:hyper/session-id req)
@@ -586,11 +599,13 @@
                               "Cache-Control"     "no-cache, no-transform"
                               "X-Accel-Buffering" "no"}
                        compress? (assoc "Content-Encoding" "br"))]
-      {:status  200
-       :headers headers
-       :body    (reify ring-protocols/StreamableResponseBody
-                  (write-body-to-stream [_ _response os]
-                    (run-sse-loop! app-state* session-id tab-id os compress? conn-id)))})))
+      (if (tab-in-session? app-state* req tab-id)
+        {:status  200
+         :headers headers
+         :body    (reify ring-protocols/StreamableResponseBody
+                    (write-body-to-stream [_ _response os]
+                      (run-sse-loop! app-state* session-id tab-id os compress? conn-id)))}
+        unknown-tab-response))))
 
 (declare queued-actions-handler)
 
@@ -704,16 +719,13 @@
    arrives after a later one, runs nothing twice and nothing out of order.
    An action that throws is logged and does not stop the ones after it; the
    response is then a 500, still carrying the cookies of those that ran.
-   Afterwards renders before `base` are dropped: no click can name them."
+   Afterwards renders before `base` are dropped: no click can name them.
+   A tab that is not of the request's session is refused and runs nothing."
   [app-state* req tab-id]
-  (let [lock (action-lock app-state* tab-id)]
-    (if (or (nil? lock)
-            ;; A tab is linked to its session once its SSE stream connects
-            (when-let [session-id (get-in @app-state* [:tabs tab-id :session-id])]
-              (not= session-id (:hyper/session-id req))))
-      {:status  404
-       :headers {"Content-Type" "application/json"}
-       :body    "{\"error\": \"Unknown tab\"}"}
+  (let [lock (when (tab-in-session? app-state* req tab-id)
+               (action-lock app-state* tab-id))]
+    (if (nil? lock)
+      unknown-tab-response
       (let [{:keys [base actions]} (json/parse-string (read-body req) true)]
         (.lock lock)
         (try
@@ -771,11 +783,15 @@
      to submitted field values by matching input name).
    - Transitions the status ref :processing -> :done (handler return as
      `:result`) / :error, pushing each change to the client over SSE.
-   - Returns 204 (with any cookies from effects), like the action handler."
+   - Returns 204 (with any cookies from effects), like the action handler.
+
+   Refuses a tab that is not of the request's session, like the action
+   handler."
   [app-state*]
   (fn [req]
     (let [{action-id "action-id" v "v" region "region" tab-id "tab-id"} (:query-params req)
-          action-data                                                   (when (and action-id tab-id)
+          in-session?                                                   (tab-in-session? app-state* req tab-id)
+          action-data                                                   (when (and action-id in-session?)
                                                                           (actions/find-rendered-action
                                                                             app-state* tab-id (not-empty region)
                                                                             (some-> v not-empty parse-long) action-id))]
@@ -785,6 +801,8 @@
          :headers {"Content-Type" "application/json"}
          :body    "{\"error\": \"Missing action-id\"}"}
 
+        (not in-session?)
+        unknown-tab-response
         (not (:fn action-data))
         {:status  404
          :headers {"Content-Type" "application/json"}
@@ -1150,6 +1168,19 @@ action({
          :signal-seq (-> (swap! app-state* update-in [:tabs tab-id] signal/advance-seq)
                          (get-in [:tabs tab-id :signal-seq] 0))))
 
+(defn- link-page-tab!
+  "Link the tab a page load for `req` renders into to the request's session,
+   and return `req` with that tab's id: the request's tab, or a new one when
+   the request's tab belongs to another session."
+  [app-state* req]
+  (let [session-id (:hyper/session-id req)
+        owner      (get-in @app-state* [:tabs (:hyper/tab-id req) :session-id])
+        tab-id     (if (and owner (not= owner session-id))
+                     (generate-tab-id)
+                     (:hyper/tab-id req))]
+    (state/get-or-create-tab! app-state* session-id tab-id)
+    (assoc req :hyper/tab-id tab-id)))
+
 (defn page-handler
   "Wrap a page render function to provide full HTML response.
    Delegates rendering to render/render-tab so initial page loads share
@@ -1161,7 +1192,8 @@ action({
   [app-state* opts]
   (fn [render-fn]
     (fn [req]
-      (let [tab-id     (:hyper/tab-id req)
+      (let [req        (link-page-tab! app-state* req)
+            tab-id     (:hyper/tab-id req)
             session-id (:hyper/session-id req)
             route-info (extract-route-info req)]
 
@@ -1185,7 +1217,8 @@ action({
    so no reitit route is needed and the SSE connection re-renders the view."
   [app-state* opts]
   (fn [req]
-    (let [tab-id       (:hyper/tab-id req)
+    (let [req          (link-page-tab! app-state* req)
+          tab-id       (:hyper/tab-id req)
           session-id   (:hyper/session-id req)
           not-found-fn (get @app-state* :not-found)
           route-info   {:path         (:uri req)
@@ -1278,27 +1311,30 @@ action({
 
 (defn- navigate-handler
   "Handler for popstate/navigation POST requests.
-   Looks up the route for the given path and updates the tab's route + render fn."
+   Looks up the route for the given path and updates the tab's route + render fn.
+   Refuses a tab that is not of the request's session."
   [app-state*]
   (fn [req]
     (let [path        (get-in req [:query-params "path"])
           tab-id      (:hyper/tab-id req)
-          _session-id (:hyper/session-id req)
           router      (get @app-state* :router)
           route-index (routes/live-route-index app-state*)]
-      (when-let [env (:hyper/env req)]
-        (when tab-id
-          (swap! app-state* assoc-in [:tabs tab-id :env] env)))
-      (if-not (and path tab-id router)
+      (cond
+        (not (and path tab-id router))
         {:status  400
          :headers {"Content-Type" "application/json"}
          :body    "{\"error\": \"Missing path or tab-id\"}"}
 
-        ;; Parse path and query string
+        (not (tab-in-session? app-state* req tab-id))
+        unknown-tab-response
+
+        :else
         (let [[path-part query-string] (clojure.string/split path #"\?" 2)
               raw-query-params         (state/parse-query-string query-string)
               ;; Match the path using the reitit router
               match                    (reitit/match-by-path router path-part)]
+          (when-let [env (:hyper/env req)]
+            (swap! app-state* assoc-in [:tabs tab-id :env] env))
           (if-not match
             ;; No route matched — when :not-found is set, register it and set
             ;; the route so the route watcher re-renders the 404 over SSE and

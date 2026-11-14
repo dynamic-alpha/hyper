@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+- Sessions - A tab belongs to the session it was loaded in. Its actions,
+  uploads, back/forward navigations and event stream are refused with a 404
+  once the `hyper-session` cookie is cleared or replaced, so signing a person
+  out stops their open tabs.
+
 ## 0.3.0 — 2026-11-14
 
 ### Breaking Changes

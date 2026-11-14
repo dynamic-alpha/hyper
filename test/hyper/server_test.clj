@@ -99,7 +99,8 @@
                      "Cache-Control"     "no-cache, no-transform"
                      "X-Accel-Buffering" "no"
                      "Content-Encoding"  "br"}]]]
-      (let [app-state* (atom (state/init-state))
+      (let [app-state* (doto (atom (state/init-state))
+                         (state/get-or-create-tab! "ses_test" "tab_test"))
             handler    (#'server/sse-events-handler app-state*)
             req        (cond-> {:hyper/session-id "ses_test"
                                 :hyper/tab-id     "tab_test"}
@@ -519,18 +520,38 @@
           (is (seq (:humanized (json/parse-string (.toString output "UTF-8") true)))))))
     (is (zero? @rendered*))))
 
+(def ^:private session-cookie
+  "The cookie of the session the navigation tests' tabs are loaded in."
+  {"cookie" "hyper-session=S"})
+
+(defn- -load-tab!
+  "Loads a page into tab `tab-id` of the session of `session-cookie`."
+  [handler tab-id]
+  (handler {:uri          "/no-such-page"        :request-method :get
+            :query-string (str "tab-id=" tab-id)
+            :headers      session-cookie}))
+
+(defn- -navigate
+  "Posts a navigation of tab `tab-id` of the session of `session-cookie` to
+   `path`."
+  [handler tab-id path]
+  (handler {:uri          "/hyper/navigate"             :request-method :post
+            :query-params {"path" path "tab-id" tab-id}
+            :headers      session-cookie}))
+
 (deftest invalid-navigation-parameters-do-not-replace-the-tab-route
   (let [app-state* (atom (state/init-state))
         handler    (server/create-handler
                      [["/items/:id" {:name       :item
                                      :parameters {:path [:map [:id :int]]}
                                      :get        (fn [_] [:p "OK"])}]] app-state*)
-        response   (handler {:uri          "/hyper/navigate"            :request-method :post
-                             :query-params {"path" "/items/not-an-int"}})]
+        _          (-load-tab! handler "T")
+        before     (get-in @app-state* [:tabs "T" :route])
+        response   (-navigate handler "T" "/items/not-an-int")]
     (is (= 400 (:status response)))
     (is (= {:id ["should be an integer"]}
            (:humanized (json/parse-string (:body response) true))))
-    (is (every? #(nil? (:route %)) (vals (:tabs @app-state*))))))
+    (is (= before (get-in @app-state* [:tabs "T" :route])))))
 
 (deftest navigation-uses-the-same-typed-parameters-as-page-loads
   (let [app-state* (atom (state/init-state))
@@ -540,20 +561,18 @@
                                      :parameters {:path  [:map [:id :int]]
                                                   :query [:map [:capture :uuid]]}
                                      :get        (fn [_] [:p "OK"])}]] app-state*)
-        good       (handler {:uri          "/hyper/navigate"                           :request-method :post
-                             :query-params {"path" (str "/items/42?capture=" capture)}})]
+        _          (-load-tab! handler "T")
+        good       (-navigate handler "T" (str "/items/42?capture=" capture))]
     (is (= 200 (:status good)))
-    (is (some #(= {:name        :item    :path         "/items/42"
-                   :path-params {:id 42} :query-params {:capture capture}}
-                  (:route %)) (vals (:tabs @app-state*))))
-    (let [before (into {} (map (fn [[id tab]] [id (:route tab)])) (:tabs @app-state*))
-          bad    (handler {:uri          "/hyper/navigate"                    :request-method :post
-                           :query-params {"path" "/items/42?capture=invalid"}})]
+    (is (= {:name        :item    :path         "/items/42"
+            :path-params {:id 42} :query-params {:capture capture}}
+           (get-in @app-state* [:tabs "T" :route])))
+    (let [before (get-in @app-state* [:tabs "T" :route])
+          bad    (-navigate handler "T" "/items/42?capture=invalid")]
       (is (= 400 (:status bad)))
       (is (= {:capture ["should be a uuid"]}
              (:humanized (json/parse-string (:body bad) true))))
-      (is (= before (into {} (keep (fn [[id tab]] (when (:route tab) [id (:route tab)])))
-                          (:tabs @app-state*)))))))
+      (is (= before (get-in @app-state* [:tabs "T" :route]))))))
 
 (def ^:private typed-param-routes
   [["/items/:id" {:name       :item
@@ -578,14 +597,14 @@
     (get-in @app-state* [:tabs new-tab :route])))
 
 (defn- -route-after-navigation
-  "Navigates to url through handler and returns the resulting tab route."
+  "Navigates a newly loaded tab to url through handler and returns the
+   resulting tab route."
   [handler app-state* url]
-  (let [before   (set (keys (:tabs @app-state*)))
-        response (handler {:uri          "/hyper/navigate" :request-method :post
-                           :query-params {"path" url}})
-        new-tab  (first (remove before (keys (:tabs @app-state*))))]
+  (let [tab-id   (str (gensym "tab_"))
+        _        (-load-tab! handler tab-id)
+        response (-navigate handler tab-id url)]
     (is (= 200 (:status response)) url)
-    (get-in @app-state* [:tabs new-tab :route])))
+    (get-in @app-state* [:tabs tab-id :route])))
 
 (defn- -url
   "Returns the URL h/navigate builds for route-name with params in router."
@@ -898,7 +917,8 @@
           events-res (handler {:uri "/my-app/hyper/events" :request-method :get})
           ;; And the old paths should not match (404)
           old-res    (handler {:uri "/hyper/events" :request-method :get})]
-      (is (not= 404 (:status events-res)))
+      (is (string/includes? (str (:body events-res)) "Unknown tab")
+          "the events route answers, refusing a tab it does not know")
       (is (= 404 (:status old-res)))))
 
   (testing ":base-path is stored in app-state"
@@ -999,9 +1019,8 @@
           routes     [["/" {:name :home
                             :get  (fn [_req] [:div "Home"])}]]
           handler    (server/create-handler routes app-state* {:not-found nil})
-          response   (handler {:uri            "/hyper/navigate"
-                               :request-method :post
-                               :query-params   {"path" "/ghost"}})]
+          _          (handler {:uri "/" :request-method :get :query-string "tab-id=T" :headers session-cookie})
+          response   (-navigate handler "T" "/ghost")]
       (is (= 404 (:status response)))
       (is (string/includes? (:body response) "Route not found"))))
 

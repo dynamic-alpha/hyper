@@ -141,7 +141,8 @@
                                (fn [{:keys [form files]}]
                                  (reset! received {:form form :files files})
                                  {:saved (mapv :filename files)}))
-      (let [resp (handler {:query-params     {"action-id" "a_t_1" "tab-id" "t"}
+      (let [resp (handler {:hyper/session-id "s"
+                           :query-params     {"action-id" "a_t_1" "tab-id" "t"}
                            :multipart-params {"name"   "Alice"
                                               "avatar" a-file}})]
         (is (= 204 (:status resp)))
@@ -161,7 +162,8 @@
           handler (#'server/upload-handler app*)]
       (register-upload-action! app* "t" "a_t_1" ref
                                (fn [_] (throw (ex-info "boom" {}))))
-      (let [resp (handler {:query-params     {"action-id" "a_t_1" "tab-id" "t"}
+      (let [resp (handler {:hyper/session-id "s"
+                           :query-params     {"action-id" "a_t_1" "tab-id" "t"}
                            :multipart-params {"avatar" a-file}})]
         (is (= 500 (:status resp)))
         (is (= :error (:phase @ref)))
@@ -183,11 +185,13 @@
           v1      (register-upload-action! app* "t" "a_t_1" nil (fn [_] (swap! ran conj :first)) "first")
           v2      (register-upload-action! app* "t" "a_t_1" nil (fn [_] (swap! ran conj :second)) "second")]
       (is (not= v1 v2))
-      (is (= 204 (:status (handler {:query-params     {"action-id" "a_t_1" "tab-id" "t" "v" (str v1)}
+      (is (= 204 (:status (handler {:hyper/session-id "s"
+                                    :query-params     {"action-id" "a_t_1" "tab-id" "t" "v" (str v1)}
                                     :multipart-params {"avatar" a-file}}))))
       (is (= [:first] @ran))
       (testing "and without a version, the latest page render's"
-        (handler {:query-params     {"action-id" "a_t_1" "tab-id" "t"}
+        (handler {:hyper/session-id "s"
+                  :query-params     {"action-id" "a_t_1" "tab-id" "t"}
                   :multipart-params {"avatar" a-file}})
         (is (= [:first :second] @ran))))))
 

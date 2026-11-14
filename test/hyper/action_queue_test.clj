@@ -17,8 +17,12 @@
   (let [app* (atom (state/init-state))]
     [(h/create-handler [["/" {:name :home :get page}]] :app-state app*) app*]))
 
+(def ^:private session-cookie
+  "The cookie of the session the tests' page loads and posts are made in."
+  {"cookie" "hyper-session=S"})
+
 (defn- get-page [handler]
-  (:body (handler {:request-method :get :uri "/" :query-string "tab-id=T" :headers {}})))
+  (:body (handler {:request-method :get :uri "/" :query-string "tab-id=T" :headers session-cookie})))
 
 (defn- action-id
   "The id of the action on the element whose text is `label`."
@@ -34,7 +38,7 @@
   (handler {:request-method :post
             :uri            "/hyper/actions"
             :query-string   "tab-id=T"
-            :headers        {"content-type" "application/json"}
+            :headers        (assoc session-cookie "content-type" "application/json")
             :body           (json/generate-string {:base base :actions actions})}))
 
 (defn- queued

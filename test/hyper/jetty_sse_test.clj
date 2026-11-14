@@ -104,7 +104,7 @@
                            :get  (fn [_] [:div {:id "box"} "n=" @(h/global-cursor :n 0)])}]]
                     :app-state app*)
           stop    (h/start! handler {:port port})
-          client  (HttpClient/newHttpClient)
+          client  (cookie-client)
           base    (str "http://localhost:" port)]
       (try
         ;; 1. Initial GET registers the render-fn for tab "T".
@@ -141,7 +141,7 @@
                            :get  (fn [_] [:div {:id "box"} "n=" @(h/global-cursor :n 0)])}]]
                     :app-state app*)
           stop    (h/start! handler {:port port})
-          client  (HttpClient/newHttpClient)
+          client  (cookie-client)
           base    (str "http://localhost:" port)]
       (try
         (is (= 200 (.statusCode (GET client (str base "/?tab-id=T")
@@ -500,7 +500,7 @@
     (let [port    (free-port)
           handler (h/create-handler [["/" {:name :home :get (fn [_] [:div "ok"])}]])
           _stop   (h/start! handler {:port port})
-          client  (HttpClient/newHttpClient)
+          client  (cookie-client)
           base    (str "http://localhost:" port)]
       (GET client (str base "/?tab-id=T") (HttpResponse$BodyHandlers/ofString))
       (let [resp                (GET client (str base "/hyper/events?tab-id=T")
@@ -537,7 +537,7 @@
                                                   [:div "collapsed"]))])}]]
                     :app-state app*)
           stop    (h/start! handler {:port port})
-          client  (HttpClient/newHttpClient)
+          client  (cookie-client)
           base    (str "http://localhost:" port)]
       (try
         (GET client (str base "/?tab-id=T") (HttpResponse$BodyHandlers/ofString))
@@ -581,7 +581,7 @@
                                                   [:div "collapsed"]))])}]]
                     :app-state app*)
           stop    (h/start! handler {:port port})
-          client  (HttpClient/newHttpClient)
+          client  (cookie-client)
           base    (str "http://localhost:" port)]
       (try
         (GET client (str base "/?tab-id=T") (HttpResponse$BodyHandlers/ofString))
