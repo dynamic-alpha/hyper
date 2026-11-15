@@ -1853,7 +1853,7 @@ disconnect.
 ### Lint support
 
 A clj-kondo hook validates `async` at edit time: it checks the call shape
-(deps vector, a fetch expression, a binding form, a non-empty render body),
+(deps, a fetch expression, a binding form, a non-empty render body),
 makes the destructured `status`/`result`/`error` bindings visible to normal
 linting (including unused-binding), and **flags `:status` branches outside the
 status set** (`:loading`, `:ready`, `:error`, `:reloading`) — a `case` branch or

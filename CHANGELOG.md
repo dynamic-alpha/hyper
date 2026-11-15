@@ -39,6 +39,11 @@
   releases it when the region is removed. Before, the source was never
   disposed.
 
+- clj-kondo hooks - `h/reactive` and `h/async` accept deps given as a symbol
+  or an expression, such as `(h/reactive deps ...)`. Before, the hooks
+  reported an error unless deps was a literal vector. A map, keyword, string,
+  number, boolean or nil in place of deps is still reported.
+
 ## 0.3.0 — 2026-11-14
 
 ### Breaking Changes

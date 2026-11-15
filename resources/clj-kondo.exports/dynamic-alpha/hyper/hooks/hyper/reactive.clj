@@ -1,8 +1,9 @@
 (ns hooks.hyper.reactive
   "clj-kondo hook for the hyper.core/reactive macro.
 
-   Validates the call shape — `(reactive [deps] & body)`: a deps *vector* and a
-   non-empty body — and rewrites the call into an analyzable `let` so
+   Validates the call shape — `(reactive deps & body)`: deps that are not a
+   map, keyword, string, number, boolean or nil literal, and a non-empty
+   body — and rewrites the call into an analyzable `let` so
    clj-kondo's normal linting applies: the dep symbols resolve and count as
    used, and the body is linted in place with the surrounding lexical scope
    (so a nested `reactive` and any closed-over locals analyze normally).
@@ -20,15 +21,15 @@
           :type type)))
 
 (defn reactive
-  "Validate + rewrite (reactive {opts}? [deps] & body)."
+  "Validate + rewrite (reactive {opts}? deps & body)."
   [{:keys [node]}]
   (let [[_ & args]      (:children node)
         opts            (when (and (first args) (api/map-node? (first args)))
                           (first args))
         [deps & body]   (if opts (rest args) args)]
-    (when-not (and deps (api/vector-node? deps))
+    (when (lint/invalid-deps? deps)
       (finding! (or deps node) :error
-                "h/reactive requires a deps vector as its first argument (e.g. [clock*])"
+                "h/reactive requires deps as its first argument: a vector, or an expression returning one (e.g. [clock*])"
                 :hyper.reactive/invalid-deps))
     (when (empty? body)
       (finding! node :error

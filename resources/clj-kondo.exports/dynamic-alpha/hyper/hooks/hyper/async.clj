@@ -3,12 +3,13 @@
 
    Does two jobs:
 
-   1. Validates the call shape — `(async [deps] fetch binding & render-body)`:
-      a deps *vector*, a fetch expression, a binding form, and a non-empty
+   1. Validates the call shape — `(async deps fetch binding & render-body)`:
+      deps that are not a map, keyword, string, number, boolean or nil
+      literal, a fetch expression, a binding form, and a non-empty
       render body — registering findings with precise locations.
 
    2. Rewrites the call into an analyzable `let` so clj-kondo's normal linting
-      applies: the deps vector and fetch expression are analyzed (their
+      applies: the deps and fetch expression are analyzed (their
       symbols resolve / count as used), and the binding form scopes over the
       render body so destructured keys (`status`, `result`, `error`) are
       visible and unused-binding warnings fire.
@@ -120,16 +121,16 @@
 ;; ---------------------------------------------------------------------------
 
 (defn async
-  "Validate + rewrite (async {opts}? [deps] fetch binding & render-body)."
+  "Validate + rewrite (async {opts}? deps fetch binding & render-body)."
   [{:keys [node]}]
   (let [[_ & args]                          (:children node)
         opts                                (when (and (first args) (api/map-node? (first args)))
                                               (first args))
         [deps fetch binding & render-body]  (if opts (rest args) args)]
     ;; --- shape validation ---
-    (when-not (and deps (api/vector-node? deps))
+    (when (lint/invalid-deps? deps)
       (finding! (or deps node) :error
-                "h/async requires a deps vector as its first argument (use [] for fetch-once)"
+                "h/async requires deps as its first argument: a vector, or an expression returning one (use [] for fetch-once)"
                 :hyper.async/invalid-deps))
     (when (nil? fetch)
       (finding! node :error
@@ -154,13 +155,15 @@
     (let [new-node (api/list-node
                     (list*
                      (api/token-node 'let)
+                     ;; The binding comes last so it scopes over the render
+                     ;; body only, not over deps or fetch.
                      (api/vector-node
-                      (cond-> [(or binding (api/token-node '_)) (api/token-node nil)
-                               (api/token-node '_deps)          (or deps (api/vector-node []))
-                               (api/token-node '_fetch)         (api/list-node
-                                                                 [(api/token-node 'fn)
-                                                                  (api/vector-node [])
-                                                                  (or fetch (api/token-node nil))])]
-                        opts (conj (api/token-node '_opts) opts)))
+                      (conj (cond-> [(api/token-node '_deps)  (or deps (api/vector-node []))
+                                     (api/token-node '_fetch) (api/list-node
+                                                               [(api/token-node 'fn)
+                                                                (api/vector-node [])
+                                                                (or fetch (api/token-node nil))])]
+                              opts (conj (api/token-node '_opts) opts))
+                            (or binding (api/token-node '_)) (api/token-node nil)))
                      render-body))]
       {:node new-node})))

@@ -15,7 +15,9 @@
 
    Matching is by symbol name, so both `h/watch!` and a referred `watch!` are
    caught, and `compare-and-set!` (the cursor/signal default-init, declarative)
-   is intentionally absent from the mutation set."
+   is intentionally absent from the mutation set.
+
+   `invalid-deps?` tells whether a region's deps argument can never be deps."
   (:require [clj-kondo.hooks-api :as api]))
 
 ;; Matched against the *name* (string) of a list node's head symbol, so both
@@ -63,3 +65,15 @@
    for each effect found in render flow."
   [body-nodes]
   (doseq [n body-nodes] (scan! n)))
+
+(defn invalid-deps?
+  "True when a region's deps argument is missing, or is a literal that cannot
+   be deps: a map, keyword, string, number, boolean or nil."
+  [deps]
+  (or (nil? deps)
+      (api/map-node? deps)
+      (api/keyword-node? deps)
+      (api/string-node? deps)
+      (and (api/token-node? deps)
+           (let [v (api/sexpr deps)]
+             (or (nil? v) (boolean? v) (number? v))))))
