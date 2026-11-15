@@ -26,6 +26,13 @@
   always receives rendered hiccup (or a Ring response) from the handler,
   including on a page's first render.
 
+- Reactive regions - A region drawn again with different deps now watches its
+  new deps and releases the old ones. Before, it kept watching the deps it was
+  first drawn with, so a nested `h/reactive` whose deps depend on its parent
+  missed changes. A region's re-render now also removes the nested regions it
+  no longer draws, and a nested region without a `:key` keeps its id when its
+  parent re-renders on its own.
+
 ## 0.3.0 — 2026-11-14
 
 ### Breaking Changes

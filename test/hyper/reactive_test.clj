@@ -3,6 +3,8 @@
             [clojure.test :refer [deftest is testing]]
             [hyper.core :as h]
             [hyper.protocols :as proto]
+            [hyper.render :as render]
+            [hyper.state :as state]
             [hyper.subview :as subview]
             [hyper.test :as ht]))
 
@@ -238,3 +240,169 @@
           "partial fragment must carry the local signal's __ifmissing declaration")
       (is (str/includes? fragment "panel")
           "fragment should still contain the rendered body"))))
+
+;; ---------------------------------------------------------------------------
+;; Regions drawn again with other deps, and regions dropped by a partial render
+;; ---------------------------------------------------------------------------
+
+(defn- connected-page
+  "Load `page` in tab T and attach a renderer that records the regions it is
+   asked to re-render.  Returns `[app* partials*]`."
+  [page]
+  (let [app*     (atom (state/init-state))
+        partials (atom [])
+        handler  (h/create-handler [["/" {:name :home :get page}]] :app-state app*)
+        trigger! #(swap! partials conj %)]
+    (handler {:request-method :get
+              :uri            "/"
+              :query-string   "tab-id=T"
+              :headers        {"cookie" "hyper-session=S"}})
+    (swap! app* assoc-in [:tabs "T" :renderer] {:trigger-render!  (fn [])
+                                                :trigger-partial! trigger!})
+    (subview/setup-new-watches! app* "T" (fn []) trigger!)
+    [app* partials]))
+
+(defn- full-render!
+  "Render tab T's page as the renderer does on a full render."
+  [app*]
+  (let [{:keys [registered-subview-ids]}           (render/render-tab app* (get-in @app* [:tabs "T" :session-id]) "T")
+        {:keys [trigger-render! trigger-partial!]} (get-in @app* [:tabs "T" :renderer])]
+    (subview/sweep-stale! app* "T" registered-subview-ids)
+    (subview/setup-new-watches! app* "T" trigger-render! trigger-partial!)))
+
+(defn- changes-redraw
+  "The regions asked to re-render when `f` runs."
+  [partials f]
+  (reset! partials [])
+  (f)
+  @partials)
+
+(defn- watched-by? [app* sid source]
+  (some #(identical? source %) (vals (get-in @app* [:tabs "T" :subview-watches sid]))))
+
+(deftest test-nested-region-watches-its-new-deps-after-a-partial-render
+  (let [a               (make-disposable-source 0)
+        b               (make-disposable-source 0)
+        [app* partials] (connected-page
+                          (fn [_]
+                            (let [which (h/tab-cursor :which :a)]
+                              [:div (h/reactive [which]
+                                                (let [dep (if (= :a @which) a b)]
+                                                  [:div (h/reactive [dep] [:p (str "v" @dep)])]))])))
+        inner           "r_T_2"]
+    (is (watched-by? app* inner a))
+    (is (= ["r_T_1"] (changes-redraw partials #(swap! app* assoc-in [:tabs "T" :data :which] :b))))
+    (let [frag (subview/partial-render app* "T" "r_T_1")]
+      (testing "the nested region keeps its id in its parent's partial render"
+        (is (str/includes? frag (str "<p id=\"" inner "\">v0</p>")))
+        (is (= ["r_T_1" inner] (sort (keys (get-in @app* [:tabs "T" :subviews])))))))
+    (testing "a change to the new dep redraws the nested region"
+      (is (= [inner] (changes-redraw partials #(reset! (.-value* b) 1))))
+      (is (str/includes? (subview/partial-render app* "T" inner) "v1")))
+    (testing "the old dep no longer has the region's watch and is released"
+      (is (= [] (changes-redraw partials #(reset! (.-value* a) 1))))
+      (is (empty? @(.-watches* a)))
+      (is (= 1 @(.-disposed* a)))
+      (is (not (contains? (:source-refcounts @app*) a)))
+      (is (= 1 (get-in @app* [:source-refcounts b])))
+      (is (zero? @(.-disposed* b))))))
+
+(deftest test-region-watches-its-new-deps-after-a-full-render
+  (let [a               (make-disposable-source 0)
+        b               (make-disposable-source 0)
+        which           (atom :a)
+        [app* partials] (connected-page
+                          (fn [_]
+                            (let [dep (if (= :a @which) a b)]
+                              [:div (h/reactive [dep] [:p (str "v" @dep)])])))]
+    (reset! which :b)
+    (full-render! app*)
+    (is (= ["r_T_1"] (keys (get-in @app* [:tabs "T" :subviews]))) "the region keeps its id")
+    (is (= ["r_T_1"] (changes-redraw partials #(reset! (.-value* b) 1))))
+    (is (= [] (changes-redraw partials #(reset! (.-value* a) 1))))
+    (is (empty? @(.-watches* a)))
+    (is (= 1 @(.-disposed* a)))
+    (is (zero? @(.-disposed* b)))))
+
+(deftest test-unchanged-deps-are-not-rewired
+  (let [source          (make-disposable-source 0)
+        n               (atom 0)
+        [app* partials] (connected-page
+                          (fn [_]
+                            [:div (h/reactive [(h/tab-cursor :x 0)]
+                                              [:div "n" @n
+                                               (h/reactive [source (h/tab-cursor :y 0)]
+                                                           [:p (str "v" @source)])])]))
+        watches         #(get-in @app* [:tabs "T" :subview-watches])
+        before          (watches)
+        rewires         (atom 0)
+        setup           subview/setup-subview-watches!
+        teardown        subview/teardown-subview-watches!]
+    (with-redefs [subview/setup-subview-watches!    (fn [& args] (swap! rewires inc) (apply setup args))
+                  subview/teardown-subview-watches! (fn [& args] (swap! rewires inc) (apply teardown args))]
+      (testing "fresh cursors to the same paths and the same source do not rewire"
+        (swap! n inc)
+        (full-render! app*)
+        (subview/partial-render app* "T" "r_T_1")
+        (subview/partial-render app* "T" "r_T_2")
+        (full-render! app*)
+        (is (zero? @rewires))
+        (is (= before (watches)))
+        (is (= 1 (count @(.-watches* source))))
+        (is (zero? @(.-disposed* source)))))
+    (testing "and the regions still redraw on their deps"
+      (is (= ["r_T_2"] (changes-redraw partials #(reset! (.-value* source) 1))))
+      (is (= ["r_T_2"] (changes-redraw partials #(swap! app* assoc-in [:tabs "T" :data :y] 1))))
+      (is (= ["r_T_1"] (changes-redraw partials #(swap! app* assoc-in [:tabs "T" :data :x] 1)))))))
+
+(defn- nested-regions-page
+  "A page whose region :parent draws :kept, and :dropped (with :deep in it)
+   and the async :loader while :show? is on, next to a region :sibling."
+  [{:keys [kept dropped deep sibling]}]
+  (fn [_]
+    (let [show? (h/tab-cursor :show? true)]
+      [:div
+       (h/reactive {:key :parent} [show?]
+                   [:div
+                    (h/reactive {:key :kept} [kept] [:p (str "kept" @kept)])
+                    (when @show?
+                      (h/reactive {:key :dropped} [dropped]
+                                  [:div (h/reactive {:key :deep} [deep] [:p @deep])]))
+                    (when @show?
+                      (h/async {:key :loader} [] :loaded
+                               {:keys [status]} [:p (str status)]))])
+       (h/reactive {:key :sibling} [sibling] [:p @sibling])])))
+
+(deftest test-a-partial-render-removes-the-regions-it-no-longer-draws
+  (let [sources                             (zipmap [:kept :dropped :deep :sibling] (repeatedly #(make-disposable-source 0)))
+        {:keys [kept dropped deep sibling]} sources
+        [app* partials]                     (connected-page (nested-regions-page sources))
+        sids                                #(set (keys (get-in @app* [:tabs "T" :subviews])))
+        before                              (sids)
+        id                                  (fn [k] (first (filter #(str/ends-with? % (str "_" k)) before)))
+        kept-id                             (id "kept")
+        dropped-id                          (id "dropped")
+        deep-id                             (id "deep")
+        loader-id                           (id "loader")
+        sibling-id                          (id "sibling")]
+    (is (every? some? [kept-id dropped-id deep-id loader-id sibling-id]))
+    (swap! app* assoc-in [:tabs "T" :data :show?] false)
+    (subview/partial-render app* "T" "r_T_parent")
+    (testing "the regions drawn under the parent and dropped are torn down"
+      (is (= (disj before dropped-id deep-id loader-id) (sids)))
+      (doseq [[sid source] [[dropped-id dropped] [deep-id deep]]]
+        (is (nil? (get-in @app* [:tabs "T" :subview-watches sid])))
+        (is (empty? @(.-watches* source)))
+        (is (= 1 @(.-disposed* source)))
+        (is (not (contains? (:source-refcounts @app*) source))))
+      (is (nil? (get-in @app* [:tabs "T" :async loader-id])) "the async region is unmounted")
+      (is (= [] (changes-redraw partials #(reset! (.-value* dropped) 1)))))
+    (testing "a region outside the parent is untouched"
+      (is (watched-by? app* sibling-id sibling))
+      (is (zero? @(.-disposed* sibling)))
+      (is (= [sibling-id] (changes-redraw partials #(reset! (.-value* sibling) 1)))))
+    (testing "a region the parent still draws keeps working"
+      (is (watched-by? app* kept-id kept))
+      (is (zero? @(.-disposed* kept)))
+      (is (= [kept-id] (changes-redraw partials #(reset! (.-value* kept) 1))))
+      (is (str/includes? (subview/partial-render app* "T" kept-id) "kept1")))))

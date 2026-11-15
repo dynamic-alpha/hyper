@@ -28,8 +28,10 @@
             [hyper.context :as context]
             [hyper.protocols :as proto]
             [hyper.signal :as signal]
+            [hyper.state]
             [hyper.watch :as watch]
-            [taoensso.telemere :as t]))
+            [taoensso.telemere :as t])
+  (:import (hyper.state Cursor)))
 
 ;; ---------------------------------------------------------------------------
 ;; Registry access
@@ -126,11 +128,43 @@
 
 (declare wire-subview!)
 
+(defn- same-dep?
+  "True when deps `a` and `b` watch the same thing: the same object, or
+   cursors to the same path of the same atom."
+  [a b]
+  (or (identical? a b)
+      (and (instance? Cursor a)
+           (instance? Cursor b)
+           (identical? (.-parent-atom ^Cursor a) (.-parent-atom ^Cursor b))
+           (= (.-full-path ^Cursor a) (.-full-path ^Cursor b)))))
+
+(defn- same-deps?
+  "True when dep vectors `xs` and `ys` watch the same things in the same order."
+  [xs ys]
+  (and (= (count xs) (count ys))
+       (every? true? (map same-dep? xs ys))))
+
+(declare teardown-subview-watches!)
+
+(defn- rewire-subview!
+  "Replace subview `sid`'s dep watches with watches on its current deps."
+  [app-state* tab-id sid]
+  (let [deps (:deps (get-subview app-state* tab-id sid))
+        kept (filter (fn [dep] (some #(same-dep? dep %) deps))
+                     (vals (get-in @app-state* [:tabs tab-id :subview-watches sid])))]
+    ;; Hold the deps that stay watched so releasing the old watches does not
+    ;; dispose them.
+    (doseq [dep kept] (watch/retain-source! app-state* dep))
+    (teardown-subview-watches! app-state* tab-id sid)
+    (wire-subview! app-state* tab-id sid)
+    (doseq [dep kept] (watch/release-source! app-state* dep))))
+
 (defn register-subview!
   "Record/refresh a subview during a render, marking it live for this render
    cycle so it survives the post-render sweep, and wire its dep watches when a
-   renderer is present (see `wire-subview!`).  Wiring can enqueue a partial
-   render if a dep already changed.  Idempotent.
+   renderer is present (see `wire-subview!`).  A subview registered again with
+   different deps watches its new deps instead of its old ones.  Wiring can
+   enqueue a partial render if a dep already changed.  Idempotent.
 
    `spec` keys (all optional unless noted):
    - :deps        vector of Watchable sources to subscribe (ref-counted)
@@ -140,26 +174,45 @@
    - :cached-html last rendered HTML string (for partial re-render)
    - :html-id     the element id targeted by partial fragments
    - :dep-vals    snapshot of (mapv deref deps) at last render
+   - :action-idx  the render's position counter when the body started, so a
+                  partial render numbers what it draws as a full render does
+   - :nested-ids  ids of the subviews registered by the body's last render
    - :mount       (fn [] -> resource) run once when the subview first appears
    - :unmount     (fn [resource] ...) run when the subview is swept/torn down
    - :resource    value returned by :mount, threaded into :unmount
 
    `:scope` decides the sweep lifetime: `:render` subviews (reactive regions)
-   are re-registered every full render and swept when absent; `:mount`
-   subviews (h/watch!, async workers — registered once in form-2 setup / a
-   form-3 :mount) survive per-render sweeps and are torn down only on
-   page-view remount (navigation) or tab disconnect.
+   are re-registered every full render and swept when absent from it, or from
+   a partial render of the region they were drawn in; `:mount` subviews
+   (h/watch!, async workers — registered once in form-2 setup / a form-3
+   :mount) survive both sweeps and are torn down only on page-view remount
+   (navigation) or tab disconnect.
 
    Returns the stored spec."
   [app-state* tab-id sid spec]
   (when-let [acc context/*registered-subview-ids*]
     (swap! acc conj sid))
-  (let [spec (-> spec
-                 (update :on-change #(or % :partial))
-                 (update :scope #(or % :render)))]
+  (let [spec     (-> spec
+                     (update :on-change #(or % :partial))
+                     (update :scope #(or % :render)))
+        old-deps (:deps (get-subview app-state* tab-id sid))
+        watched? (contains? (get-in @app-state* [:tabs tab-id :subview-watches]) sid)]
     (swap! app-state* assoc-in [:tabs tab-id :subviews sid] spec)
-    (wire-subview! app-state* tab-id sid)
+    (if (and watched? (not (same-deps? old-deps (:deps spec))))
+      (rewire-subview! app-state* tab-id sid)
+      (wire-subview! app-state* tab-id sid))
     spec))
+
+(defn- run-region-body
+  "Run a region's `render-fn` under region path `path` during a render.
+   Returns `[body action-idx nested-ids]`: the body, the render's position
+   counter before it ran, and the ids of the subviews it registered."
+  [path render-fn]
+  (let [acc        context/*registered-subview-ids*
+        before     (some-> acc deref)
+        action-idx (some-> context/*action-idx* deref)
+        body       (binding [context/*region-path* path] (render-fn))]
+    [body action-idx (when acc (clojure.set/difference @acc before))]))
 
 (defn render-reactive!
   "Render a render-bearing subview inline during a full page render.
@@ -176,13 +229,13 @@
    `:on-change` defaults to `:partial` — a dep change re-renders only this
    region."
   [app-state* tab-id key fallback-id deps render-fn]
-  (let [token       (when (some? key) (key->token key))
-        explicit-id (when token (scoped-id "r_" tab-id token))
-        path        (cond-> context/*region-path* token (conj token))
-        dep-vals    (mapv deref deps)
-        body        (binding [context/*region-path* path] (render-fn))
-        [id hiccup] (resolve-region-id explicit-id fallback-id body)
-        html        (c/html hiccup)]
+  (let [token                        (when (some? key) (key->token key))
+        explicit-id                  (when token (scoped-id "r_" tab-id token))
+        path                         (cond-> context/*region-path* token (conj token))
+        dep-vals                     (mapv deref deps)
+        [body action-idx nested-ids] (run-region-body path render-fn)
+        [id hiccup]                  (resolve-region-id explicit-id fallback-id body)
+        html                         (c/html hiccup)]
     (check-region-unique! tab-id id)
     (register-subview! app-state* tab-id id
                        {:render-fn   render-fn
@@ -191,6 +244,8 @@
                         :cached-html html
                         :html-id     id
                         :region-path path
+                        :action-idx  action-idx
+                        :nested-ids  nested-ids
                         :on-change   :partial})
     hiccup))
 
@@ -198,20 +253,40 @@
 ;; Partial render (called from the renderer thread for targeted updates)
 ;; ---------------------------------------------------------------------------
 
+(declare remove-subview!)
+
+(defn- drawn-under
+  "Ids of the subviews in `subviews` drawn by subview `sid`'s body, at any
+   depth."
+  [subviews sid]
+  (loop [todo (vec (get-in subviews [sid :nested-ids]))
+         seen #{}]
+    (if-let [id (peek todo)]
+      (if (or (seen id) (= id sid))
+        (recur (pop todo) seen)
+        (recur (into (pop todo) (get-in subviews [id :nested-ids])) (conj seen id)))
+      seen)))
+
 (defn partial-render
   "Re-render a single render-bearing subview and return the HTML string for a
-   targeted Datastar fragment.  Updates the cache.  Returns nil when the
-   subview is no longer registered or has no render-fn."
+   targeted Datastar fragment.  Updates the cache, and removes the
+   render-scoped subviews its previous render drew that this one did not (see
+   `sweep-stale!`).  Returns nil when the subview is no longer registered or
+   has no render-fn."
   [app-state* tab-id sid]
   (when-let [{:keys [render-fn deps] :as spec} (get-subview app-state* tab-id sid)]
     (when render-fn
       (let [tab-state  (get-in @app-state* [:tabs tab-id])
             session-id (:session-id tab-state)
-            req        (context/context-request app-state* tab-id session-id)]
+            req        (context/context-request app-state* tab-id session-id)
+            under      (drawn-under (:subviews tab-state) sid)]
         (push-thread-bindings (context/partial-render-bindings req))
         (try
+          (when-let [idx (:action-idx spec)]
+            (reset! context/*action-idx* idx))
           (let [body         (binding [context/*region-path* (:region-path spec [])]
                                (render-fn))
+                drawn        @context/*registered-subview-ids*
                 [_id hiccup] (resolve-region-id sid sid body)
                 sig-attrs    (signal/format-signal-attrs @context/*declared-signals*)
                 hiccup       (cond-> hiccup sig-attrs (merge-root-attrs sig-attrs))
@@ -224,8 +299,12 @@
                    (assoc spec
                           :dep-vals    (mapv deref deps)
                           :cached-html html
-                          :html-id     sid))
-            ;; The region's actions are counted from zero, so a click in it
+                          :html-id     sid
+                          :nested-ids  drawn))
+            (doseq [id    (clojure.set/difference under drawn)
+                    :when (= :render (:scope (get-subview app-state* tab-id id)))]
+              (remove-subview! app-state* tab-id id))
+            ;; Action ids repeat across renders, so a click in the region
             ;; names this render's version rather than the page's.
             (cond->> html
               version (with-render-version version)))
@@ -289,6 +368,13 @@
   (when-let [u (:unmount spec)]
     (u (:resource spec))))
 
+(defn- remove-subview!
+  "Tear down subview `sid`'s watches, run its :unmount and drop it."
+  [app-state* tab-id sid]
+  (teardown-subview-watches! app-state* tab-id sid)
+  (run-unmount! (get-subview app-state* tab-id sid))
+  (swap! app-state* update-in [:tabs tab-id :subviews] dissoc sid))
+
 (defn sweep-stale!
   "Remove *render-scoped* subviews that were not re-registered during the last
    full render: tear down their watches, release dep refcounts, and run any
@@ -302,9 +388,7 @@
                               subviews))
         stale      (clojure.set/difference render-ids live-ids)]
     (doseq [sid stale]
-      (teardown-subview-watches! app-state* tab-id sid)
-      (run-unmount! (get-subview app-state* tab-id sid))
-      (swap! app-state* update-in [:tabs tab-id :subviews] dissoc sid))))
+      (remove-subview! app-state* tab-id sid))))
 
 (defn teardown-mount-scoped!
   "Tear down all *mount-scoped* subviews for a tab (h/watch!, async workers).
@@ -531,27 +615,27 @@
    element (as with `reactive`), so the id can be injected.  Returns the
    hiccup."
   [app-state* tab-id session-id key fallback-id user-deps fetch-fn render-fn]
-  (let [token        (when (some? key) (key->token key))
-        component-id (if token (scoped-id "async_" tab-id token) fallback-id)
-        path         (cond-> context/*region-path* token (conj token))
-        store-path   [:tabs tab-id :async component-id]
-        cell         (coordinate-async! app-state* tab-id session-id
-                                        store-path user-deps fetch-fn)
-        deps         (into [cell] user-deps)
+  (let [token                        (when (some? key) (key->token key))
+        component-id                 (if token (scoped-id "async_" tab-id token) fallback-id)
+        path                         (cond-> context/*region-path* token (conj token))
+        store-path                   [:tabs tab-id :async component-id]
+        cell                         (coordinate-async! app-state* tab-id session-id
+                                                        store-path user-deps fetch-fn)
+        deps                         (into [cell] user-deps)
         ;; Snapshot deps before rendering, and render against the snapshot, so
         ;; the cached :dep-vals matches what the body shows.  A fetch that lands
         ;; after this is then a genuine change the watch (or wiring) reacts to.
-        dep-vals     (mapv deref deps)
-        body         (binding [context/*region-path* path] (render-fn (first dep-vals)))
-        [id hiccup]  (resolve-region-id component-id component-id body)
-        html         (c/html hiccup)
-        _            (check-region-unique! tab-id id)
+        dep-vals                     (mapv deref deps)
+        [body action-idx nested-ids] (run-region-body path #(render-fn (first dep-vals)))
+        [id hiccup]                  (resolve-region-id component-id component-id body)
+        html                         (c/html hiccup)
+        _                            (check-region-unique! tab-id id)
         ;; The stored render-fn re-coordinates (so a partial re-render from a
         ;; user-dep change still refetches) then renders the current status.
-        thunk        (fn []
-                       (let [cell (coordinate-async! app-state* tab-id session-id
-                                                     store-path user-deps fetch-fn)]
-                         (render-fn @cell)))]
+        thunk                        (fn []
+                                       (let [cell (coordinate-async! app-state* tab-id session-id
+                                                                     store-path user-deps fetch-fn)]
+                                         (render-fn @cell)))]
     (register-subview! app-state* tab-id component-id
                        {:render-fn   thunk
                         :deps        deps
@@ -559,6 +643,8 @@
                         :cached-html html
                         :html-id     id
                         :region-path path
+                        :action-idx  action-idx
+                        :nested-ids  nested-ids
                         :on-change   :partial
                         :scope       :render
                         :unmount     (fn [_]
