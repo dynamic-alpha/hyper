@@ -1173,15 +1173,17 @@ action({
 
 (defn- link-page-tab!
   "Link the tab a page load for `req` renders into to the request's session,
-   and return `req` with that tab's id: the request's tab, or a new one when
-   the request's tab belongs to another session.  A tab without a stream
+   and return `[req new-tab?]`: `req` with that tab's id, and whether the tab
+   was created for this request.  The tab is the request's tab, or a new one
+   when the request's tab belongs to another session.  A tab without a stream
    attached counts as disconnected from now until its stream connects."
   [app-state* req]
   (let [session-id (:hyper/session-id req)
         owner      (get-in @app-state* [:tabs (:hyper/tab-id req) :session-id])
         tab-id     (if (and owner (not= owner session-id))
                      (generate-tab-id)
-                     (:hyper/tab-id req))]
+                     (:hyper/tab-id req))
+        new-tab?   (not (contains? (:tabs @app-state*) tab-id))]
     (state/get-or-create-tab! app-state* session-id tab-id)
     (swap! app-state* update :tabs
            (fn [tabs]
@@ -1189,7 +1191,7 @@ action({
                (and (contains? tabs tab-id)
                     (nil? (get-in tabs [tab-id :renderer])))
                (assoc-in [tab-id :disconnected-at] (System/currentTimeMillis)))))
-    (assoc req :hyper/tab-id tab-id)))
+    [(assoc req :hyper/tab-id tab-id) new-tab?]))
 
 (defn page-handler
   "Wrap a page render function to provide full HTML response.
@@ -1197,15 +1199,18 @@ action({
    the same render pipeline as SSE updates (error boundaries, live route
    re-resolution, title/head resolution).
 
+   A render that returns a Ring response is returned as is, and leaves no
+   tab behind unless the tab existed before the request.
+
    Options:
    - :datastar-url - URL the page loads the Datastar module from."
   [app-state* opts]
   (fn [render-fn]
     (fn [req]
-      (let [req        (link-page-tab! app-state* req)
-            tab-id     (:hyper/tab-id req)
-            session-id (:hyper/session-id req)
-            route-info (extract-route-info req)]
+      (let [[req new-tab?] (link-page-tab! app-state* req)
+            tab-id         (:hyper/tab-id req)
+            session-id     (:hyper/session-id req)
+            route-info     (extract-route-info req)]
 
         (render/register-render-fn! app-state* tab-id render-fn)
         (state/set-tab-route! app-state* tab-id route-info)
@@ -1215,7 +1220,8 @@ action({
         (let [result (render/render-tab app-state* session-id tab-id req)]
           ;; Ring response passthrough (e.g. a 302 redirect)
           (if (:status result)
-            result
+            (do (when new-tab? (cleanup-tab! app-state* tab-id))
+                result)
             (page-response result (page-opts app-state* tab-id opts) req tab-id 200 "Hyper App")))))))
 
 (defn- not-found-handler
@@ -1224,17 +1230,19 @@ action({
 
    Registers the not-found render-fn and a nameless route from the request URI;
    render-tab falls back to the stored render-fn when the route has no :name,
-   so no reitit route is needed and the SSE connection re-renders the view."
+   so no reitit route is needed and the SSE connection re-renders the view.
+   A render that returns a Ring response leaves no tab behind, like in
+   `page-handler`."
   [app-state* opts]
   (fn [req]
-    (let [req          (link-page-tab! app-state* req)
-          tab-id       (:hyper/tab-id req)
-          session-id   (:hyper/session-id req)
-          not-found-fn (get @app-state* :not-found)
-          route-info   {:path         (:uri req)
-                        :query-params (into {}
-                                            (map (fn [[k v]] [(keyword k) v]))
-                                            (:query-params req))}]
+    (let [[req new-tab?] (link-page-tab! app-state* req)
+          tab-id         (:hyper/tab-id req)
+          session-id     (:hyper/session-id req)
+          not-found-fn   (get @app-state* :not-found)
+          route-info     {:path         (:uri req)
+                          :query-params (into {}
+                                              (map (fn [[k v]] [(keyword k) v]))
+                                              (:query-params req))}]
       (render/register-render-fn! app-state* tab-id not-found-fn)
       (state/set-tab-route! app-state* tab-id route-info)
       (when-let [env (:hyper/env req)]
@@ -1242,7 +1250,8 @@ action({
       (let [result (render/render-tab app-state* session-id tab-id req)]
         ;; Ring response passthrough (e.g. a redirect from render middleware)
         (if (:status result)
-          result
+          (do (when new-tab? (cleanup-tab! app-state* tab-id))
+              result)
           (page-response result (page-opts app-state* tab-id opts) req tab-id 404 "Not Found"))))))
 
 (defn- components-js-handler

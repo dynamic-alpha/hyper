@@ -176,3 +176,65 @@
           @page)
         (is (not (contains? (:tabs @app*) "OLD")))
         (is (consistent-session? app* new-tab))))))
+
+(defn- app-with-ring-routes
+  "A hyper handler with a page at /, a route at /api returning a Ring map, and
+   a page at /secret whose render middleware redirects to /; and its
+   app-state."
+  []
+  (let [app*     (atom (state/init-state))
+        redirect (fn [handler]
+                   (fn [req]
+                     (if (= :secret (get-in req [:hyper/route :name]))
+                       {:status 302 :headers {"Location" "/"} :body ""}
+                       (handler req))))]
+    [(h/create-handler [["/" {:name :home :get (fn [_] [:div "home"])}]
+                        ["/api" {:get (fn [_] {:status 200 :body "{}"})}]
+                        ["/secret" {:name :secret :get (fn [_] [:div "secret"])}]]
+                       :app-state app*
+                       :render-middleware [redirect]
+                       :not-found (fn [_] {:status 404 :body "gone"}))
+     app*]))
+
+(defn- get!
+  "GET `uri` from `handler`, with a session cookie of `session-id` when given."
+  ([handler uri] (get! handler uri nil))
+  ([handler uri session-id]
+   (handler (cond-> {:request-method :get :uri uri :headers {}}
+              session-id (assoc-in [:headers "cookie"] (str "hyper-session=" session-id))))))
+
+(deftest test-a-ring-response-leaves-no-tab
+  (testing "without a session cookie, no tab or session is left"
+    (let [[handler app*] (app-with-ring-routes)]
+      (is (= 200 (:status (get! handler "/api"))))
+      (is (= 302 (:status (get! handler "/secret"))))
+      (is (= 404 (:status (get! handler "/nowhere"))))
+      (is (empty? (:tabs @app*)))
+      (is (empty? (:sessions @app*)))))
+  (testing "with a session cookie, the session and its other tabs are untouched"
+    (let [[handler app*] (app-with-ring-routes)]
+      (load-page! handler "T")
+      (swap! app* assoc-in [:sessions "S" :data :user] "alice")
+      (let [before @app*]
+        (is (= 200 (:status (get! handler "/api" "S"))))
+        (is (= 302 (:status (get! handler "/secret" "S"))))
+        (is (= 404 (:status (get! handler "/nowhere" "S"))))
+        (is (= (:sessions before) (:sessions @app*)))
+        (is (= #{"T"} (set (keys (:tabs @app*))))))))
+  (testing "a page still creates its tab"
+    (let [[handler app*] (app-with-ring-routes)]
+      (is (= 200 (:status (get! handler "/"))))
+      (is (= 1 (count (:tabs @app*))))
+      (is (= 1 (count (:sessions @app*))))))
+  (testing "a tab that existed before the request is kept"
+    (let [[handler app*] (app-with-ring-routes)]
+      (load-page! handler "T")
+      (let [stream (connect! handler app* "T")]
+        (is (= 302 (:status (handler {:request-method :get
+                                      :uri            "/secret"
+                                      :query-string   "tab-id=T"
+                                      :headers        {"cookie" "hyper-session=S"}}))))
+        (is (some? (get-in @app* [:tabs "T" :renderer])))
+        (is (= #{"T"} (get-in @app* [:sessions "S" :tabs])))
+        (server/cleanup-tab! app* "T")
+        (is (not= :timeout (deref stream 2000 :timeout)))))))

@@ -52,6 +52,13 @@
   reported an error unless deps was a literal vector. A map, keyword, string,
   number, boolean or nil in place of deps is still reported.
 
+- Ring responses - A GET route whose handler or render middleware returns a
+  Ring map (an API route, a redirect) no longer leaves a tab behind, nor a
+  session that request created. Before, every such request added a tab and,
+  without a session cookie, a session, kept until the disconnect grace period
+  ran out. A page load is unchanged, as is a tab that existed before the
+  request.
+
 ## 0.3.0 — 2026-11-14
 
 ### Breaking Changes
