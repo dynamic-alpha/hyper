@@ -255,6 +255,39 @@
           after  (ht/test-action result "search" {:value "clojure"})]
       (is (= "clojure" (get-in after [:cursors :tab :query]))))))
 
+(deftest test-action-with-signals
+  (let [page (fn [_req]
+               (let [draft* (h/signal :draft "")
+                     name*  (h/signal [:user :name] "anon")]
+                 [:div
+                  [:input {:data-bind draft*}]
+                  [:button {:data-on:click (h/action {:as "send"}
+                                                     (reset! (h/tab-cursor :sent) [@draft* @name*]))}
+                   "Send"]
+                  [:input {:data-on:change (h/action {:as "search"}
+                                                     (reset! (h/tab-cursor :query) [$value @draft*]))}]]))]
+    (testing "a signal read in the action sees the value given in :signals"
+      (let [after (ht/test-action (ht/test-page page) "send"
+                                  {:signals {:draft "Which funds?" [:user :name] "Al"}})]
+        (is (= ["Which funds?" "Al"] (get-in after [:cursors :tab :sent])))))
+
+    (testing "a signal not given reads as its default value"
+      (let [after (ht/test-action (ht/test-page page) "send" {:signals {:draft "hi"}})]
+        (is (= ["hi" "anon"] (get-in after [:cursors :tab :sent])))))
+
+    (testing "without :signals, signals read as their default values"
+      (let [after (ht/test-action (ht/test-page page) "send")]
+        (is (= ["" "anon"] (get-in after [:cursors :tab :sent])))))
+
+    (testing "client params given with :signals still reach the action"
+      (let [after (ht/test-action (ht/test-page page) "search"
+                                  {:value "clojure" :signals {:draft "hi"}})]
+        (is (= ["clojure" "hi"] (get-in after [:cursors :tab :query])))))
+
+    (testing "client params without :signals are unchanged"
+      (let [after (ht/test-action (ht/test-page page) "search" {:value "clojure"})]
+        (is (= ["clojure" ""] (get-in after [:cursors :tab :query])))))))
+
 (deftest test-action-modifies-global-cursors
   (testing "action can modify global state"
     (let [result (ht/test-page

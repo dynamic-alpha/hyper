@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Features
+
+- Testing - `hyper.test/test-action` takes the signal values the client sends
+  with an action, as `:signals` next to the client params:
+  `(ht/test-action result "send" {:signals {:draft "Which funds?"}})`. A
+  signal read in the action gives its value from `:signals`, or its default
+  value. Before, it gave its `"$name"` expression.
+
 ### Bug Fixes
 
 - Session leaks - Fixes an issue where sessions were never cleaned up. A session

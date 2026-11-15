@@ -2636,6 +2636,15 @@ Pass client params to simulate `$value`, `$checked`, `$key`, or `$form-data`:
 (ht/test-action result "search" {:value "clojure"})
 ```
 
+Pass `:signals` in the same map to give the signal values the client sends with
+the action, keyed by the path given to `h/signal` (a keyword, or a vector such
+as `[:user :name]`). `@draft*` in the action then reads `"Which funds?"`; a
+signal missing from `:signals` reads as its default value:
+
+```clojure
+(ht/test-action result "send" {:signals {:draft "Which funds?"}})
+```
+
 ### Full workflow
 
 Chain `test-page` → `test-action` → `test-page` to verify the full

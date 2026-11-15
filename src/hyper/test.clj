@@ -251,6 +251,15 @@
          (finally
            (pop-thread-bindings)))))))
 
+(defn- nest-signals
+  "Signal values keyed by signal path (`:draft`, `[:user :name]`) as the
+   nested map an action reads them from."
+  [signals]
+  (reduce-kv (fn [m path v]
+               (assoc-in m (if (keyword? path) [path] (vec path)) v))
+             {}
+             signals))
+
 (defn test-action
   "Execute a named action from a test-page result and return a state snapshot.
 
@@ -262,6 +271,11 @@
    action-name:   The :as name (or action-id) of the action to execute.
    client-params: Optional map of client params (e.g. {:value \"hello\"}).
                    Simulates $value, $checked, $key, $form-data, etc.
+                   It may also hold :signals, the signal values the client
+                   sends with the action, keyed by the path given to
+                   h/signal (e.g. {:signals {:draft \"hi\" [:user :name] \"Al\"}}).
+                   A signal read in the action gives its value from :signals,
+                   or its default value when :signals does not have it.
 
    Returns a map:
    - :cursors    — Cursor values after the action executed:
@@ -285,6 +299,11 @@
      (let [result (ht/test-page search-page)
            after  (ht/test-action result \"search\" {:value \"clojure\"})]
        (is (= \"clojure\" (get-in after [:cursors :tab :query]))))
+
+     ;; With signal values (simulating what the client sends)
+     (let [result (ht/test-page chat-page)
+           after  (ht/test-action result \"send\" {:signals {:draft \"Which funds?\"}})]
+       (is (= [\"Which funds?\"] (get-in after [:cursors :tab :messages]))))
 
      ;; Assert on effects
      (let [result (ht/test-page my-page)
@@ -310,9 +329,10 @@
      (let [session-id (::session-id result)
            tab-id     (::tab-id result)]
        (binding [context/*request*     (context/context-request app-state* tab-id session-id)
+                 context/*signals*     (nest-signals (:signals client-params))
                  context/*action-name* (:as action)
                  effects/*pending*     (effects/init-pending)]
-         ((:fn action) client-params)
+         ((:fn action) (dissoc client-params :signals))
          ;; Read route AFTER execution so navigate! changes are reflected
          (let [route (get-in @app-state* [:tabs tab-id :route])]
            {:cursors   (cursors-snapshot app-state* session-id tab-id route)
