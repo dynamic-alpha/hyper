@@ -390,6 +390,37 @@
     (is (= 1 @(.-disposed* a)))
     (is (empty? @(.-watches* a)))))
 
+(deftest test-deps-changed-while-disconnected-are-rewired-on-reconnect
+  (let [a               (make-disposable-source 0)
+        b               (make-disposable-source 0)
+        two?            (atom false)
+        [app* partials] (connected-page (fn [_] [:div (h/reactive [a (if @two? b a)] [:p (str @a @b)])]))
+        renderer        (get-in @app* [:tabs "T" :renderer])
+        disconnect!     #(swap! app* update-in [:tabs "T"] dissoc :renderer)
+        reconnect!      #(do (swap! app* assoc-in [:tabs "T" :renderer] renderer)
+                             (full-render! app*))
+        render-alone!   #(subview/sweep-stale! app* "T" (:registered-subview-ids (render/render-tab app* "S" "T")))]
+    (testing "a dep added while disconnected is watched once reconnected"
+      (disconnect!)
+      (reset! two? true)
+      (render-alone!)
+      (is (empty? @(.-watches* b)) "not watched before the reconnect")
+      (is (= 1 (count @(.-watches* a))) "the shared dep keeps its watch")
+      (reconnect!)
+      (is (= ["r_T_1"] (changes-redraw partials #(reset! (.-value* b) 1))))
+      (is (zero? @(.-disposed* a))))
+    (testing "a dep dropped while disconnected is kept until the reconnect"
+      (disconnect!)
+      (reset! two? false)
+      (render-alone!)
+      (is (= 1 (count @(.-watches* b))))
+      (is (zero? @(.-disposed* b)))
+      (reconnect!)
+      (is (empty? @(.-watches* b)))
+      (is (= 1 @(.-disposed* b)))
+      (is (zero? @(.-disposed* a)) "the shared dep is never disposed")
+      (is (= ["r_T_1"] (changes-redraw partials #(reset! (.-value* a) 1)))))))
+
 (defn- nested-regions-page
   "A page whose region :parent draws :kept, and :dropped (with :deep in it)
    and the async :loader while :show? is on, next to a region :sibling."

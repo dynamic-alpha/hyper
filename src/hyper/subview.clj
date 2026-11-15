@@ -190,15 +190,11 @@
   [app-state* tab-id sid spec]
   (when-let [acc context/*registered-subview-ids*]
     (swap! acc conj sid))
-  (let [spec     (-> spec
-                     (update :on-change #(or % :partial))
-                     (update :scope #(or % :render)))
-        old-deps (:deps (get-subview app-state* tab-id sid))
-        watched? (contains? (get-in @app-state* [:tabs tab-id :subview-watches]) sid)]
+  (let [spec (-> spec
+                 (update :on-change #(or % :partial))
+                 (update :scope #(or % :render)))]
     (swap! app-state* assoc-in [:tabs tab-id :subviews sid] spec)
-    (if (and watched? (not (same-deps? old-deps (:deps spec))))
-      (rewire-subview! app-state* tab-id sid)
-      (wire-subview! app-state* tab-id sid))
+    (wire-subview! app-state* tab-id sid)
     spec))
 
 (defn- run-region-body
@@ -434,9 +430,11 @@
      sid)))
 
 (defn wire-subview!
-  "Wire a subview's dep watches when an SSE renderer is present and the subview
-   has deps not already wired.  A no-op before a renderer exists — the first
-   full render's `setup-new-watches!` wires it then.
+  "Wire a subview's dep watches when an SSE renderer is present: watch its
+   deps when it has none watched yet, or watch its current deps instead of the
+   watched ones when they differ.  A no-op before a renderer exists, so watches
+   are kept while a tab is disconnected; the first full render with a renderer
+   wires them.
 
    If a dep changed between the render and this wiring (e.g. an async fetch that
    landed before the watch was attached), fires the change once so the update is
@@ -444,16 +442,21 @@
   [app-state* tab-id sid]
   (when-let [{:keys [trigger-render! trigger-partial!]} (get-in @app-state* [:tabs tab-id :renderer])]
     (when-let [{:keys [deps on-change dep-vals]} (get-subview app-state* tab-id sid)]
-      (when (and (seq deps)
-                 (not (contains? (get-in @app-state* [:tabs tab-id :subview-watches]) sid)))
-        (setup-subview-watches! app-state* tab-id sid deps (or on-change :partial)
-                                trigger-render! trigger-partial!)
-        ;; A fetch landing here can trip both the just-attached watch and this
-        ;; check, firing two partials — that is deliberate: a redundant partial
-        ;; is idempotent, whereas dropping the check would reopen a lost-update
-        ;; race for a fetch that landed before the watch was attached.
-        (when (and dep-vals (not= dep-vals (mapv deref deps)))
-          (if (= on-change :full) (trigger-render!) (trigger-partial! sid)))))))
+      (let [watched (get-in @app-state* [:tabs tab-id :subview-watches sid])]
+        (cond
+          (and watched (not (same-deps? (vals watched) deps)))
+          (rewire-subview! app-state* tab-id sid)
+
+          (and (seq deps) (nil? watched))
+          (do
+            (setup-subview-watches! app-state* tab-id sid deps (or on-change :partial)
+                                    trigger-render! trigger-partial!)
+            ;; A fetch landing here can trip both the just-attached watch and this
+            ;; check, firing two partials — that is deliberate: a redundant partial
+            ;; is idempotent, whereas dropping the check would reopen a lost-update
+            ;; race for a fetch that landed before the watch was attached.
+            (when (and dep-vals (not= dep-vals (mapv deref deps)))
+              (if (= on-change :full) (trigger-render!) (trigger-partial! sid)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Worker subviews (h/spawn!)
