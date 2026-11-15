@@ -41,6 +41,7 @@
             [ring.middleware.not-modified :as not-modified]
             [ring.middleware.params :as params]
             [ring.middleware.resource :as resource]
+            [ring.util.response :as ring-response]
             [taoensso.telemere :as t]))
 
 (defn generate-session-id []
@@ -944,6 +945,8 @@
      `data-hyper-render-version`.
    - hyper.upload(formData, opts): posts a multipart upload to opts.url with
      the tab id and the render opts.el was made on.
+   - An upload or back/forward navigation answered with a
+     `{\"redirect\": url}` body loads url.
    - MutationObserver on #hyper-app watches data-hyper-url attribute changes
      and syncs the browser URL bar via replaceState. Title syncing is handled
      server-side by re-rendering the full <head> (including <title>) via SSE.
@@ -963,6 +966,17 @@
      (str "
 (function() {
   window.hyper = window.hyper || {};
+  // A response body of {redirect: url} sends the tab to url with a full page
+  // load.  Returns whether it did.
+  var followRedirect = function(text) {
+    var body = null;
+    try { body = JSON.parse(text); } catch (e) {}
+    if (body && typeof body.redirect === 'string') {
+      window.location.assign(body.redirect);
+      return true;
+    }
+    return false;
+  };
   // The render el was made on: the version on the nearest element carrying
   // one (a region's root after its partial render, else #hyper-app) and the
   // id of that region, null for #hyper-app.
@@ -997,6 +1011,8 @@
     }
     xhr.onreadystatechange = function() {
       if (xhr.readyState === 4) {
+        var isJson = (xhr.getResponseHeader('Content-Type') || '').indexOf('application/json') === 0;
+        if (xhr.status === 200 && isJson && followRedirect(xhr.responseText)) return;
         if (xhr.status >= 400) { if (opts.error) opts.error(xhr.status); }
         else if (opts.progress) { opts.progress(100); }
       }
@@ -1054,8 +1070,10 @@
     fetch('" base-path "/hyper/navigate?tab-id=" tab-id "&path=' + encodeURIComponent(path), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'}
-    }).then(function(r) { if (!r.ok) { setNavigating(false); } },
-            function() { setNavigating(false); });
+    }).then(function(r) {
+      if (!r.ok) { setNavigating(false); return; }
+      return r.text().then(followRedirect);
+    }, function() { setNavigating(false); });
   });
 })();
 "))])
@@ -1079,6 +1097,8 @@
    requests are: up to ten times, waiting a second and then twice as long each
    time, up to thirty.  A request that gets an error response, or runs out of
    retries, is logged to the console and its actions go with the next request.
+   A response with a `{\"redirect\": url}` body loads url, and drops the
+   queue.
 
    Each request dispatches Datastar's `datastar-fetch` events for the action's
    element (`started`, `error` for an error response, `retrying`,
@@ -1128,8 +1148,17 @@ const post = async (el, seq) => {
       interval = Math.min(interval * retryScaler, retryMaxWait);
       continue;
     }
-    if (r.ok) queue = queue.filter((a) => a.seq > seq);
-    else {
+    if (r.ok) {
+      queue = queue.filter((a) => a.seq > seq);
+      const redirect = (r.headers.get('Content-Type') || '').startsWith('application/json')
+        ? await r.json().then((body) => body && body.redirect, () => null)
+        : null;
+      // The page is leaving: nothing still queued is sent again.
+      if (typeof redirect === 'string') {
+        queue = [];
+        window.location.assign(redirect);
+      }
+    } else {
       console.error('hyper: action request failed with status ' + r.status);
       fetchEvent('error', el, { status: String(r.status) });
     }
@@ -1557,6 +1586,48 @@ action({
                       {:datastar-url url})))
     url))
 
+(defn- wrap-middleware-redirects
+  "`handler` wrapped in the app's Ring `middleware`.  A 3xx with a Location
+   that the middleware returns for an action, upload, navigation or event
+   stream request becomes a response that sends the tab there with a full
+   page load: a JSON `{\"redirect\": location}` body, or for the event stream
+   a stream that runs the page load.  The redirect's other headers and its
+   `:cookies` are kept."
+  [handler middleware base-path]
+  (let [own-handler (fn [req]
+                      (let [resp (handler req)]
+                        (cond-> resp
+                          (map? resp) (vary-meta assoc ::handler-response true))))
+        app-handler (reduce (fn [h mw] (mw h)) own-handler (reverse (vec middleware)))
+        events-path (str base-path "/hyper/events")
+        fetch-paths #{(str base-path "/hyper/actions")
+                      (str base-path "/hyper/upload")
+                      (str base-path "/hyper/navigate")}]
+    (fn [req]
+      (let [resp     (app-handler req)
+            status   (:status resp)
+            location (when (map? resp) (ring-response/get-header resp "Location"))
+            uri      (:uri req)]
+        (if (and location
+                 (int? status)
+                 (<= 300 status 399)
+                 (not (::handler-response (meta resp)))
+                 (or (= events-path uri) (contains? fetch-paths uri)))
+          (let [kept (into {}
+                           (remove (fn [[k _]]
+                                     (#{"location" "content-type" "content-length"}
+                                      (clojure.string/lower-case k))))
+                           (:headers resp))]
+            (cond-> (update (if (= events-path uri)
+                              (script-stream-response
+                                (str "window.location.assign('" (utils/escape-js-string location) "')"))
+                              {:status  200
+                               :headers {"Content-Type" "application/json"}
+                               :body    (json/generate-string {:redirect location})})
+                            :headers #(merge kept %))
+              (:cookies resp) (assoc :cookies (:cookies resp))))
+          resp)))))
+
 (defn create-handler
   "Create a Ring handler for the hyper application.
 
@@ -1599,7 +1670,9 @@ action({
                         and :hyper/tab-id.  Use this for auth, :hyper/env setup, and
                         other request-level concerns.  Middleware can also be applied
                         outside create-handler, but will not have access to parsed
-                        cookies/params.
+                        cookies/params.  A redirect it returns for an action,
+                        upload, navigation or event stream request sends the
+                        tab to its Location with a full page load.
    - :render-middleware Vector of middleware fns applied to every page render.
                         Each is (fn [handler] (fn [req] ...)), identical to Ring
                         middleware.  Runs outermost (before per-route middleware).
@@ -1750,7 +1823,7 @@ action({
          (as-> handler h
            ;; User :middleware runs innermost — after cookies/params/hyper-context
            ;; are parsed, before routing.  Earlier entries wrap outermost (execute first).
-           (reduce (fn [h mw] (mw h)) h (reverse (vec middleware)))
+           (wrap-middleware-redirects h middleware base-path)
            ((wrap-hyper-context app-state*) h)
            (br/wrap-brotli h)
            (keyword-params/wrap-keyword-params h)

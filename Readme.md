@@ -1098,6 +1098,24 @@ POSTs, navigation, and SSE connections. It does **not** run on SSE re-renders
 (those have no HTTP request). For logic that must run on every render, use
 [render middleware](#render-middleware) instead.
 
+Middleware can refuse a request by returning an ordinary redirect:
+
+```clojure
+(defn wrap-require-sign-in [handler]
+  (fn [req]
+    (if (signed-in? req)
+      (handler req)
+      (ring.util.response/redirect "/sign-in"))))
+
+(h/create-handler routes :middleware [wrap-require-sign-in])
+```
+
+On a page load the browser follows the redirect as usual. On an action,
+upload, back/forward navigation or SSE connection, Hyper sends the tab to the
+redirect's `Location` with a full page load, and the refused actions are not
+sent again. Other responses, such as a 401 or 403, are passed through
+unchanged.
+
 Middleware can also be applied outside `create-handler` by wrapping the returned
 handler directly, but external middleware will not have access to Hyper's parsed
 cookies, params, or session/tab IDs.

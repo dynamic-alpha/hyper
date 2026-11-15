@@ -21,6 +21,14 @@
   `X-Forwarded-Proto: https`). Pass `:same-site :none` for an app embedded in
   another site's iframe.
 
+- Ring middleware - A redirect that `:middleware` returns for an action,
+  upload, back/forward navigation or event stream request now sends the tab to
+  its `Location` with a full page load, so middleware such as
+  `wrap-require-sign-in` can refuse a request with
+  `(ring.util.response/redirect "/sign-in")`. Before, an action only logged
+  the response, and the browser followed the redirect out of sight. A redirect
+  on a page load stays a redirect, and other responses pass through unchanged.
+
 ### Bug Fixes
 
 - Session leaks - Fixes an issue where sessions were never cleaned up. A session

@@ -1,10 +1,12 @@
 (ns hyper.middleware-test
-  (:require [clojure.string :as str]
+  (:require [cheshire.core :as json]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [hyper.context :as context]
             [hyper.core :as h]
             [hyper.effects :as effects]
             [hyper.render :as render]
+            [hyper.server]
             [hyper.state :as state]
             [hyper.test :as ht]))
 
@@ -357,3 +359,100 @@
              (get-in after [:effects :cookies])))
       (is (= ["alert('hi')"]
              (get-in after [:effects :scripts]))))))
+
+;; ---------------------------------------------------------------------------
+;; Ring middleware redirects on hyper's endpoints
+;; ---------------------------------------------------------------------------
+
+(defn- refusing-handler
+  "A hyper handler with a page at / whose :middleware answers a request
+   carrying an `x-refuse` header with `response`."
+  [response & {:keys [base-path]}]
+  (h/create-handler [["/" {:name :home :get (fn [_] [:div "home"])}]]
+                    :app-state (atom (state/init-state))
+                    :base-path base-path
+                    :middleware [(fn [handler]
+                                   (fn [req]
+                                     (if (get-in req [:headers "x-refuse"])
+                                       response
+                                       (handler req))))]))
+
+(defn- endpoint-request
+  "A request to hyper's `endpoint` (\"actions\", \"upload\", \"navigate\" or
+   \"events\") under `base-path`, refused when `refuse?`."
+  [endpoint & {:keys [base-path refuse?]}]
+  {:request-method (if (= "events" endpoint) :get :post)
+   :uri            (str base-path "/hyper/" endpoint)
+   :query-string   "tab-id=T&path=%2F&action-id=a"
+   :headers        (cond-> {"content-type" "application/json"}
+                     refuse? (assoc "x-refuse" "1"))
+   :body           (java.io.ByteArrayInputStream. (.getBytes "{\"actions\": []}"))})
+
+(defn- redirect-body [response]
+  (json/parse-string (:body response)))
+
+(deftest test-middleware-redirect-on-fetch-endpoints
+  (testing "a redirect from :middleware on an action, upload or navigation is
+            a JSON body naming its location"
+    (let [handler (refusing-handler {:status 302 :headers {"Location" "/sign-in"} :body ""})]
+      (doseq [endpoint ["actions" "upload" "navigate"]]
+        (let [response (handler (endpoint-request endpoint :refuse? true))]
+          (is (= 200 (:status response)) endpoint)
+          (is (= "application/json" (get-in response [:headers "Content-Type"])) endpoint)
+          (is (nil? (get-in response [:headers "Location"])) endpoint)
+          (is (= {"redirect" "/sign-in"} (redirect-body response)) endpoint)))))
+  (testing "under a base path, with the location as the app gave it"
+    (let [handler  (refusing-handler {:status 303 :headers {"Location" "sign-in?next=%2F"} :body ""}
+                                     :base-path "/app")
+          response (handler (endpoint-request "actions" :base-path "/app" :refuse? true))]
+      (is (= 200 (:status response)))
+      (is (= {"redirect" "sign-in?next=%2F"} (redirect-body response)))))
+  (testing "the redirect's cookies are kept"
+    (let [handler  (refusing-handler {:status  302
+                                      :headers {"Location" "/sign-in"}
+                                      :cookies {"hyper-session" {:value "" :max-age 0}}
+                                      :body    ""})
+          response (handler (endpoint-request "actions" :refuse? true))]
+      (is (some #(str/starts-with? % "hyper-session=")
+                (get-in response [:headers "Set-Cookie"]))))))
+
+(deftest test-middleware-redirect-on-the-event-stream
+  (testing "a redirect from :middleware on the event stream is a stream that
+            loads its location"
+    (let [handler  (refusing-handler {:status 302 :headers {"Location" "/sign-in"} :body ""})
+          response (handler (endpoint-request "events" :refuse? true))]
+      (is (= 200 (:status response)))
+      (is (= "text/event-stream" (get-in response [:headers "Content-Type"])))
+      (is (str/includes? (:body response) "window.location.assign('/sign-in')"))))
+  (testing "its location is escaped into the script"
+    (let [handler  (refusing-handler {:status 302 :headers {"Location" "/a'</script>"} :body ""})
+          response (handler (endpoint-request "events" :refuse? true))]
+      (is (str/includes? (:body response) "window.location.assign('/a\\'<\\/script>')")))))
+
+(deftest test-middleware-responses-that-are-not-converted
+  (testing "a redirect on a page load stays a redirect"
+    (let [handler  (refusing-handler {:status 302 :headers {"Location" "/sign-in"} :body ""})
+          response (handler {:request-method :get :uri "/" :headers {"x-refuse" "1"}})]
+      (is (= 302 (:status response)))
+      (is (= "/sign-in" (get-in response [:headers "Location"])))))
+  (testing "a redirect from hyper's own handler stays a redirect, through
+            middleware that changes it"
+    (let [redirect {:status 302 :headers {"Location" "/elsewhere"} :body ""}
+          add-hdr  (fn [handler] (fn [req] (assoc-in (handler req) [:headers "X-App"] "1")))
+          handler  (#'hyper.server/wrap-middleware-redirects (constantly redirect) [add-hdr] "")
+          response (handler (endpoint-request "actions"))]
+      (is (= 302 (:status response)))
+      (is (= "/elsewhere" (get-in response [:headers "Location"])))))
+  (testing "a refusal that is not a redirect passes through"
+    (let [handler (refusing-handler {:status 403 :headers {} :body "Forbidden"})]
+      (doseq [endpoint ["actions" "upload" "navigate" "events"]]
+        (let [response (handler (endpoint-request endpoint :refuse? true))]
+          (is (= 403 (:status response)) endpoint)
+          (is (= "Forbidden" (:body response)) endpoint)))))
+  (testing "a request the middleware lets through is unaffected"
+    (let [handler (refusing-handler {:status 302 :headers {"Location" "/sign-in"} :body ""})]
+      (is (= 200 (:status (handler {:request-method :get :uri "/"}))))
+      (doseq [endpoint ["actions" "upload" "navigate"]]
+        (let [response (handler (endpoint-request endpoint))]
+          (is (= 404 (:status response)) endpoint)
+          (is (str/includes? (:body response) "Unknown tab") endpoint))))))

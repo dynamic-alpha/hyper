@@ -357,6 +357,22 @@
    [:h1 "Test Reconnect"]
    [:button#retry {:data-on:click (h/reconnect)} "Retry"]])
 
+(def ^:private refuse-actions-to
+  "The location the test middleware redirects action requests to, or nil to
+   let them through."
+  (atom nil))
+
+(def ^:private refused-actions
+  "How many action requests the test middleware has redirected."
+  (atom 0))
+
+(defn- wrap-refuse-actions [handler]
+  (fn [req]
+    (if-let [location (and (= "/hyper/actions" (:uri req)) @refuse-actions-to)]
+      (do (swap! refused-actions inc)
+          {:status 302 :headers {"Location" location} :body ""})
+      (handler req))))
+
 (defn default-routes []
   [["/" {:name  :home
          :title "Home"
@@ -449,6 +465,7 @@
 (defn start-test-server! []
   (reset! test-state* (atom (state/init-state)))
   (let [handler (h/create-handler #'*test-routes* :app-state @test-state* :head #'test-head-var
+                                  :middleware [wrap-refuse-actions]
                                   :tree-shake? (= "true" (System/getProperty "hyper.tree-shake")))]
     (reset! test-server (h/start! handler {:port test-port}))))
 
@@ -1883,4 +1900,31 @@
               (is (wait-for-pred #(some? (get-in @@test-state* [:tabs new-tab-id :renderer])))
                   "the new tab's stream connected"))))
         (finally
+          (close-browser! browser-info))))))
+
+(deftest ^:e2e action-refused-by-middleware-redirects-test
+  (testing "an action that :middleware answers with a redirect sends the page
+            to its location, without sending the action again"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page         (new-page ctx)]
+      (reset! refused-actions 0)
+      (try
+        (w/with-page page
+          (w/navigate (str base-url "/counters"))
+          (wait-for-sse)
+          (eval-js "window.__beforeRedirect = true")
+          (reset! refuse-actions-to "forms?from=refused")
+          (click-counter-button "Tab" ".inc")
+          (is (wait-for-pred #(str/ends-with? (current-url) "/forms?from=refused"))
+              "the page went to the location, relative to the page")
+          (is (nil? (eval-js "window.__beforeRedirect")) "with a full page load")
+          (wait-for-sse)
+          (is (wait-for-text "#select-result" "red"))
+          (Thread/sleep 1500)
+          (is (= 1 @refused-actions) "the refused action was sent once")
+          (is (not-any? #(= 1 (get-in % [:data :count])) (vals (:tabs @@test-state*)))
+              "the action did not run"))
+        (finally
+          (reset! refuse-actions-to nil)
           (close-browser! browser-info))))))

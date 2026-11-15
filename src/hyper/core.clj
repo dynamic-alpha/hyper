@@ -996,7 +996,9 @@
                           and :hyper/tab-id.  Use this for auth, :hyper/env setup, and
                           other request-level concerns.  Middleware can also be applied
                           outside create-handler, but will not have access to parsed
-                          cookies/params.
+                          cookies/params.  A redirect it returns for an action,
+                          upload, navigation or event stream request sends the
+                          tab to its Location with a full page load.
    - :render-middleware — Vector of middleware fns applied to every page render.
                           Each is (fn [handler] (fn [req] ...)), identical to Ring
                           middleware.  Applied on both initial page loads and SSE
