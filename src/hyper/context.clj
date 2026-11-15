@@ -334,3 +334,11 @@
       (swap! g assoc :mode :active :events [])
       (doseq [event events]
         (emit-guard-event! level event)))))
+
+(defn discard-effects-after!
+  "Drop the render-guard effects buffered after the first `n`, then emit the
+   remaining ones and activate the guard."
+  [n]
+  (when-let [g *render-guard*]
+    (swap! g update :events #(into [] (take n) %)))
+  (guard-flush-and-activate!))

@@ -127,14 +127,6 @@
     (swap! app-state* update-in [:tabs tab-id] dissoc :page-view))
   nil)
 
-(defn- discard-effects-after!
-  "Drop the render-guard effects buffered after the first `n`, then emit the
-   remaining ones and activate the guard."
-  [n]
-  (when-let [g context/*render-guard*]
-    (swap! g update :events #(into [] (take n) %)))
-  (context/guard-flush-and-activate!))
-
 (defn- resolve-and-render!
   "Render a page handler through the render middleware, resolving its form
    (form-1/2/3) the first time the middleware calls it, and store the
@@ -161,13 +153,13 @@
                                                  :render-fn render'
                                                  :resource  resource
                                                  :unmount   (:unmount raw)})
-                              (discard-effects-after! n)
+                              (context/discard-effects-after! n)
                               (render' r))
 
                             (fn? raw)
                             (do
                               (vreset! resolved {:form :form-2 :render-fn raw})
-                              (discard-effects-after! n)
+                              (context/discard-effects-after! n)
                               (raw r))
 
                             :else
