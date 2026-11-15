@@ -4,6 +4,7 @@
   (:require [cheshire.core :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [hyper.brotli :as brotli]
             [hyper.core :as h]
             [hyper.state :as state]
             [hyper.test :as ht]))
@@ -82,6 +83,14 @@
 (defn- refused? [response]
   (and (= 404 (:status response))
        (str/includes? (str (:body response)) "Unknown tab")))
+
+(defn- reloads?
+  "True when `response` is an event stream that reloads the page."
+  [response]
+  (and (= 200 (:status response))
+       (= "text/event-stream" (get-in response [:headers "Content-Type"]))
+       (str/includes? (:body response) "event: datastar-patch-elements")
+       (str/includes? (:body response) "window.location.reload()")))
 
 (deftest test-a-page-load-links-the-tab-to-its-session
   (testing "a page load with a session cookie links the tab to that session"
@@ -174,7 +183,33 @@
     (is (refused? (post-action! handler "S" html)))
     (is (refused? (post-upload! handler "S" html)))
     (is (refused? (post-navigate! handler "S")))
-    (is (refused? (get-events handler "S")))))
+    (testing "its event stream reloads the page"
+      (is (reloads? (get-events handler "S"))))))
+
+(deftest test-a-connected-tab-of-another-session-reloads
+  (doseq [session-id ["OTHER" nil]]
+    (testing (str "with session cookie " (pr-str session-id))
+      (let [[handler app*] (app)]
+        (load-page! handler "S")
+        ;; as the tab's first stream connection does
+        (swap! app* assoc-in [:tabs "T" :connection-initialized?] true)
+        (is (reloads? (get-events handler session-id)))
+        (is (nil? (get-in @app* [:tabs "T" :renderer])) "no stream is attached")
+        (testing "while the tab's own session still streams"
+          (let [response (get-events handler "S")]
+            (is (= 200 (:status response)))
+            (is (= "text/event-stream" (get-in response [:headers "Content-Type"])))
+            (is (not (string? (:body response))) "a stream, not a short answer")))))))
+
+(deftest test-a-reloading-stream-is-compressed-when-accepted
+  (let [[handler _] (app)
+        response    (handler {:request-method :get
+                              :uri            "/hyper/events"
+                              :query-string   "tab-id=T"
+                              :headers        {"cookie"          "hyper-session=S"
+                                               "accept-encoding" "gzip, br"}})]
+    (is (= "br" (get-in response [:headers "Content-Encoding"])))
+    (is (reloads? (update response :body brotli/decompress)))))
 
 (deftest test-test-page-tabs-carry-their-session
   (let [result (ht/test-page (fn [_]

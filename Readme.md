@@ -2528,11 +2528,10 @@ discards all tab-local state. Reach for a reload only as a nuclear fallback (e.g
 after a server redeploy where client code may have changed).
 
 > If the grace window has already elapsed, or the server has restarted since the
-> page loaded, the server no longer has the tab. It refuses the tab's event
-> stream with a 404, so reconnecting does not bring the connection back; only a
-> full page reload, which starts a fresh tab, does. Offer a reload next to
-> "Retry", and word the "Retry" copy so it does not promise the page will come
-> back.
+> page loaded, the server no longer has the tab. When the tab's event stream
+> reconnects, the server answers with a reload, so the page reloads by itself
+> into a fresh tab, with its tab-local state reset. The same happens to a tab
+> whose session was replaced while it was away, such as after signing out.
 
 ## Brotli compression
 

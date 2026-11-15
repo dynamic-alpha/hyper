@@ -352,6 +352,11 @@
    [:span#saving {:data-text "$_saving"}]
    [:span#saves @(h/tab-cursor :saves 0)]])
 
+(defn- reconnect-get [_]
+  [:div
+   [:h1 "Test Reconnect"]
+   [:button#retry {:data-on:click (h/reconnect)} "Retry"]])
+
 (defn default-routes []
   [["/" {:name  :home
          :title "Home"
@@ -419,7 +424,11 @@
    ["/indicator"
     {:name  :indicator
      :title "Indicator"
-     :get   #'indicator-get}]])
+     :get   #'indicator-get}]
+   ["/reconnect"
+    {:name  :reconnect
+     :title "Reconnect"
+     :get   #'reconnect-get}]])
 
 (def ^:dynamic *test-routes* (default-routes))
 
@@ -1848,4 +1857,30 @@
           (is (wait-for-text "#saving" "false")))
         (finally
           (deliver gate true)
+          (close-browser! browser-info))))))
+
+(deftest ^:e2e reconnecting-without-a-tab-reloads-test
+  (testing "a page whose tab the server no longer has reloads itself into a
+            new tab when its stream reconnects"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page         (new-page ctx)
+          page-tab-id  #(second (re-find #"tab-id=([^']+)'"
+                                         (str (eval-js "document.body.getAttribute('data-init')"))))]
+      (try
+        (w/with-page page
+          (w/navigate (str base-url "/reconnect"))
+          (wait-for-sse)
+          (let [tab-id (page-tab-id)]
+            (is (wait-for-pred #(some? (get-in @@test-state* [:tabs tab-id :renderer]))))
+            (eval-js "window.__beforeReload = true")
+            (hyper.server/cleanup-tab! @test-state* tab-id)
+            (w/click "#retry")
+            (is (wait-for-pred #(nil? (eval-js "window.__beforeReload")))
+                "the page reloaded")
+            (is (wait-for-pred #(not= tab-id (page-tab-id))) "into a new tab")
+            (let [new-tab-id (page-tab-id)]
+              (is (wait-for-pred #(some? (get-in @@test-state* [:tabs new-tab-id :renderer])))
+                  "the new tab's stream connected"))))
+        (finally
           (close-browser! browser-info))))))

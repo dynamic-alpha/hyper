@@ -602,6 +602,14 @@
     (and (some? session-id)
          (= session-id (:hyper/session-id req)))))
 
+(defn- script-stream-response
+  "A response whose event stream runs `js` on the page, then ends."
+  [js]
+  {:status  200
+   :headers {"Content-Type"  "text/event-stream"
+             "Cache-Control" "no-cache, no-transform"}
+   :body    (effects/format-execute-script-event js)})
+
 (defn sse-events-handler
   "Handler for the SSE event stream.
 
@@ -610,7 +618,12 @@
    owns the output stream for the connection's lifetime — sending the connected
    event, wiring reactivity, and streaming re-renders.  The SSE headers are set
    on the response map here so they are committed before the body streams.
-   A tab that is not of the request's session is refused."
+
+   A tab that never connected moves to the request's session when the server
+   holds that session, leaving its former session, which is removed when no
+   tab is left in it.  Any other tab that is not of the request's session is
+   refused.  The refusal reloads the page when the server does not know the
+   tab, or when the tab was connected before; otherwise it is a 404."
   [app-state*]
   (fn [req]
     (let [session-id (:hyper/session-id req)
@@ -622,13 +635,41 @@
           headers    (cond-> {"Content-Type"      "text/event-stream"
                               "Cache-Control"     "no-cache, no-transform"
                               "X-Accel-Buffering" "no"}
-                       compress? (assoc "Content-Encoding" "br"))]
-      (if (tab-in-session? app-state* req tab-id)
+                       compress? (assoc "Content-Encoding" "br"))
+          ;; Tabs of one browser loaded at once each start their own session,
+          ;; and the browser keeps only the last session cookie.
+          state      (swap! app-state*
+                            (fn [state]
+                              (let [tab         (get-in state [:tabs tab-id])
+                                    former-id   (:session-id tab)
+                                    former-tabs (disj (get-in state [:sessions former-id :tabs]) tab-id)]
+                                (if (and tab
+                                         (not (:connection-initialized? tab))
+                                         (not= former-id session-id)
+                                         (contains? (:sessions state) session-id))
+                                  (-> state
+                                      (assoc-in [:tabs tab-id :session-id] session-id)
+                                      (update-in [:sessions session-id :tabs] (fnil conj #{}) tab-id)
+                                      (update :sessions #(if (empty? former-tabs)
+                                                           (dissoc % former-id)
+                                                           (assoc-in % [former-id :tabs] former-tabs))))
+                                  state))))
+          tab        (get-in state [:tabs tab-id])]
+      (cond
+        (and (some? session-id) (= session-id (:session-id tab)))
         {:status  200
          :headers headers
          :body    (reify ring-protocols/StreamableResponseBody
                     (write-body-to-stream [_ _response os]
                       (run-sse-loop! app-state* session-id tab-id os compress? conn-id)))}
+
+        ;; A tab of another session that never connected, with a request of
+        ;; no session the server holds, is what a browser that drops the
+        ;; session cookie leaves behind: a reload would loop.
+        (or (nil? tab) (:connection-initialized? tab))
+        (script-stream-response "window.location.reload()")
+
+        :else
         unknown-tab-response))))
 
 (declare queued-actions-handler)

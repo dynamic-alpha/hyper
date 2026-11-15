@@ -915,8 +915,8 @@
           events-res (handler {:uri "/my-app/hyper/events" :request-method :get})
           ;; And the old paths should not match (404)
           old-res    (handler {:uri "/hyper/events" :request-method :get})]
-      (is (string/includes? (str (:body events-res)) "Unknown tab")
-          "the events route answers, refusing a tab it does not know")
+      (is (string/includes? (str (:body events-res)) "window.location.reload()")
+          "the events route answers, reloading a page whose tab it does not know")
       (is (= 404 (:status old-res)))))
 
   (testing ":base-path is stored in app-state"

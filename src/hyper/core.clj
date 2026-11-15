@@ -665,6 +665,7 @@
    the disconnect grace window), so cursor state, signals, and workers are
    preserved — unlike a full page reload, which starts a fresh tab.  Useful for
    the connection states Datastar does not auto-retry (`:error` / `:closed`).
+   When the server no longer has the tab, the page reloads instead.
 
    Reuses the exact same `@get` the page booted with (endpoint, base-path, and
    `openWhenHidden`), so the two can't drift.  Must be called in render

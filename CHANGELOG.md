@@ -70,6 +70,16 @@
   ran out. A page load is unchanged, as is a tab that existed before the
   request.
 
+- Reconnecting - A page whose tab the server no longer has now reloads itself
+  when its event stream reconnects, into a new tab. This happens after a
+  server restart, once the disconnect grace period has run out, or when the
+  tab's session was replaced while it was away. Before, the page stayed at
+  "reconnecting" until it was reloaded by hand. Pages of one browser loaded at
+  the same time without a session the server holds each start their own
+  session, while the browser keeps only the last session cookie; a page whose
+  event stream has not yet connected now joins the session of the cookie its
+  stream arrives with, rather than being refused.
+
 ## 0.3.0 — 2026-11-14
 
 ### Breaking Changes

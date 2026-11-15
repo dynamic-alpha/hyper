@@ -71,6 +71,70 @@
                                                       "hyper-session"))
                           "secure"))))))
 
+(deftest test-pages-loaded-at-once-follow-the-last-cookie
+  (let [[handler app*] (app)
+        start          (promise)
+        loads          (mapv (fn [tab-id]
+                               (future @start (load-page! handler nil {:query-string (str "tab-id=" tab-id)})))
+                             ["A" "B"])
+        _              (deliver start true)
+        [a b]          (mapv deref loads)
+        cookie-of      #(re-find #"^hyper-session=[^;]+" (session-cookie % "hyper-session"))
+        session-of     #(get-in @app* [:tabs % :session-id])
+        former-id      (session-of "A")
+        kept-id        (session-of "B")
+        ;; the browser keeps the cookie set last
+        kept           (cookie-of b)
+        events         (fn [tab-id cookie]
+                         (handler (request {:uri "/hyper/events" :query-string (str "tab-id=" tab-id)} cookie)))]
+    (testing "each page load without a cookie starts its own session"
+      (is (not= (cookie-of a) kept))
+      (is (not= former-id kept-id))
+      (is (= #{former-id kept-id} (set (keys (:sessions @app*))))))
+    (testing "both pages' streams are served with the cookie the browser kept"
+      (doseq [tab-id ["A" "B"]]
+        (let [response (events tab-id kept)]
+          (is (= 200 (:status response)))
+          (is (= "text/event-stream" (get-in response [:headers "Content-Type"])))
+          (is (not (string? (:body response))) "a stream, not a short answer"))))
+    (testing "both tabs are then of that session, and the session left without a tab is removed"
+      (is (= kept-id (session-of "A") (session-of "B")))
+      (is (= #{"A" "B"} (get-in @app* [:sessions kept-id :tabs])))
+      (is (= #{kept-id} (set (keys (:sessions @app*))))))
+    (testing "the moved tab's actions work with the cookie"
+      (let [action-id (second (re-find #"hyperAction\(&apos;(a_A_\d+)" (:body a)))
+            response  (handler (request {:request-method :post
+                                         :uri            "/hyper/actions"
+                                         :query-string   "tab-id=A"
+                                         :headers        {"content-type" "application/json"}
+                                         :body           (json/generate-string
+                                                           {:base    nil
+                                                            :actions [{:id action-id :seq 1 :v nil :signals "{}" :params nil}]})}
+                                        kept))]
+        (is (= 204 (:status response)))
+        (is (= 1 (get-in @app* [:tabs "A" :data :clicks])))))))
+
+(deftest test-a-tab-follows-the-cookie-only-before-it-connects-and-to-a-held-session
+  (let [[handler app*] (app)
+        cookie-of      #(re-find #"^hyper-session=[^;]+" (session-cookie % "hyper-session"))
+        kept           (cookie-of (load-page! handler nil {:query-string "tab-id=K"}))
+        _              (load-page! handler nil)
+        former-id      (get-in @app* [:tabs "T" :session-id])
+        events         #(handler (request {:uri "/hyper/events" :query-string "tab-id=T"} %))]
+    (testing "a stream without a cookie, as from a browser that drops it, is refused"
+      (let [response (events nil)]
+        (is (= 404 (:status response)))
+        (is (string? (:body response)) "no stream is opened"))
+      (is (= former-id (get-in @app* [:tabs "T" :session-id])) "and the tab stays in its session"))
+    (testing "a tab that connected before reloads instead"
+      ;; as the tab's first stream connection does
+      (swap! app* assoc-in [:tabs "T" :connection-initialized?] true)
+      (let [response (events kept)]
+        (is (= 200 (:status response)))
+        (is (str/includes? (:body response) "window.location.reload()")))
+      (is (= former-id (get-in @app* [:tabs "T" :session-id])) "and stays in its session")
+      (is (= #{"T"} (get-in @app* [:sessions former-id :tabs]))))))
+
 (deftest test-cookie-overrides
   (testing "attributes and name are overridden"
     (let [[handler app*] (app :session {:cookie {:name      "sid"
