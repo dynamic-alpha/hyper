@@ -405,7 +405,8 @@
            (not (re-find #"Chrome/|Chromium|Edg/|OPR/|Android|SamsungBrowser" ua))))))
 
 (defn cleanup-tab!
-  "Clean up all resources for a tab: watchers, reactive components, renderer thread, actions, and state."
+  "Clean up all resources for a tab: watchers, reactive components, renderer thread, actions, and state.
+   Removes the tab's session too when this was its last tab."
   [app-state* tab-id]
   ;; Teardown runs outside any live request; bind a context so :unmount fns
   ;; resolve cursors, h/env, and h/route.
@@ -447,8 +448,10 @@
   "Fully tear down every tab whose disconnect grace window has elapsed.
 
    A tab is eligible when it carries a `:disconnected-at` stamp older than the
-   configured `:disconnect-grace-ms` (default 3 minutes).  Reconnecting clears
-   the stamp, so a tab that came back is never reaped.  `now` is the current
+   configured `:disconnect-grace-ms` (default 3 minutes).  A tab is stamped
+   when its stream drops, and when its page is served without a stream
+   attached.  Connecting clears the stamp, so a tab that came back is never
+   reaped.  A session is removed with its last tab.  `now` is the current
    epoch-millis (injectable for testing)."
   [app-state* now]
   (let [grace-ms (long (get @app-state* :disconnect-grace-ms
@@ -1171,7 +1174,8 @@ action({
 (defn- link-page-tab!
   "Link the tab a page load for `req` renders into to the request's session,
    and return `req` with that tab's id: the request's tab, or a new one when
-   the request's tab belongs to another session."
+   the request's tab belongs to another session.  A tab without a stream
+   attached counts as disconnected from now until its stream connects."
   [app-state* req]
   (let [session-id (:hyper/session-id req)
         owner      (get-in @app-state* [:tabs (:hyper/tab-id req) :session-id])
@@ -1179,6 +1183,12 @@ action({
                      (generate-tab-id)
                      (:hyper/tab-id req))]
     (state/get-or-create-tab! app-state* session-id tab-id)
+    (swap! app-state* update :tabs
+           (fn [tabs]
+             (cond-> tabs
+               (and (contains? tabs tab-id)
+                    (nil? (get-in tabs [tab-id :renderer])))
+               (assoc-in [tab-id :disconnected-at] (System/currentTimeMillis)))))
     (assoc req :hyper/tab-id tab-id)))
 
 (defn page-handler

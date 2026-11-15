@@ -2,7 +2,27 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+#### Sessions end with their last tab
+
+*BREAKING*: a session is now removed once its last tab has been gone for the
+disconnect grace period (`:disconnect-grace-ms`, 3 minutes by default).
+Before, sessions were never removed.
+
+- Session state (`h/session-cursor`) is lost when a person closes their last
+  tab and comes back later. Reloads and moving between pages keep it.
+- Apps that keep sign-in only in session state will sign people out. Restore
+  it from your own cookie, as in the README's `wrap-rehydrate-session`
+  pattern.
+- Raise `:disconnect-grace-ms` to keep sessions longer.
+
 ### Bug Fixes
+
+- Page loads - A page whose event stream never connects (bots, link previews,
+  `curl`, JavaScript turned off) is now removed after the disconnect grace
+  period, with its session when it was the last tab. Before, it was kept
+  forever.
 
 - Sessions - A tab belongs to the session it was loaded in. Its actions,
   uploads, back/forward navigations and event stream are refused with a 404

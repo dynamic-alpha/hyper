@@ -194,20 +194,18 @@
       (is (not (contains? (:tabs @app-state*) tab-id)))
       (is (not (contains? (get-in @app-state* [:sessions session-id :tabs]) tab-id)))))
 
-  (testing "cleanup-session! removes session and all tabs"
+  (testing "cleanup-tab! removes the session with its last tab"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-15"
           tab-id-1   "test_tab_6"
           tab-id-2   "test_tab_7"]
       (state/get-or-create-tab! app-state* session-id tab-id-1)
       (state/get-or-create-tab! app-state* session-id tab-id-2)
-      (is (contains? (:sessions @app-state*) session-id))
-      (is (contains? (:tabs @app-state*) tab-id-1))
-      (is (contains? (:tabs @app-state*) tab-id-2))
-      (state/cleanup-session! app-state* session-id)
+      (state/cleanup-tab! app-state* tab-id-1)
+      (is (= #{tab-id-2} (get-in @app-state* [:sessions session-id :tabs])))
+      (state/cleanup-tab! app-state* tab-id-2)
       (is (not (contains? (:sessions @app-state*) session-id)))
-      (is (not (contains? (:tabs @app-state*) tab-id-1)))
-      (is (not (contains? (:tabs @app-state*) tab-id-2))))))
+      (is (empty? (:tabs @app-state*))))))
 
 (deftest cursor-default-value-test
   (testing "session-cursor with default value initializes nil path"

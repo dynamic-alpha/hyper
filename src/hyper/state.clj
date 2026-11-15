@@ -221,10 +221,10 @@
   nil)
 
 (defn get-or-create-tab!
-  "Ensure tab exists in app-state and is linked to session.  A tab already
-   linked to another session keeps that link."
+  "Ensure tab exists in app-state and is linked to session, creating the
+   session if missing.  A tab already linked to another session keeps that
+   link, and session is then left as it is."
   [app-state* session-id tab-id]
-  (get-or-create-session! app-state* session-id)
   (swap! app-state* (fn [state]
                       (let [state (update-in state [:tabs tab-id]
                                              (fn [tab]
@@ -235,28 +235,32 @@
                                                                           :sse-channel nil}
                                                  (nil? (:session-id tab)) (assoc tab :session-id session-id)
                                                  :else                   tab)))]
+                        ;; One swap, so a concurrent removal of the session's
+                        ;; last tab cannot leave this tab without its session.
                         (cond-> state
                           (= session-id (get-in state [:tabs tab-id :session-id]))
-                          (update-in [:sessions session-id :tabs] (fnil conj #{}) tab-id)))))
+                          (update-in [:sessions session-id]
+                                     #(-> (merge {:data {} :tabs #{}} %)
+                                          (update :tabs (fnil conj #{}) tab-id)))))))
   nil)
 
 (defn cleanup-tab!
-  "Remove tab state and unlink from session."
+  "Remove tab state and unlink it from its session, removing the session
+   when this was its last tab."
   [app-state* tab-id]
-  (let [session-id (get-in @app-state* [:tabs tab-id :session-id])]
-    (swap! app-state* (fn [state]
-                        (-> state
-                            (update-in [:sessions session-id :tabs] disj tab-id)
-                            (update :tabs dissoc tab-id)))))
-  nil)
+  (swap! app-state* (fn [state]
+                      (let [session-id (get-in state [:tabs tab-id :session-id])
+                            state      (update state :tabs dissoc tab-id)
+                            session    (get-in state [:sessions session-id])]
+                        (cond
+                          (nil? session)
+                          state
 
-(defn cleanup-session!
-  "Remove session state and all associated tabs."
-  [app-state* session-id]
-  (let [tab-ids (get-in @app-state* [:sessions session-id :tabs])]
-    (doseq [tab-id tab-ids]
-      (cleanup-tab! app-state* tab-id))
-    (swap! app-state* update :sessions dissoc session-id))
+                          (empty? (disj (:tabs session) tab-id))
+                          (update state :sessions dissoc session-id)
+
+                          :else
+                          (update-in state [:sessions session-id :tabs] disj tab-id)))))
   nil)
 
 (defn set-tab-route!

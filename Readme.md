@@ -146,6 +146,12 @@ The optional second argument sets a default value when the key is nil.
 and a reconnect within the grace window restores it untouched. See
 [Reconnection and the disconnect grace window](#reconnection-and-the-disconnect-grace-window).
 
+`session-cursor` state is in-memory too. A session ends once its last tab has
+been gone for the grace window, so a person who closes all their tabs and comes
+back later starts with empty session state. Restore what must last longer, such
+as sign-in, from your own cookie (see `wrap-rehydrate-session` in
+[Common patterns](#common-patterns)).
+
 Mutating any cursor triggers a re-render for every tab that depends on that
 scope — global changes re-render all tabs, session changes re-render tabs in
 that session, and so on.
@@ -2373,7 +2379,10 @@ resets.
 
 Only if the tab fails to reconnect within the grace window is it fully torn down
 (watches removed, `form-3`/`watch!` resources disposed, workers interrupted, state
-dropped) — exactly the old behavior, just deferred.
+dropped) — exactly the old behavior, just deferred. A page whose stream never
+connects (a bot, a link preview, JavaScript turned off) is torn down the same
+way, a grace window after it was served. When a session's last tab is torn
+down, the session and its `session-cursor` state go with it.
 
 Configure the window with `:disconnect-grace-ms` (default **180000**, i.e. 3
 minutes):
@@ -2386,7 +2395,7 @@ minutes):
 ```
 
 A shorter window frees server resources sooner after a tab is truly gone; a longer
-window tolerates longer outages before resetting. Note that this covers
+window tolerates longer outages before resetting, and keeps sessions longer. Note that this covers
 *transient disconnects* of a still-loaded page — a full page **reload** still
 starts a fresh tab (as the [cursor table](#cursors) describes), and `tab-cursor`
 state is in-memory, so it does not survive a server restart.
