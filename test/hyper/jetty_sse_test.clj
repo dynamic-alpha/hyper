@@ -497,23 +497,32 @@
 
 (deftest sse-stop-is-prompt-with-open-connection
   (testing "stop! returns promptly even while an SSE connection is open"
-    (let [port    (free-port)
-          handler (h/create-handler [["/" {:name :home :get (fn [_] [:div "ok"])}]])
-          _stop   (h/start! handler {:port port})
-          client  (cookie-client)
-          base    (str "http://localhost:" port)]
-      (GET client (str base "/?tab-id=T") (HttpResponse$BodyHandlers/ofString))
-      (let [resp                (GET client (str base "/hyper/events?tab-id=T")
-                                  (HttpResponse$BodyHandlers/ofInputStream))
-            {:keys [text stop]} (sse-reader (.body ^java.net.http.HttpResponse resp))]
-        (wait-until text #(str/includes? % "event: connected") 5000)
-        ;; stop! must not hang on / throw from the open SSE request.
-        (let [t0      (System/currentTimeMillis)
-              _       (h/stop! stop)
-              elapsed (- (System/currentTimeMillis) t0)]
-          (is (< elapsed 5000)
-              "stop! should return well under the Jetty graceful-stop timeout"))
-        (stop)))))
+    (let [port        (free-port)
+          handler     (h/create-handler [["/" {:name :home :get (fn [_] [:div "ok"])}]])
+          server-stop (h/start! handler {:port port})
+          client      (cookie-client)
+          base        (str "http://localhost:" port)]
+      (try
+        (GET client (str base "/?tab-id=T") (HttpResponse$BodyHandlers/ofString))
+        (let [resp                (GET client (str base "/hyper/events?tab-id=T")
+                                    (HttpResponse$BodyHandlers/ofInputStream))
+              {:keys [text stop]} (sse-reader (.body ^java.net.http.HttpResponse resp))]
+          (try
+            (is (str/includes? (wait-until text #(str/includes? % "event: connected") 5000)
+                               "event: connected"))
+            ;; stop! must not hang on / throw from the open SSE request.
+            (let [t0      (System/currentTimeMillis)
+                  _       (h/stop! server-stop)
+                  elapsed (- (System/currentTimeMillis) t0)]
+              (is (< elapsed 5000)
+                  "stop! should return well under the Jetty graceful-stop timeout"))
+            (is (thrown? java.io.IOException
+                         (GET (cookie-client) (str base "/") (HttpResponse$BodyHandlers/ofString)))
+                "the stopped server accepts no new requests")
+            (finally
+              (stop))))
+        (finally
+          (h/stop! server-stop))))))
 
 (deftest sse-async-revealed-by-partial-flushes
   (testing "an async region first revealed during a PARTIAL re-render of its
