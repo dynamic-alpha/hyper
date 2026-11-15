@@ -53,9 +53,7 @@
           req        {}
           response   (wrapped req)]
 
-      (is (contains? (:cookies response) "hyper-session"))
-      (is (string? (get-in response [:cookies "hyper-session" :value])))
-      (is (.startsWith (get-in response [:cookies "hyper-session" :value]) "ses_"))
+      (is (nil? (:cookies response)) "only a page sets the session cookie")
       (is (.contains (:body response) "session: ses_"))
       (is (.contains (:body response) "tab: tab_")))))
 

@@ -1017,6 +1017,14 @@
                           and to encode them into the URLs Hyper builds, so values
                           round-trip.  Defaults to `default-malli-transformer`;
                           compose with it to add custom encodings.
+   - :session           — Map of session settings.  `:cookie` is a map of Ring
+                          cookie attributes merged over the session cookie's
+                          defaults: `:name` \"hyper-session\", `:path` \"/\",
+                          `:http-only` true, `:max-age` 7 days and `:same-site`
+                          :lax.  The cookie is `:secure` when the request came
+                          over HTTPS (its scheme, or `X-Forwarded-Proto`), unless
+                          `:secure` is given.  Each page load sets the cookie,
+                          renewing its `:max-age`.
 
    The request key :hyper/env is reserved for application-provided context.
    Ring middleware that sets :hyper/env on the request will have it automatically
@@ -1051,7 +1059,7 @@
   [routes & {:keys [app-state head static-resources static-dir watches
                     datastar-url base-path middleware render-middleware
                     render-error squint-core-url tree-shake? source-map? render-guard
-                    max-file-size max-file-count upload-expires-in param-transformer]
+                    max-file-size max-file-count upload-expires-in param-transformer session]
              :or   {app-state    (atom (state/init-state))
                     datastar-url server/default-datastar-url}
              :as   opts}]
@@ -1071,6 +1079,7 @@
                            render-error (assoc :render-error render-error)
                            render-guard (assoc :render-guard render-guard)
                            param-transformer (assoc :param-transformer param-transformer)
+                           (contains? opts :session) (assoc :session session)
                            ;; File-upload limits for the /hyper/upload route.
                            max-file-size (assoc :max-file-size max-file-size)
                            max-file-count (assoc :max-file-count max-file-count)

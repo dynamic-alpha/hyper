@@ -353,34 +353,55 @@
                  :data  {:hyper/tab-id tab-id}
                  :msg   "Tab renderer closed"})))))
 
+(def ^:private default-session-cookie-opts
+  "The session cookie's name and attributes when `:session` sets none."
+  {:name      "hyper-session"
+   :path      "/"
+   :http-only true
+   :max-age   (* 60 60 24 7)
+   :same-site :lax})
+
+(defn- https-request?
+  "True when `req` came over HTTPS, directly or through a proxy that says so
+   in `X-Forwarded-Proto`."
+  [req]
+  (or (= :https (:scheme req))
+      (some-> (get-in req [:headers "x-forwarded-proto"])
+              (clojure.string/split #",")
+              first
+              clojure.string/trim
+              clojure.string/lower-case
+              (= "https"))))
+
+(defn- with-session-cookie
+  "`response` with the session cookie of `req` set, with a fresh `Max-Age`.
+   It is `Secure` when `req` came over HTTPS, unless `:secure` is set."
+  [response app-state* req]
+  (let [{:keys [name] :as cookie} (:session-cookie @app-state* default-session-cookie-opts)]
+    (assoc-in response [:cookies name]
+              (cond-> (assoc (dissoc cookie :name) :value (:hyper/session-id req))
+                (not (contains? cookie :secure)) (assoc :secure (boolean (https-request? req)))))))
+
 (defn wrap-hyper-context
   "Middleware that adds session-id and tab-id to the request."
   [app-state*]
   (fn [handler]
     (fn [req]
-      (let [cookies          (get req :cookies {})
-            existing-session (get-in cookies ["hyper-session" :value])
-            session-id       (or existing-session (generate-session-id))
-            tab-id           (or (get-in req [:query-params "tab-id"])
-                                 (get-in req [:params :tab-id])
-                                 (generate-tab-id))
-            req              (assoc req
-                                    :hyper/session-id session-id
-                                    :hyper/tab-id tab-id
-                                    :hyper/app-state app-state*)]
+      (let [cookie-name (:name (:session-cookie @app-state* default-session-cookie-opts))
+            session-id  (or (get-in req [:cookies cookie-name :value])
+                            (generate-session-id))
+            tab-id      (or (get-in req [:query-params "tab-id"])
+                            (get-in req [:params :tab-id])
+                            (generate-tab-id))
+            req         (assoc req
+                               :hyper/session-id session-id
+                               :hyper/tab-id tab-id
+                               :hyper/app-state app-state*)]
 
         ;; Add hyper context to telemere for all downstream logging
         (t/with-ctx+ {:hyper/session-id session-id
                       :hyper/tab-id     tab-id}
-          (let [response (handler req)]
-            ;; Add session cookie to response if new session
-            (if (and response (not existing-session))
-              (assoc-in response [:cookies "hyper-session"]
-                        {:value     session-id
-                         :path      "/"
-                         :http-only true
-                         :max-age   (* 60 60 24 7)}) ;; 7 days
-              response)))))))
+          (handler req))))))
 
 (def default-datastar-url
   "The URL pages load the Datastar module from by default."
@@ -1200,7 +1221,8 @@ action({
    re-resolution, title/head resolution).
 
    A render that returns a Ring response is returned as is, and leaves no
-   tab behind unless the tab existed before the request.
+   tab behind unless the tab existed before the request.  A page sets the
+   session cookie, renewing its expiry.
 
    Options:
    - :datastar-url - URL the page loads the Datastar module from."
@@ -1222,7 +1244,8 @@ action({
           (if (:status result)
             (do (when new-tab? (cleanup-tab! app-state* tab-id))
                 result)
-            (page-response result (page-opts app-state* tab-id opts) req tab-id 200 "Hyper App")))))))
+            (-> (page-response result (page-opts app-state* tab-id opts) req tab-id 200 "Hyper App")
+                (with-session-cookie app-state* req))))))))
 
 (defn- not-found-handler
   "Reitit default-handler for unmatched routes: renders the configured
@@ -1252,7 +1275,8 @@ action({
         (if (:status result)
           (do (when new-tab? (cleanup-tab! app-state* tab-id))
               result)
-          (page-response result (page-opts app-state* tab-id opts) req tab-id 404 "Not Found"))))))
+          (-> (page-response result (page-opts app-state* tab-id opts) req tab-id 404 "Not Found")
+              (with-session-cookie app-state* req)))))))
 
 (defn- components-js-handler
   "Serve the assembled client-components ES module bundle.
@@ -1577,6 +1601,14 @@ action({
    - :upload-expires-in TTL (seconds) for upload temp files before they are
                         reaped.  Default 3600 (1 hour).  Move/stream :tempfile
                         to permanent storage in your handler.
+   - :session           Map of session settings.  `:cookie` is a map of Ring
+                        cookie attributes merged over the session cookie's
+                        defaults: `:name` \"hyper-session\", `:path` \"/\",
+                        `:http-only` true, `:max-age` 7 days and `:same-site`
+                        :lax.  The cookie is `:secure` when the request came
+                        over HTTPS (its scheme, or `X-Forwarded-Proto`), unless
+                        `:secure` is given.  Each page load sets the cookie,
+                        renewing its `:max-age`.
 
    Routes should use :get handlers that return hiccup (Chassis vectors).
    Hyper will wrap them to provide full HTML responses and SSE connections."
@@ -1584,7 +1616,7 @@ action({
    (create-handler routes app-state* {}))
   ([routes app-state* {:keys [watches head base-path middleware render-middleware render-error not-found render-guard
                               disconnect-grace-ms heartbeat-ms
-                              max-file-size max-file-count upload-expires-in]
+                              max-file-size max-file-count upload-expires-in session]
                        :or   {render-error        render.error/minimal
                               not-found           render.error/not-found
                               render-guard        :warn
@@ -1592,6 +1624,12 @@ action({
                               heartbeat-ms        default-heartbeat-ms
                               upload-expires-in   3600}
                        :as   opts}]
+   (when-not (or (nil? session) (map? session))
+     (throw (ex-info ":session must be a map, such as {:cookie {:same-site :strict}}."
+                     {:session session})))
+   (when-not (or (nil? (:cookie session)) (map? (:cookie session)))
+     (throw (ex-info "The :cookie of :session must be a map of cookie attributes, such as {:same-site :strict}."
+                     {:session session})))
    (let [base-path       (or base-path "")
          opts            (assoc opts
                                 :base-path base-path
@@ -1643,7 +1681,8 @@ action({
                                 :tree-shake? (:tree-shake? opts)
                                 :source-map? (:source-map? opts)
                                 :param-transformer (or (:param-transformer opts)
-                                                       routes/default-malli-transformer))
+                                                       routes/default-malli-transformer)
+                                :session-cookie (merge default-session-cookie-opts (:cookie session)))
          initial-routes  (if (var? routes) @routes routes)
          initial-handler (build-ring-handler initial-routes app-state* page-wrapper system-routes default-handler)
          handler         (if (var? routes)

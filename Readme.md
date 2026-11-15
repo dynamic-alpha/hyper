@@ -162,6 +162,30 @@ spread across different frame windows produce one render per window.
 For example: a sequence of mutations over 48 ms will result in roughly 3 renders,
 each reflecting the latest state at that moment.
 
+### The session cookie
+
+A browser's session is named by the `hyper-session` cookie. Every page load
+sets it, renewing its expiry, so a person who keeps coming back keeps their
+session id. By default it is `HttpOnly`, `SameSite=Lax`, has path `/`, lasts 7
+days, and is `Secure` when the request came over HTTPS, directly or through a
+proxy that sends `X-Forwarded-Proto: https`.
+
+Change any of these with `:session {:cookie {...}}`, a map of Ring cookie
+attributes merged over the defaults. `:name` renames the cookie, and an
+explicit `:secure` overrides the HTTPS check:
+
+```clojure
+(h/create-handler routes
+  :session {:cookie {:name "my-app-session" :same-site :strict :secure true}})
+```
+
+`SameSite=Lax` keeps the cookie off requests another site starts, other than
+following a link: a form POST from another site (such as an OAuth or SAML
+`form_post` callback) reaches your route without it, and a Hyper page inside
+another site's iframe does not work, since its actions and event stream arrive
+without the cookie and are refused. Pass `:same-site :none` with
+`:secure true` to allow these.
+
 ## Actions
 
 Actions are server-side functions triggered by user interactions. The `action`

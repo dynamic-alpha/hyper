@@ -10,6 +10,17 @@
   signal read in the action gives its value from `:signals`, or its default
   value. Before, it gave its `"$name"` expression.
 
+- Sessions - `create-handler` takes `:session {:cookie {...}}`, Ring cookie
+  attributes merged over the session cookie's defaults, including `:name` to
+  rename it: `(h/create-handler routes :session {:cookie {:name "sid"
+  :same-site :strict}})`. Every page load now sets the cookie again, so it
+  expires 7 days after the last visit rather than the first. Only pages set
+  it: a route returning a Ring map no longer does. The cookie is now set with
+  `SameSite=Lax` (which Chrome already assumed for a cookie without it), and
+  with `Secure` when the request came over HTTPS (its scheme, or
+  `X-Forwarded-Proto: https`). Pass `:same-site :none` for an app embedded in
+  another site's iframe.
+
 ### Bug Fixes
 
 - Session leaks - Fixes an issue where sessions were never cleaned up. A session
