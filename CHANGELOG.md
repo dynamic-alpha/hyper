@@ -29,6 +29,12 @@ Before, sessions were never removed.
   once the `hyper-session` cookie is cleared or replaced, so signing a person
   out stops their open tabs.
 
+- Render middleware - A layout middleware that wraps the handler's result
+  now works with form-2 and form-3 pages. Before, the page's render function
+  or view ended up inside the hiccup and the render failed. Middleware now
+  always receives rendered hiccup (or a Ring response) from the handler,
+  including on a page's first render.
+
 ## 0.3.0 — 2026-11-14
 
 ### Breaking Changes

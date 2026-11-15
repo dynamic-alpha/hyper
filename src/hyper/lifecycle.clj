@@ -127,55 +127,69 @@
     (swap! app-state* update-in [:tabs tab-id] dissoc :page-view))
   nil)
 
+(defn- discard-effects-after!
+  "Drop the render-guard effects buffered after the first `n`, then emit the
+   remaining ones and activate the guard."
+  [n]
+  (when-let [g context/*render-guard*]
+    (swap! g update :events #(into [] (take n) %)))
+  (context/guard-flush-and-activate!))
+
 (defn- resolve-and-render!
-  "(Re)resolve a page handler: call it once (under the deferred guard already
-   bound by render-bindings) to discover its form, then run the terminal
-   render.  `wrap-mw` wraps a 1-arg render fn with the render-middleware
-   chain so middleware runs on every render (form-1 body, form-2 inner,
-   form-3 :render) just as it does today."
+  "Render a page handler through the render middleware, resolving its form
+   (form-1/2/3) the first time the middleware calls it, and store the
+   resolved page-view.  The middleware's handler always returns hiccup or a
+   Ring response.  Stores no page-view when the middleware never calls the
+   handler."
   [app-state* tab-id handler req render-error-fn wrap-mw]
   (let [;; Stamped onto the stored page-view; the mount boundary compares it
         ;; (see render-page).
         path-params (get-in @app-state* [:tabs tab-id :route :path-params])
-        raw         (safe (wrap-mw handler) render-error-fn req)]
-    (cond
-      ;; form-3 — handler returned a View. The detection call merely
-      ;; constructed it (pure); discard any buffered effects, run :mount
-      ;; once to capture the resource, then render.
-      (view? raw)
-      (let [resource (run-mount raw)
-            render'  (fn [r] ((:render raw) resource r))]
-        (store-page-view! app-state* tab-id
-                          {:form        :form-3
-                           :source-fn   handler
-                           :path-params path-params
-                           :render-fn   render'
-                           :resource    resource
-                           :unmount     (:unmount raw)})
-        (context/guard-discard!)
-        (safe (wrap-mw render') render-error-fn req))
+        resolved    (volatile! nil)
+        resolving   (fn [r]
+                      (if-let [{:keys [form render-fn]} @resolved]
+                        (if (= :form-1 form) (handler r) (render-fn r))
+                        ;; Effects buffered so far are the middleware's own;
+                        ;; those buffered by the handler call are setup.
+                        (let [n   (count (some-> context/*render-guard* deref :events))
+                              raw (handler r)]
+                          (cond
+                            (view? raw)
+                            (let [resource (run-mount raw)
+                                  render'  (fn [r'] ((:render raw) resource r'))]
+                              (vreset! resolved {:form      :form-3
+                                                 :render-fn render'
+                                                 :resource  resource
+                                                 :unmount   (:unmount raw)})
+                              (discard-effects-after! n)
+                              (render' r))
 
-      ;; form-2 — handler returned its inner render fn. The detection call
-      ;; WAS the setup phase (effects legal); discard buffered effects and
-      ;; render via the inner fn.
-      (fn? raw)
-      (do
-        (store-page-view! app-state* tab-id
-                          {:form        :form-2
-                           :source-fn   handler
-                           :path-params path-params
-                           :render-fn   raw})
-        (context/guard-discard!)
-        (safe (wrap-mw raw) render-error-fn req))
+                            (fn? raw)
+                            (do
+                              (vreset! resolved {:form :form-2 :render-fn raw})
+                              (discard-effects-after! n)
+                              (raw r))
 
-      ;; form-1 — handler returned hiccup (or a Ring map). The detection
-      ;; call WAS the render body, so flush buffered effects as warnings.
-      :else
-      (do
-        (store-page-view! app-state* tab-id
-                          {:form :form-1 :source-fn handler :path-params path-params})
-        (context/guard-flush-and-activate!)
-        raw))))
+                            :else
+                            (do
+                              (vreset! resolved {:form :form-1})
+                              raw)))))
+        body        (try
+                      (safe (wrap-mw resolving) render-error-fn req)
+                      (finally
+                        (if-let [page-view @resolved]
+                          (store-page-view! app-state* tab-id
+                                            (assoc page-view
+                                                   :source-fn handler
+                                                   :path-params path-params))
+                          ;; Drop a superseded mount's page-view so it is not
+                          ;; unmounted again.
+                          (swap! app-state* update-in [:tabs tab-id] dissoc :page-view))))]
+    ;; form-1 (or no handler call): the buffered effects came from the render
+    ;; body and middleware, so emit them.
+    (when-not (#{:form-2 :form-3} (:form @resolved))
+      (context/guard-flush-and-activate!))
+    body))
 
 (defn render-page
   "Resolve and render a page handler through the form-1/2/3 ladder, managing

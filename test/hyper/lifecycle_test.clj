@@ -6,7 +6,8 @@
             [hyper.server :as server]
             [hyper.state :as state]
             [hyper.subview :as subview]
-            [hyper.test :as ht]))
+            [hyper.test :as ht]
+            [taoensso.telemere :as t]))
 
 ;; ---------------------------------------------------------------------------
 ;; View record (form-3 constructor)
@@ -320,3 +321,199 @@
         (is (= 2 @mounts) "path-param change remounted")
         (is (= 1 @unmounts) "old resource unmounted")
         (is (str/includes? (:body-html r3) "id=b"))))))
+
+;; ---------------------------------------------------------------------------
+;; Render middleware sees rendered hiccup for every page form
+;; ---------------------------------------------------------------------------
+
+(defn- layout [handler] (fn [req] [:div.frame (handler req)]))
+
+(def ^:private framed "<div class=\"frame\"><p>hi</p></div>")
+
+(deftest layout-middleware-wraps-every-form
+  (doseq [[form handler] {:form-1 (fn [_req] [:p "hi"])
+                          :form-2 (fn [_req] (fn [_req] [:p "hi"]))
+                          :form-3 (fn [_req] (h/view {:render (fn [_ _] [:p "hi"])}))}]
+    (testing (str form " on the first and a later render")
+      (let [opts {:render-middleware [layout]}
+            r1   (ht/test-page handler opts)
+            app  (:app-state r1)
+            r2   (ht/test-page handler (assoc opts :app-state app))]
+        (is (= framed (:body-html r1)))
+        (is (= framed (:body-html r2)))
+        (is (= form (get-in @app [:tabs "test-tab" :page-view :form])))))))
+
+(defn- twice
+  "Middleware calling the handler twice, with a different req each time."
+  [handler]
+  (fn [req]
+    [:div (handler (assoc req ::n 1)) (handler (assoc req ::n 2))]))
+
+(deftest middleware-calling-handler-twice
+  (testing "form-2 setup runs once; each call renders with its own req"
+    (let [setups  (atom 0)
+          handler (fn [_req]
+                    (swap! setups inc)
+                    (fn [req] [:p (::n req)]))
+          r1      (ht/test-page handler {:render-middleware [twice]})
+          r2      (ht/test-page handler {:render-middleware [twice]
+                                         :app-state         (:app-state r1)})]
+      (is (= 1 @setups))
+      (is (= "<div><p>1</p><p>2</p></div>" (:body-html r1) (:body-html r2)))))
+
+  (testing "form-3 :mount runs once; each call renders with its own req"
+    (let [mounts  (atom 0)
+          handler (fn [_req]
+                    (h/view {:mount  (fn [] (swap! mounts inc) :res)
+                             :render (fn [res req] [:p (name res) (::n req)])}))
+          r1      (ht/test-page handler {:render-middleware [twice]})
+          r2      (ht/test-page handler {:render-middleware [twice]
+                                         :app-state         (:app-state r1)})]
+      (is (= 1 @mounts))
+      (is (= "<div><p>res1</p><p>res2</p></div>" (:body-html r1) (:body-html r2)))))
+
+  (testing "form-1 runs its body on each call, with its own req"
+    (let [calls (atom 0)
+          r     (ht/test-page (fn [req] (swap! calls inc) [:p (::n req)])
+                              {:render-middleware [twice]})]
+      (is (= 2 @calls))
+      (is (= "<div><p>1</p><p>2</p></div>" (:body-html r))))))
+
+(defn- require-user [handler]
+  (fn [req]
+    (if @(h/session-cursor :user)
+      (handler req)
+      {:status 302 :headers {"Location" "/login"} :body ""})))
+
+(deftest short-circuiting-middleware-stores-no-page-view
+  (testing "a form-3 page behind a redirect mounts only once let through"
+    (let [mounts  (atom 0)
+          handler (fn [_req]
+                    (h/view {:mount  (fn [] (swap! mounts inc) :res)
+                             :render (fn [_ _] [:p "hi"])}))
+          app     (atom (state/init-state))
+          opts    {:render-middleware [require-user layout] :app-state app}
+          r1      (ht/test-page handler opts)]
+      (is (= 302 (:status r1)))
+      (is (= 0 @mounts))
+      (is (nil? (get-in @app [:tabs "test-tab" :page-view])))
+      (let [r2 (ht/test-page handler (assoc opts :cursors {:session {:user "alice"}}))]
+        (is (= framed (:body-html r2)))
+        (is (= 1 @mounts))
+        (is (= :form-3 (get-in @app [:tabs "test-tab" :page-view :form]))))))
+
+  (testing "a superseded form-3 mount is unmounted once when the next page redirects"
+    (let [unmounts (atom 0)
+          page-a   (fn [_req]
+                     (h/view {:render  (fn [_ _] [:p "a"])
+                              :unmount (fn [_] (swap! unmounts inc))}))
+          r1       (ht/test-page page-a)
+          app      (:app-state r1)
+          r2       (ht/test-page (fn [_req] [:p "b"])
+                                 {:app-state         app
+                                  :render-middleware [require-user]})]
+      (is (= 302 (:status r2)))
+      (is (= 1 @unmounts))
+      (is (nil? (get-in @app [:tabs "test-tab" :page-view])))
+      (lifecycle/teardown-page-view! app "test-tab")
+      (is (= 1 @unmounts) "not unmounted again on disconnect"))))
+
+(def ^:private ^:dynamic *from-middleware* nil)
+
+(defn- bind-value [handler]
+  (fn [req]
+    (binding [*from-middleware* :bound]
+      (handler req))))
+
+(deftest middleware-bindings-visible-during-setup-and-mount
+  (testing "form-2 setup"
+    (let [seen (atom nil)]
+      (ht/test-page (fn [_req]
+                      (reset! seen *from-middleware*)
+                      (fn [_req] [:p "hi"]))
+                    {:render-middleware [bind-value]})
+      (is (= :bound @seen))))
+
+  (testing "form-3 :mount"
+    (let [seen (atom nil)]
+      (ht/test-page (fn [_req]
+                      (h/view {:mount  (fn [] (reset! seen *from-middleware*))
+                               :render (fn [_ _] [:p "hi"])}))
+                    {:render-middleware [bind-value]})
+      (is (= :bound @seen)))))
+
+(deftest throwing-setup-or-mount-under-middleware
+  (testing "a throwing form-2 setup or form-3 :mount renders the error page and stores nothing"
+    (doseq [handler [(fn [_req] (throw (ex-info "setup" {})))
+                     (fn [_req] (h/view {:mount  (fn [] (throw (ex-info "mount" {})))
+                                         :render (fn [_ _] [:p "hi"])}))]]
+      (let [app (atom (state/init-state))
+            r   (ht/test-page handler {:app-state app :render-middleware [layout]})]
+        (is (str/includes? (:body-html r) "Something went wrong"))
+        (is (nil? (get-in @app [:tabs "test-tab" :page-view]))))))
+
+  (testing "a form-3 whose first render throws keeps its mount for unmount"
+    (let [unmounts (atom 0)
+          app      (atom (state/init-state))
+          r        (ht/test-page (fn [_req]
+                                   (h/view {:mount   (fn [] :res)
+                                            :render  (fn [_ _] (throw (ex-info "render" {})))
+                                            :unmount (fn [_] (swap! unmounts inc))}))
+                                 {:app-state app :render-middleware [layout]})]
+      (is (str/includes? (:body-html r) "Something went wrong"))
+      (is (= :form-3 (get-in @app [:tabs "test-tab" :page-view :form])))
+      (lifecycle/teardown-page-view! app "test-tab")
+      (is (= 1 @unmounts)))))
+
+(deftest render-guard-with-middleware
+  (testing "form-2 setup effects are allowed"
+    (let [r (ht/test-page (fn [_req]
+                            (reset! (h/tab-cursor :n 0) 5)
+                            (fn [_req] [:p "hi"]))
+                          {:app-state (error-app) :render-middleware [layout]})]
+      (is (= framed (:body-html r)))
+      (is (= 5 (get-in r [:cursors :tab :n])))))
+
+  (testing "form-3 construction effects are allowed"
+    (let [r (ht/test-page (fn [_req]
+                            (reset! (h/tab-cursor :n 0) 5)
+                            (h/view {:render (fn [_ _] [:p "hi"])}))
+                          {:app-state (error-app) :render-middleware [layout]})]
+      (is (= framed (:body-html r)))))
+
+  (testing "a form-2 render fn runs under the active guard"
+    (let [r (ht/test-page (fn [_req]
+                            (fn [_req]
+                              (reset! (h/tab-cursor :n 0) 5)
+                              [:p "hi"]))
+                          {:app-state (error-app) :render-middleware [layout]})]
+      (is (str/includes? (:body-html r) "Something went wrong"))))
+
+  (testing "form-1 body effects are flushed"
+    (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo #"Effect during render"
+          (ht/test-page (fn [_req]
+                          (reset! (h/tab-cursor :n 0) 5)
+                          [:p "hi"])
+                        {:app-state (error-app) :render-middleware [layout]}))))
+
+  (testing "the middleware's own effects are reported, setup effects are not"
+    (let [mw       (fn [handler]
+                     (fn [req]
+                       (reset! (h/tab-cursor :mw 0) 1)
+                       (handler req)))
+          warnings (fn [handler]
+                     (->> (t/with-signals
+                            (ht/test-page handler {:render-middleware [mw]}))
+                          :signals
+                          (filter #(= :hyper.warn/effect-in-render (:id %)))
+                          count))]
+      (is (= 1 (warnings (fn [_req]
+                           (reset! (h/tab-cursor :setup 0) 1)
+                           (fn [_req] [:p "hi"])))))
+      (is (= 1 (warnings (fn [_req]
+                           (reset! (h/tab-cursor :setup 0) 1)
+                           (h/view {:render (fn [_ _] [:p "hi"])})))))
+      (is (= 2 (warnings (fn [_req]
+                           (reset! (h/tab-cursor :body 0) 1)
+                           [:p "hi"])))))))
