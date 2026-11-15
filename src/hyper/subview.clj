@@ -319,16 +319,18 @@
    page re-render), anything else (`:partial`) invokes `(enqueue-partial! sid)`.
    Uses reference counting via retain/release on each dep."
   [app-state* tab-id sid deps on-change trigger-render! enqueue-partial!]
-  (doseq [dep deps]
-    (let [watch-key (keyword (str "subview-" sid "-" (System/identityHashCode dep)))]
-      (watch/retain-source! app-state* dep)
-      (proto/-add-watch dep watch-key
-                        (fn [_old _new]
-                          (if (= on-change :full)
-                            (when trigger-render! (trigger-render!))
-                            (when enqueue-partial! (enqueue-partial! sid)))))
-      (swap! app-state* update-in [:tabs tab-id :subview-watches sid]
-             (fnil assoc {}) watch-key dep))))
+  ;; A dep listed twice gets one watch, so it is retained once per release.
+  (doseq [[watch-key dep] (into {}
+                                (map (fn [dep] [(keyword (str "subview-" sid "-" (System/identityHashCode dep))) dep]))
+                                deps)]
+    (watch/retain-source! app-state* dep)
+    (proto/-add-watch dep watch-key
+                      (fn [_old _new]
+                        (if (= on-change :full)
+                          (when trigger-render! (trigger-render!))
+                          (when enqueue-partial! (enqueue-partial! sid)))))
+    (swap! app-state* update-in [:tabs tab-id :subview-watches sid]
+           (fnil assoc {}) watch-key dep)))
 
 (defn teardown-subview-watches!
   "Remove watches and release dep refcounts for a subview."

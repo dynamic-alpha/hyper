@@ -379,6 +379,17 @@
     (is (zero? @(.-disposed* a)))
     (is (zero? @(.-disposed* b)))))
 
+(deftest test-a-dep-listed-twice-is-released-with-its-region
+  (let [a        (make-disposable-source 0)
+        show     (atom true)
+        [app* _] (connected-page (fn [_] [:div (when @show (h/reactive [a a] [:p (str @a)]))]))]
+    (is (= 1 (get-in @app* [:source-refcounts a])) "retained once")
+    (reset! show false)
+    (full-render! app*)
+    (is (not (contains? (:source-refcounts @app*) a)))
+    (is (= 1 @(.-disposed* a)))
+    (is (empty? @(.-watches* a)))))
+
 (defn- nested-regions-page
   "A page whose region :parent draws :kept, and :dropped (with :deep in it)
    and the async :loader while :show? is on, next to a region :sibling."

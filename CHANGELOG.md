@@ -33,6 +33,10 @@
   no longer draws, and a nested region without a `:key` keeps its id when its
   parent re-renders on its own. Deps are compared regardless of order.
 
+- Reactive regions - A region listing the same source twice in its deps now
+  releases it when the region is removed. Before, the source was never
+  disposed.
+
 ## 0.3.0 — 2026-11-14
 
 ### Breaking Changes
