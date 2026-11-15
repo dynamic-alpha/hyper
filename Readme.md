@@ -2503,9 +2503,12 @@ full page reload (`window.location.reload()`), which starts a fresh tab and
 discards all tab-local state. Reach for a reload only as a nuclear fallback (e.g.
 after a server redeploy where client code may have changed).
 
-> If the grace window has already elapsed, the tab has been fully torn down, so
-> reconnecting starts a fresh tab — the connection comes back, but tab-local
-> state does not. Word any "Retry" copy accordingly.
+> If the grace window has already elapsed, or the server has restarted since the
+> page loaded, the server no longer has the tab. It refuses the tab's event
+> stream with a 404, so reconnecting does not bring the connection back; only a
+> full page reload, which starts a fresh tab, does. Offer a reload next to
+> "Retry", and word the "Retry" copy so it does not promise the page will come
+> back.
 
 ## Brotli compression
 
