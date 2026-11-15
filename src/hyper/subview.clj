@@ -128,30 +128,28 @@
 
 (declare wire-subview!)
 
-(defn- same-dep?
-  "True when deps `a` and `b` watch the same thing: the same object, or
-   cursors to the same path of the same atom."
-  [a b]
-  (or (identical? a b)
-      (and (instance? Cursor a)
-           (instance? Cursor b)
-           (identical? (.-parent-atom ^Cursor a) (.-parent-atom ^Cursor b))
-           (= (.-full-path ^Cursor a) (.-full-path ^Cursor b)))))
+(defn- dep-key
+  "What decides `dep`'s watch: the atom and path for a cursor, which is
+   created anew each render, and `dep` itself otherwise."
+  [dep]
+  (if (instance? Cursor dep)
+    [::cursor (.-parent-atom ^Cursor dep) (.-full-path ^Cursor dep)]
+    dep))
 
 (defn- same-deps?
-  "True when dep vectors `xs` and `ys` watch the same things in the same order."
+  "True when dep collections `xs` and `ys` watch the same things, in any order."
   [xs ys]
-  (and (= (count xs) (count ys))
-       (every? true? (map same-dep? xs ys))))
+  (= (set (map dep-key xs)) (set (map dep-key ys))))
 
 (declare teardown-subview-watches!)
 
 (defn- rewire-subview!
   "Replace subview `sid`'s dep watches with watches on its current deps."
   [app-state* tab-id sid]
-  (let [deps (:deps (get-subview app-state* tab-id sid))
-        kept (filter (fn [dep] (some #(same-dep? dep %) deps))
-                     (vals (get-in @app-state* [:tabs tab-id :subview-watches sid])))]
+  (let [deps     (:deps (get-subview app-state* tab-id sid))
+        new-keys (set (map dep-key deps))
+        kept     (filter (comp new-keys dep-key)
+                         (vals (get-in @app-state* [:tabs tab-id :subview-watches sid])))]
     ;; Hold the deps that stay watched so releasing the old watches does not
     ;; dispose them.
     (doseq [dep kept] (watch/retain-source! app-state* dep))

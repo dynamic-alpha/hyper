@@ -31,7 +31,7 @@
   first drawn with, so a nested `h/reactive` whose deps depend on its parent
   missed changes. A region's re-render now also removes the nested regions it
   no longer draws, and a nested region without a `:key` keeps its id when its
-  parent re-renders on its own.
+  parent re-renders on its own. Deps are compared regardless of order.
 
 ## 0.3.0 — 2026-11-14
 

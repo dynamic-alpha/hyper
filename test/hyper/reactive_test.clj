@@ -355,6 +355,30 @@
       (is (= ["r_T_2"] (changes-redraw partials #(swap! app* assoc-in [:tabs "T" :data :y] 1))))
       (is (= ["r_T_1"] (changes-redraw partials #(swap! app* assoc-in [:tabs "T" :data :x] 1)))))))
 
+(deftest test-reordered-deps-are-not-rewired
+  (let [a               (make-disposable-source 0)
+        b               (make-disposable-source 0)
+        flip            (atom false)
+        [app* partials] (connected-page
+                          (fn [_]
+                            [:div (h/reactive [(if @flip b a) (h/tab-cursor :x 0) (if @flip a b)]
+                                              [:p (str @a @b)])]))
+        watches         #(get-in @app* [:tabs "T" :subview-watches])
+        before          (watches)
+        rewires         (atom 0)
+        setup           subview/setup-subview-watches!
+        teardown        subview/teardown-subview-watches!]
+    (with-redefs [subview/setup-subview-watches!    (fn [& args] (swap! rewires inc) (apply setup args))
+                  subview/teardown-subview-watches! (fn [& args] (swap! rewires inc) (apply teardown args))]
+      (reset! flip true)
+      (full-render! app*)
+      (is (zero? @rewires) "the same deps in another order do not rewire")
+      (is (= before (watches))))
+    (is (= ["r_T_1"] (changes-redraw partials #(reset! (.-value* a) 1))))
+    (is (= ["r_T_1"] (changes-redraw partials #(reset! (.-value* b) 1))))
+    (is (zero? @(.-disposed* a)))
+    (is (zero? @(.-disposed* b)))))
+
 (defn- nested-regions-page
   "A page whose region :parent draws :kept, and :dropped (with :deep in it)
    and the async :loader while :show? is on, next to a region :sibling."
