@@ -6,6 +6,7 @@
             [hyper.context :as context]
             [hyper.core :as h]
             [hyper.effects :as effects]
+            [hyper.render :as render]
             [hyper.server :as server]
             [hyper.state :as state]
             [hyper.watch :as watch]
@@ -390,6 +391,52 @@
       (finally
         (doseq [t ["T1" "O"]]
           (watch/remove-watchers! app* t))))))
+
+(defn- write-from-tab!
+  "Write session cursor :user of tab `tab-id`, whose request names session
+   `session-id`, as a late action or worker of the tab would."
+  [app* session-id tab-id]
+  (binding [context/*request* {:hyper/session-id session-id
+                               :hyper/tab-id     tab-id
+                               :hyper/app-state  app*}]
+    (reset! (h/session-cursor :user) "late")))
+
+(deftest test-the-old-sessions-tabs-cannot-bring-it-back
+  (testing "rotation: a render of another tab of the session, and a write from it, between the move and the teardown"
+    (let [app* (atom (state/init-state))]
+      (state/get-or-create-tab! app* "S" "T1")
+      (state/get-or-create-tab! app* "S" "T2")
+      (render/register-render-fn! app* "T2" (fn [_] [:p @(h/session-cursor :theme "dark")]))
+      (let [response (#'server/apply-session-effect {} app* {} "T1" :rotate)]
+        (is (str/includes? (:body-html (render/render-tab app* "S" "T2")) "dark")
+            "the render shows the default")
+        (write-from-tab! app* "S" "T2")
+        (is (not (contains? (:sessions @app*) "S")) "without writing it to the old id")
+        (written! response))
+      (is (not (contains? (:sessions @app*) "S")))
+      (is (= #{"T1"} (set (keys (:tabs @app*)))))))
+  (testing "end: a write from a tab of the session after it ended"
+    (let [app* (atom (state/init-state))]
+      (state/get-or-create-tab! app* "S" "T1")
+      (state/get-or-create-tab! app* "S" "T2")
+      (#'server/apply-session-effect {} app* {} "T1" :end)
+      (write-from-tab! app* "S" "T2")
+      (is (empty? (:sessions @app*)))))
+  (testing "a stream let in before the rotation starts after it"
+    (let [[handler app*] (app (fn [_] (effects/rotate-session!)))
+          page           (load-page! handler nil "T1")
+          cookie         (cookie-of page)
+          session-id     (session-id-of cookie)
+          _              (load-page! handler cookie "T2")
+          events         (get-events handler cookie "T2")]
+      (post-action! handler cookie "T1" (:body page))
+      (is (not= :timeout (deref (future (ring-protocols/write-body-to-stream
+                                          (:body events) events (java.io.ByteArrayOutputStream.)))
+                                2000 :timeout))
+          "it ends at once")
+      (is (not (contains? (:sessions @app*) session-id)) "without bringing the old id back")
+      (is (= #{"T1"} (set (keys (:tabs @app*)))))
+      (server/cleanup-tab! app* "T1"))))
 
 ;; ---------------------------------------------------------------------------
 ;; Tabs reloaded at once without a session the server holds

@@ -88,25 +88,34 @@
     (when (identical? (:owner overlay) (Thread/currentThread))
       overlay)))
 
+(defn- missing-session?
+  "Whether `path` is in a session that `state` holds no entry for."
+  [state path]
+  (and (= :sessions (first path))
+       (not (contains? (:sessions state) (second path)))))
+
 (defn apply-ops
   "Replay an ordered op-log against a state value, returning the new state.
    :update applies its fn to the current value (composing with concurrent
    writes), :reset overwrites the path, :cas writes only when the value
    still equals the expected old, :init writes only when the path is still
    absent (a default-init that yields to any concurrent write, including one
-   that set the path to nil).  Pure — runs inside flush-overlay!'s swap!, so
+   that set the path to nil).  An op in a session the state holds no entry
+   for does nothing.  Pure — runs inside flush-overlay!'s swap!, so
    op fns must be side-effect free, as with clojure.core/swap!."
   [state ops]
   (reduce (fn [s {:keys [kind path] :as op}]
-            (case kind
-              :update (update-in s path (:f op))
-              :reset  (assoc-in s path (:value op))
-              :cas    (if (= (get-in s path) (:old op))
-                        (assoc-in s path (:new op))
-                        s)
-              :init   (if (identical? ::absent (get-in s path ::absent))
-                        (assoc-in s path (:value op))
-                        s)))
+            (if (missing-session? s path)
+              s
+              (case kind
+                :update (update-in s path (:f op))
+                :reset  (assoc-in s path (:value op))
+                :cas    (if (= (get-in s path) (:old op))
+                          (assoc-in s path (:new op))
+                          s)
+                :init   (if (identical? ::absent (get-in s path ::absent))
+                          (assoc-in s path (:value op))
+                          s))))
           state
           ops))
 
@@ -126,7 +135,8 @@
    guard is released for the duration — the render body has already been
    judged, and reaction writes are applied rather than dropped, so they are
    not render effects.  Throws when the log keeps growing past
-   `max-flush-phases` (a non-converging write cycle).  No-op when nothing
+   `max-flush-phases` (a non-converging write cycle).  A write to a session
+   that no longer exists is dropped with a warning.  No-op when nothing
    was recorded, or the calling thread doesn't own the overlay."
   [app-state*]
   (when-let [{:keys [ops*]} (current-overlay)]
@@ -143,7 +153,13 @@
                               {:hyper/flush-phases (dec phase)
                                :hyper/pending-ops  (mapv #(select-keys % [:kind :path])
                                                          pending)})))
-            (swap! app-state* apply-ops pending)
+            (let [[before] (swap-vals! app-state* apply-ops pending)]
+              (doseq [{:keys [kind path]} pending
+                      :when               (and (not= :init kind) (missing-session? before path))]
+                (t/log! {:level :warn
+                         :id    :hyper.warn/session-cursor-write-dropped
+                         :data  {:hyper/session-id (second path) :hyper/path path}
+                         :msg   "Session cursor write to a session that no longer exists was dropped"})))
             (recur (count ops) (inc phase))))))))
 
 ;; The :as name of the currently executing action, or nil when outside

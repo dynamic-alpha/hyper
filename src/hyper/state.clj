@@ -15,7 +15,8 @@
     :routes-source <var-or-routes-vector>}"
   (:require [clojure.string]
             [hyper.context :as context]
-            [hyper.utils :as utils]))
+            [hyper.utils :as utils]
+            [taoensso.telemere :as t]))
 
 (defn normalize-path
   "Convert keyword or vector to vector path."
@@ -23,6 +24,25 @@
   (if (keyword? path)
     [path]
     (vec path)))
+
+(defn- missing-session?
+  "Whether `path` is in a session that `state` holds no entry for."
+  [state path]
+  (and (= :sessions (first path))
+       (not (contains? (:sessions state) (second path)))))
+
+(defn- write!
+  "Apply op `op` (see `context/apply-ops`) to `parent-atom`, returning the
+   states before and after it.  A write to a session that no longer exists
+   does nothing and logs a warning."
+  [parent-atom {:keys [path] :as op}]
+  (let [[before :as states] (swap-vals! parent-atom context/apply-ops [op])]
+    (when (missing-session? before path)
+      (t/log! {:level :warn
+               :id    :hyper.warn/session-cursor-write-dropped
+               :data  {:hyper/session-id (second path) :hyper/path path}
+               :msg   "Session cursor write to a session that no longer exists was dropped"}))
+    states))
 
 (deftype Cursor [parent-atom full-path meta-data ^:volatile-mutable validator watches]
   clojure.lang.IRef
@@ -59,14 +79,15 @@
   ;; With an owned overlay, each mutation is applied to the shadow :state*
   ;; (for read-your-writes) and appended to :ops* as a composable operation
   ;; replayed against live state at flush.  Without an overlay, writes hit
-  ;; the live parent-atom directly like a plain atom.
+  ;; the live parent-atom directly like a plain atom.  Either way a write to a
+  ;; session that no longer exists is dropped (see `write!`).
   (swap [_ f]
     (context/guard-effect! :cursor-mutation (str "swap! " full-path))
     (if-let [{state* :state* ops* :ops*} (context/current-overlay)]
       (let [new-val (get-in (swap! state* update-in full-path f) full-path)]
         (swap! ops* conj {:kind :update :path full-path :f f})
         new-val)
-      (get-in (swap! parent-atom update-in full-path f) full-path)))
+      (get-in (second (write! parent-atom {:kind :update :path full-path :f f})) full-path)))
 
   (swap [_ f arg]
     (context/guard-effect! :cursor-mutation (str "swap! " full-path))
@@ -75,7 +96,7 @@
             new-val (get-in (swap! state* update-in full-path g) full-path)]
         (swap! ops* conj {:kind :update :path full-path :f g})
         new-val)
-      (get-in (swap! parent-atom update-in full-path f arg) full-path)))
+      (get-in (second (write! parent-atom {:kind :update :path full-path :f #(f % arg)})) full-path)))
 
   (swap [_ f arg1 arg2]
     (context/guard-effect! :cursor-mutation (str "swap! " full-path))
@@ -84,7 +105,7 @@
             new-val (get-in (swap! state* update-in full-path g) full-path)]
         (swap! ops* conj {:kind :update :path full-path :f g})
         new-val)
-      (get-in (swap! parent-atom update-in full-path f arg1 arg2) full-path)))
+      (get-in (second (write! parent-atom {:kind :update :path full-path :f #(f % arg1 arg2)})) full-path)))
 
   (swap [_ f arg1 arg2 args]
     (context/guard-effect! :cursor-mutation (str "swap! " full-path))
@@ -93,7 +114,7 @@
             new-val (get-in (swap! state* update-in full-path g) full-path)]
         (swap! ops* conj {:kind :update :path full-path :f g})
         new-val)
-      (get-in (apply swap! parent-atom update-in full-path f arg1 arg2 args) full-path)))
+      (get-in (second (write! parent-atom {:kind :update :path full-path :f #(apply f % arg1 arg2 args)})) full-path)))
 
   (compareAndSet [_ oldv newv]
     (if-let [{state* :state* ops* :ops*} (context/current-overlay)]
@@ -103,16 +124,9 @@
               (swap! ops* conj {:kind :cas :path full-path :old oldv :new newv})
               true)
           false))
-      (loop []
-        (let [current-state @parent-atom
-              current-val   (get-in current-state full-path)]
-          (if (= current-val oldv)
-            (if (compare-and-set! parent-atom
-                                  current-state
-                                  (assoc-in current-state full-path newv))
-              true
-              (recur))
-            false)))))
+      (let [[before] (write! parent-atom {:kind :cas :path full-path :old oldv :new newv})]
+        (and (not (missing-session? before full-path))
+             (= oldv (get-in before full-path))))))
 
   (reset [_ newv]
     (context/guard-effect! :cursor-mutation (str "reset! " full-path))
@@ -120,7 +134,7 @@
       (do (swap! state* assoc-in full-path newv)
           (swap! ops* conj {:kind :reset :path full-path :value newv})
           newv)
-      (do (swap! parent-atom assoc-in full-path newv)
+      (do (write! parent-atom {:kind :reset :path full-path :value newv})
           newv)))
 
   clojure.lang.IMeta
@@ -144,7 +158,8 @@
   "Initialize a cursor's path with `default-value`, but only when the path is
    currently *absent* — never written.  A path explicitly holding nil is left
    untouched, so a value a component set to nil is not silently reset to the
-   default on the next render.  Returns the cursor.
+   default on the next render.  Does nothing in a session that no longer
+   exists.  Returns the cursor.
 
    Under an owned overlay (render or `batch`) the init is recorded as an
    :init op replayed at flush, so it yields to any concurrent same-path write
@@ -158,7 +173,8 @@
         (swap! ops* conj {:kind :init :path full-path :value default-value}))
       (loop []
         (let [s @parent-atom]
-          (when (identical? ::absent (get-in s full-path ::absent))
+          (when (and (identical? ::absent (get-in s full-path ::absent))
+                     (not (missing-session? s full-path)))
             (when-not (compare-and-set! parent-atom s (assoc-in s full-path default-value))
               (recur)))))))
   cursor)

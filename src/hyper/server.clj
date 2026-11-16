@@ -533,7 +533,8 @@
 
    1. Publishes a renderer handle (with its render queue) under
       `[:tabs tab-id :renderer]` BEFORE the loop runs, so the stable render
-      triggers can resolve its queue immediately.
+      triggers can resolve its queue immediately.  Returns at once instead
+      when the tab is no longer in session `session-id`.
    2. On the first connection for a tab, wires reactivity once (user/route
       watchers + framework :tab subviews); a reconnect within the grace window
       re-attaches a renderer without rebuilding reactivity.
@@ -560,51 +561,58 @@
                          :conn-id          conn-id
                          :thread           (Thread/currentThread)}
         trigger-render! (:trigger-render! renderer)]
-    (state/get-or-create-tab! app-state* session-id tab-id)
     ;; Take over from any stale/half-open renderer still attached (a new
     ;; connection opened before the old one's body write unwound).
     (when-let [stop! (get-in @app-state* [:tabs tab-id :renderer :stop!])]
       (stop!))
     ;; Publish the renderer (with its queue) before wiring watches so the
-    ;; stable triggers and setup-new-watches! resolve it.
-    (swap! app-state* assoc-in [:tabs tab-id :renderer] renderer)
-    ;; Clear any pending disconnect — we're attached again.
-    (swap! app-state* update-in [:tabs tab-id] dissoc :disconnected-at)
-    (if reconnect?
-      (t/log! {:level :info
-               :id    :hyper.event/tab-reconnect
-               :data  {:hyper/tab-id tab-id}
-               :msg   "Tab reconnected within grace window"})
-      ;; First connection for this tab: wire reactivity once.  Stable triggers
-      ;; (resolved from app-state) keep these watches driving whatever renderer
-      ;; is attached later.
+    ;; stable triggers and setup-new-watches! resolve it.  Only while the tab
+    ;; is in its session: the session may have been ended, rotated or reaped
+    ;; since the stream was let in, and a stream must not bring it back.
+    (swap! app-state* (fn [state]
+                        (cond-> state
+                          (contains? (get-in state [:sessions session-id :tabs]) tab-id)
+                          (assoc-in [:tabs tab-id :renderer] renderer))))
+    (if-not (identical? renderer (get-in @app-state* [:tabs tab-id :renderer]))
+      (deliver (:stopped renderer) true)
       (do
-        (swap! app-state* assoc-in [:tabs tab-id :connection-initialized?] true)
-        (watch/setup-watchers! app-state* tab-id trigger-render!)
-        ;; Framework watches as :tab-scoped subviews — set up once at connect,
-        ;; survive navigation, torn down on full disconnect:
-        ;; - routes/head Vars: re-defs trigger re-renders for all tabs
-        ;; - component registry: REPL redefinition hot-swaps the client-components
-        ;;   bundle over SSE (the head update carries the new content-hashed URL).
-        (let [{:keys [routes-source head]} @app-state*]
-          (doseq [source (conj (filterv var? [routes-source head])
-                               component/registry*)]
-            (subview/register-watch! app-state* tab-id source :tab)))))
-    ;; Kick the initial full render, then run the loop until shutdown/disconnect.
-    (rq/enqueue-full-render! render-queue)
-    (try
-      (-renderer-loop! app-state* session-id tab-id os compress? render-queue)
-      (finally
-        ;; Only the connection that is currently attached may detach the tab —
-        ;; a stale half-open connection whose renderer was already replaced by a
-        ;; newer one must not tear it down.
-        (when (= conn-id (get-in @app-state* [:tabs tab-id :renderer :conn-id]))
+        ;; Clear any pending disconnect — we're attached again.
+        (swap! app-state* update-in [:tabs tab-id] dissoc :disconnected-at)
+        (if reconnect?
           (t/log! {:level :info
-                   :id    :hyper.event/tab-disconnect
+                   :id    :hyper.event/tab-reconnect
                    :data  {:hyper/tab-id tab-id}
-                   :msg   "Tab disconnected — starting grace window"})
-          (detach-tab! app-state* tab-id))
-        (deliver (:stopped renderer) true)))))
+                   :msg   "Tab reconnected within grace window"})
+          ;; First connection for this tab: wire reactivity once.  Stable triggers
+          ;; (resolved from app-state) keep these watches driving whatever renderer
+          ;; is attached later.
+          (do
+            (swap! app-state* assoc-in [:tabs tab-id :connection-initialized?] true)
+            (watch/setup-watchers! app-state* tab-id trigger-render!)
+            ;; Framework watches as :tab-scoped subviews — set up once at connect,
+            ;; survive navigation, torn down on full disconnect:
+            ;; - routes/head Vars: re-defs trigger re-renders for all tabs
+            ;; - component registry: REPL redefinition hot-swaps the client-components
+            ;;   bundle over SSE (the head update carries the new content-hashed URL).
+            (let [{:keys [routes-source head]} @app-state*]
+              (doseq [source (conj (filterv var? [routes-source head])
+                                   component/registry*)]
+                (subview/register-watch! app-state* tab-id source :tab)))))
+        ;; Kick the initial full render, then run the loop until shutdown/disconnect.
+        (rq/enqueue-full-render! render-queue)
+        (try
+          (-renderer-loop! app-state* session-id tab-id os compress? render-queue)
+          (finally
+            ;; Only the connection that is currently attached may detach the tab —
+            ;; a stale half-open connection whose renderer was already replaced by a
+            ;; newer one must not tear it down.
+            (when (= conn-id (get-in @app-state* [:tabs tab-id :renderer :conn-id]))
+              (t/log! {:level :info
+                       :id    :hyper.event/tab-disconnect
+                       :data  {:hyper/tab-id tab-id}
+                       :msg   "Tab disconnected — starting grace window"})
+              (detach-tab! app-state* tab-id))
+            (deliver (:stopped renderer) true)))))))
 
 (def ^:private unknown-tab-response
   {:status  404

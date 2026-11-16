@@ -101,6 +101,15 @@
   event stream has not yet connected now joins the session of the cookie its
   stream arrives with, rather than being refused.
 
+- Session cursors - A write through `h/session-cursor` to a session that no
+  longer exists now does nothing and logs a
+  `:hyper.warn/session-cursor-write-dropped` warning, and a default value is
+  not written to it either. Before, such a write, or a render of one of the
+  session's tabs, brought the session back with no tabs and kept it forever.
+  An event stream that starts after its tab's session is gone now ends rather
+  than bringing it back. A session is now only created when a page loads into
+  it.
+
 ## 0.3.0 — 2026-11-14
 
 ### Breaking Changes

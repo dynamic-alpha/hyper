@@ -1,7 +1,8 @@
 (ns hyper.context-test
   (:require [clojure.test :refer [deftest is testing]]
             [hyper.context :as context]
-            [hyper.state :as state]))
+            [hyper.state :as state]
+            [taoensso.telemere :as t]))
 
 (deftest require-context-test
   (testing "throws when called outside request context"
@@ -97,6 +98,16 @@
     (is (= {:x 7} (context/apply-ops {:x 7} [{:kind :init :path [:x] :value 5}]))
         "existing value present → no-op"))
 
+  (testing "an op in a session with no entry does nothing"
+    (let [state {:sessions {"s" {:data {}}}}]
+      (doseq [op [{:kind :update :f (constantly 1)}
+                  {:kind :reset :value 1}
+                  {:kind :cas :old nil :new 1}
+                  {:kind :init :value 1}]]
+        (is (= state (context/apply-ops state [(assoc op :path [:sessions "gone" :data :x])])))
+        (is (= {:sessions {"s" {:data {:x 1}}}}
+               (context/apply-ops state [(assoc op :path [:sessions "s" :data :x])]))))))
+
   (testing "ops are replayed in recorded order"
     (is (= {:x 3}
            (context/apply-ops {:x 0}
@@ -189,6 +200,21 @@
         (state/tab-cursor app tab :x 42)
         (context/flush-overlay! app))
       (is (nil? (live app :x))))))
+
+(deftest flush-drops-writes-to-a-removed-session
+  (testing "writes and defaults buffered for a session removed before the flush
+            do not bring it back; the writes warn"
+    (let [app (atom (assoc-in (state/init-state) [:sessions "s"] {:data {} :tabs #{tab}}))]
+      (with-overlay app
+        (state/session-cursor app "s" :theme "dark")
+        (reset! (state/session-cursor app "s" :user) "u")
+        (swap! app update :sessions dissoc "s")
+        (let [{:keys [signals]} (t/with-signals (context/flush-overlay! app))]
+          (is (not (contains? (:sessions @app) "s")))
+          (is (= [[:sessions "s" :data :user]]
+                 (keep #(when (= :hyper.warn/session-cursor-write-dropped (:id %))
+                          (get-in % [:data :hyper/path]))
+                       signals))))))))
 
 (deftest pre-flush-writes-land-in-one-transition
   (testing "all user writes buffered before the flush commit in a single

@@ -3,7 +3,8 @@
             [clojure.test :refer [deftest is testing]]
             [hyper.state :as state]
             [malli.core :as m]
-            [malli.transform :as mt]))
+            [malli.transform :as mt]
+            [taoensso.telemere :as t]))
 
 (deftest normalize-path-test
   (testing "converts keyword to vector"
@@ -149,6 +150,42 @@
         (is (= 15 @cursor))
         (swap! cursor + 3 2)
         (is (= 20 @cursor))))))
+
+(defn- dropped-writes
+  "The session cursor writes dropped among telemere `signals`."
+  [signals]
+  (filter #(= :hyper.warn/session-cursor-write-dropped (:id %)) signals))
+
+(deftest cursor-write-to-a-missing-session-test
+  (let [app-state* (atom (state/init-state))
+        cursor     (state/session-cursor app-state* "gone" :user)]
+    (testing "a write to a session with no entry does nothing and warns"
+      (doseq [[label write] [["reset!" #(reset! cursor "u")]
+                             ["swap!" #(swap! cursor (constantly "u"))]
+                             ["swap! with an arg" #(swap! cursor str "u")]
+                             ["swap! with args" #(swap! cursor str "u" "v")]
+                             ["swap! with more args" #(swap! cursor str "u" "v" "w")]
+                             ["compare-and-set!" #(is (false? (compare-and-set! cursor nil "u")))]]]
+        (testing label
+          (let [{:keys [signals]} (t/with-signals (write))]
+            (is (= (state/init-state) @app-state*))
+            (is (= [{:hyper/session-id "gone" :hyper/path [:sessions "gone" :data :user]}]
+                   (map :data (dropped-writes signals))))))))
+    (testing "a read gives nil"
+      (is (nil? @cursor)))
+    (testing "a write to a session that exists still lands"
+      (state/get-or-create-session! app-state* "s")
+      (let [cursor (state/session-cursor app-state* "s" :user)]
+        (is (true? (compare-and-set! cursor nil "u")))
+        (is (= "uv" (swap! cursor str "v")))
+        (is (= {:user "uv"} (get-in @app-state* [:sessions "s" :data])))))))
+
+(deftest init-default-in-a-missing-session-test
+  (let [app-state*        (atom (state/init-state))
+        {:keys [signals]} (t/with-signals
+                            (state/session-cursor app-state* "gone" :user "none"))]
+    (is (= (state/init-state) @app-state*) "does nothing")
+    (is (empty? (dropped-writes signals)) "without a warning")))
 
 (deftest cursor-watch-test
   (testing "cursor watchers fire on change"
