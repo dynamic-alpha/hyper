@@ -1,154 +1,132 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-11-16
+
+### Upgrading
+
+Nothing in the documented API was removed, but sessions now behave as
+intended, which an app may notice:
+
+- Sessions end. A session is removed once its last tab has been gone for the
+  disconnect grace period (`:disconnect-grace-ms`, 3 minutes by default), so
+  `h/session-cursor` data no longer outlives a person's tabs. Restore what
+  must last longer, such as sign-in, from your own cookie (see
+  `wrap-rehydrate-session` in the README), or raise `:disconnect-grace-ms`.
+- Tabs belong to their session. A tab's actions, uploads, navigations and
+  event stream are refused once its session cookie is cleared or replaced,
+  and a session cookie the server does not hold gets a new session id. Sign
+  people in with `rotate-session!` and out with `end-session!` (see Features).
+- The session cookie is now `SameSite=Lax`, and `Secure` over HTTPS, and only
+  page responses set it. A cross-site POST, such as an OAuth or SAML
+  `form_post` callback, arrives without it; an app embedded in another site's
+  iframe needs `:session {:cookie {:same-site :none}}`.
+- Hyper's own endpoints refuse requests whose `Sec-Fetch-Site` header is
+  `same-site` or `cross-site`.
+- Render middleware always receives rendered hiccup (or a Ring response) from
+  the handler. It no longer sees a page's render function or view on the
+  page's first render.
+- A write through `h/session-cursor` to a session that no longer exists is
+  dropped, with a `:hyper.warn/session-cursor-write-dropped` warning.
+- `hyper.server/wrap-hyper-context` is replaced by
+  `hyper.ring.middleware/wrap-hyper`, which takes the handler first.
 
 ### Features
 
+- Signing in and out - Actions can rotate or end their session with
+  `effects/rotate-session!` and `effects/end-session!`, and routes (an OAuth
+  or SSO callback, a magic link, a form post) with `hyper.ring`:
+  `(-> (redirect "/") (h.ring/rotate-session! req))`. Rotating gives the
+  session a new id and keeps its data; its open pages reconnect a second or
+  two later with the new cookie and keep their tab state, while a page
+  elsewhere holding the old id gets a fresh session. Ending removes the
+  session and deletes its cookie, and its open pages reload into a fresh
+  session. Both take effect once the action or response is done, so a
+  sign-in form posted or a link clicked from a Hyper page lands on its
+  redirect target.
+  `hyper.test/test-action` reports them as `:session` (`:end` or `:rotate`)
+  in its `:effects`.
+
+- `hyper.ring` - `h.ring/session-id` gives the request's session id when the
+  server holds that session, and `h.ring/endpoint` tells Hyper's own requests
+  (`:action`, `:upload`, `:navigate`, `:events`) apart from page and app
+  routes. A route outside `create-handler` uses `hyper.ring` by wrapping
+  itself in `(-> route (hyper.ring.middleware/wrap-hyper app*))`, with the
+  atom passed to `create-handler` as `:app-state`.
+
+- Session cookie options - `create-handler` takes `:session {:cookie {...}}`,
+  Ring cookie attributes merged over the session cookie's defaults,
+  including `:name`: `(h/create-handler routes :session {:cookie {:name "sid"
+  :same-site :strict}})`. Every page load sets the cookie again, so it
+  expires 7 days after the last visit rather than the first.
+
+- `h/run-in-tabs!` - Runs a function in every open tab, or in those where a
+  predicate is true, with each tab's context, from an action or a background
+  thread: `(h/run-in-tabs! app* #(= user-id (:id @(h/session-cursor :user)))
+  effects/end-session!)`. Its effects act on each tab, including cookies.
+  `effects/rotate-session!` throws in it: rotate in the person's own action
+  or route, so only their browser gets the new id.
+
+- Middleware redirects - A redirect that `:middleware` returns for an action,
+  upload, back/forward navigation or event stream request sends the tab to
+  its `Location` with a full page load, so middleware can refuse a request
+  with `(ring.util.response/redirect "/sign-in")`. A redirect on a page load
+  stays a redirect.
+
 - Testing - `hyper.test/test-action` takes the signal values the client sends
-  with an action, as `:signals` next to the client params:
-  `(ht/test-action result "send" {:signals {:draft "Which funds?"}})`. A
-  signal read in the action gives its value from `:signals`, or its default
-  value. Before, it gave its `"$name"` expression.
-
-- Sessions - `create-handler` takes `:session {:cookie {...}}`, Ring cookie
-  attributes merged over the session cookie's defaults, including `:name` to
-  rename it: `(h/create-handler routes :session {:cookie {:name "sid"
-  :same-site :strict}})`. Every page load now sets the cookie again, so it
-  expires 7 days after the last visit rather than the first. Only pages set
-  it: a route returning a Ring map no longer does. The cookie is now set with
-  `SameSite=Lax` (which Chrome already assumed for a cookie without it), and
-  with `Secure` when the request came over HTTPS (its scheme, or
-  `X-Forwarded-Proto: https`). Pass `:same-site :none` for an app embedded in
-  another site's iframe.
-
-- Ring middleware - A redirect that `:middleware` returns for an action,
-  upload, back/forward navigation or event stream request now sends the tab to
-  its `Location` with a full page load, so middleware such as
-  `wrap-require-sign-in` can refuse a request with
-  `(ring.util.response/redirect "/sign-in")`. Before, an action only logged
-  the response, and the browser followed the redirect out of sight. A redirect
-  on a page load stays a redirect, and other responses pass through unchanged.
-
-- Sessions - Actions can end or rotate their session. `effects/end-session!`
-  removes the session's data and deletes the session cookie, for signing out;
-  the session's open pages reconnect and reload into a fresh session.
-  `effects/rotate-session!` gives the session a new id, keeping its data and
-  its tabs, and sets the cookie to it, for signing in. Both take effect once
-  the action has run, and `hyper.test/test-action` reports them as `:session`
-  (`:end` or `:rotate`) in its `:effects`. A note that rotating has the
-  session's open pages reconnect a second or two after the response: in the
-  same browser they carry the new cookie and keep their tab state, and a page
-  elsewhere holding the old id reloads into a fresh session. A note too that
-  a page loaded with a session cookie the server does not know now gets a new
-  session id rather than taking on the cookie's.
-
-- Tabs - `h/run-in-tabs!` runs a function in every open tab, or in those where
-  a predicate is true, with each tab's context, from an action or a
-  background thread: `(h/run-in-tabs! app* #(= user-id (:id
-  @(h/session-cursor :user))) effects/end-session!)`. Its effects act on each
-  tab, and the browser fetches its cookies from Hyper.
-  `effects/rotate-session!` throws in it: rotate in the person's own action or
-  route (`h.ring/rotate-session!`), so only their browser gets the new id, and
-  end the session to shut other browsers out. A script from
-  `execute-script!` for a tab whose connection dropped is now sent when it
-  reconnects; before, it was dropped.
-
-- Sessions - Routes can sign in and out with `hyper.ring`, for an OAuth or
-  SSO callback, a magic link or a form post: `(-> (redirect "/")
-  (h.ring/rotate-session! req))` gives the request's session a new id, and
-  its open pages reconnect with the new cookie once the response is written,
-  keeping their tab state. `h.ring/end-session!` ends it. Both do nothing
-  when the server holds no session for the request. A reconnect is a
-  background request a second or two later, so a form posted or a link
-  clicked from a Hyper page lands on the redirect target, and a rotated
-  session none of whose pages come back within the disconnect grace period
-  is removed. `h.ring/session-id` and `h.ring/endpoint` let middleware read
-  the request's session and tell Hyper's own requests apart. A route outside
-  `create-handler` uses them by wrapping itself in
-  `(-> route (hyper.ring.middleware/wrap-hyper app*))`, with the atom passed
-  to `create-handler` as `:app-state`.
+  with an action: `(ht/test-action result "send" {:signals {:draft "Which
+  funds?"}})`. A signal not given reads as its default value. Before, it gave
+  its `"$name"` expression.
 
 ### Bug Fixes
 
-- Session leaks - Fixes an issue where sessions were never cleaned up. A session
-  is now removed once its last tab has been gone for the disconnect grace period
-  (`:disconnect-grace-ms`, 3 minutes by default). A note that this means
-  `h/session-cursor` content will be lost when a person closes their last tab
-  and comes back later. This was always intended but did not behave this way.
+- Sessions - A tab belongs to the session it was loaded in: its actions,
+  uploads, navigations and event stream are refused once the session cookie
+  is cleared or replaced, so signing a person out stops their open tabs.
+  Before, any request naming the tab ran.
 
-- Page loads - A page whose event stream never connects (bots, link previews,
-  `curl`, JavaScript turned off) is now removed after the disconnect grace
-  period, with its session when it was the last tab. Before, it was kept
-  forever.
+- Session and tab leaks - Sessions were never removed, and every request
+  could leave a tab behind. Now a session is removed a grace period after
+  its last tab, or after it was left with no tabs; a page whose event stream
+  never connects (bots, link previews, `curl`) is removed after the grace
+  period; a route returning a Ring map (an API route, a redirect) leaves no
+  tab or new session behind; and a late session-cursor write or render no
+  longer brings a removed session back.
 
-- Sessions - A tab belongs to the session it was loaded in. Its actions,
-  uploads, back/forward navigations and event stream are refused with a 404
-  once the `hyper-session` cookie is cleared or replaced, so signing a person
-  out stops their open tabs.
+- Reconnecting - A page whose tab the server no longer has (after a server
+  restart, a grace period that ran out, or an ended session) now reloads
+  itself when its event stream reconnects. Before, it stayed at
+  "reconnecting" until reloaded by hand. Pages of one browser loaded at the
+  same time without a session now end up in one session.
 
-- Render middleware - A layout middleware that wraps the handler's result
-  now works with form-2 and form-3 pages. Before, the page's render function
-  or view ended up inside the hiccup and the render failed. Middleware now
-  always receives rendered hiccup (or a Ring response) from the handler,
-  including on a page's first render.
-
-- Reactive regions - A region drawn again with different deps now watches its
-  new deps and releases the old ones. Before, it kept watching the deps it was
-  first drawn with, so a nested `h/reactive` whose deps depend on its parent
-  missed changes. A region's re-render now also removes the nested regions it
-  no longer draws, and a nested region without a `:key` keeps its id when its
-  parent re-renders on its own. Deps are compared regardless of order, and a
-  region whose deps change while its tab is disconnected keeps its watches
-  until the tab reconnects.
-
-- Reactive regions - A region listing the same source twice in its deps now
-  releases it when the region is removed. Before, the source was never
-  disposed.
-
-- clj-kondo hooks - `h/reactive` and `h/async` accept deps given as a symbol
-  or an expression, such as `(h/reactive deps ...)`. Before, the hooks
-  reported an error unless deps was a literal vector. A map, keyword, string,
-  number, boolean or nil in place of deps is still reported.
-
-- Ring responses - A GET route whose handler or render middleware returns a
-  Ring map (an API route, a redirect) no longer leaves a tab behind, nor a
-  session that request created. Before, every such request added a tab and,
-  without a session cookie, a session, kept until the disconnect grace period
-  ran out. A page load is unchanged, as is a tab that existed before the
-  request.
-
-- Reconnecting - A page whose tab the server no longer has now reloads itself
-  when its event stream reconnects, into a new tab. This happens after a
-  server restart, once the disconnect grace period has run out, or when the
-  tab's session was replaced while it was away. Before, the page stayed at
-  "reconnecting" until it was reloaded by hand. Pages of one browser loaded at
-  the same time without a session the server holds each start their own
-  session, while the browser keeps only the last session cookie; a page whose
-  event stream has not yet connected now joins the session of the cookie its
-  stream arrives with, rather than being refused.
-
-- Session cursors - A write through `h/session-cursor` to a session that no
-  longer exists now does nothing and logs a
-  `:hyper.warn/session-cursor-write-dropped` warning, and a default value is
-  not written to it either. Before, such a write, or a render of one of the
-  session's tabs, brought the session back with no tabs and kept it forever.
-  An event stream that starts after its tab's session is gone now ends rather
-  than bringing it back. A session is now only created when a page loads into
-  it.
-
-- Reaping - A tab whose event stream connects just as its disconnect grace
-  period runs out is now either kept, with its state, or reaped with its
-  stream ended, and the page reloads when it reconnects. Before, the reaper could tear the tab
-  down while its new stream was attaching, leaving the page connected to a
-  tab the server no longer had. This also applied to a page whose stream
-  first connected about one grace period after it was served.
+- Reaping - A tab whose event stream connects just as its grace period runs
+  out is either kept, with its state, or reaped with its stream ended and the
+  page reloaded. Before, the reaper could tear the tab down while its stream
+  was attaching.
 
 - Cross-site requests - Hyper's actions, uploads, navigations, event streams
-  and cookie requests now answer a request whose `Sec-Fetch-Site` header is
-  `same-site` or `cross-site` with a 403, before the app's `:middleware`
-  runs. Before, another site could send them. A request with `same-origin`,
-  `none` or no such header is served as before, and page routes are not
-  affected.
+  and cookie requests answer a request whose `Sec-Fetch-Site` is `same-site`
+  or `cross-site` with a 403, before the app's `:middleware` runs. This needs
+  no configuration behind a proxy. Page routes are not affected.
+
+- Render middleware - A layout middleware that wraps the handler's result now
+  works with form-2 and form-3 pages. Before, the page's render function or
+  view ended up inside the hiccup and the render failed. A page's setup or
+  `:mount` runs once, even when middleware calls the handler twice.
+
+- Reactive regions - A region drawn again with different deps now watches its
+  new deps and releases the old ones, in any order; before, it kept watching
+  the deps it was first drawn with. A region's re-render removes the nested
+  regions it no longer draws, a nested region without a `:key` keeps its id,
+  a region listing the same source twice releases it, and a region whose deps
+  change while its tab is disconnected keeps its watches until it
+  reconnects.
+
+- clj-kondo hooks - `h/reactive` and `h/async` accept deps given as a symbol
+  or an expression, such as `(h/reactive deps ...)`. A map, keyword, string,
+  number, boolean or nil in place of deps is still reported.
+
+- `execute-script!` - A script for a tab whose connection dropped is sent
+  when it reconnects. Before, it was dropped.
 
 ## 0.3.0 — 2026-11-14
 
