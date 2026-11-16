@@ -52,6 +52,12 @@
   (.offer q {:type :shutdown})
   nil)
 
+(defn enqueue-close!
+  "Signal the renderer to render, send its scripts, then shut down."
+  [^LinkedBlockingQueue q]
+  (.offer q {:type :close})
+  nil)
+
 ;; ---------------------------------------------------------------------------
 ;; Consumer API (blocking, single-consumer)
 ;; ---------------------------------------------------------------------------
@@ -65,6 +71,7 @@
   (let [n (.size buf)]
     (loop [i        0
            shutdown false
+           close    false
            full?    false
            ids      (transient #{})
            before   (transient [])
@@ -73,18 +80,20 @@
       (if (< i n)
         (let [evt (.get buf i)]
           (case (:type evt)
-            :shutdown    (recur (inc i) true     full? ids                             before scripts render?)
-            :full-render (recur (inc i) shutdown true  ids                             before scripts true)
-            :partial     (recur (inc i) shutdown full? (conj! ids (:component-id evt)) before scripts true)
+            :shutdown    (recur (inc i) true     close full? ids                             before scripts render?)
+            :close       (recur (inc i) shutdown true  full? ids                             before scripts render?)
+            :full-render (recur (inc i) shutdown close true  ids                             before scripts true)
+            :partial     (recur (inc i) shutdown close full? (conj! ids (:component-id evt)) before scripts true)
             :script      (if render?
-                           (recur (inc i) shutdown full? ids before (conj! scripts (:js evt)) render?)
-                           (recur (inc i) shutdown full? ids (conj! before (:js evt)) scripts render?))
+                           (recur (inc i) shutdown close full? ids before (conj! scripts (:js evt)) render?)
+                           (recur (inc i) shutdown close full? ids (conj! before (:js evt)) scripts render?))
             ;; Unknown event types are silently skipped
-            (recur (inc i) shutdown full? ids before scripts render?)))
+            (recur (inc i) shutdown close full? ids before scripts render?)))
         (let [before  (persistent! before)
               scripts (persistent! scripts)]
           {:idle?                 false
            :shutdown?             shutdown
+           :close?                close
            :full-render?          full?
            :dirty-ids             (persistent! ids)
            :scripts-before-render (if render? before [])
@@ -95,6 +104,7 @@
 
    Returns a categorized map:
      {:shutdown?    boolean   — true if a :shutdown event was present
+      :close?       boolean   — true if a :close event was present
       :full-render? boolean   — true if any :full-render event was present
       :dirty-ids   #{...}    — set of component IDs needing partial render
       :scripts-before-render [...] — JS strings enqueued before the batch's
@@ -117,6 +127,7 @@
      (if (nil? first-event)
        {:idle?                 true
         :shutdown?             false
+        :close?                false
         :full-render?          false
         :dirty-ids             #{}
         :scripts-before-render []

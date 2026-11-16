@@ -12,15 +12,18 @@
 
 (defn- app
   "A hyper handler, with `opts`, and its app-state.  It has a page at / showing
-   the session's :user; GET /sign-in and /page-sign-in (a page route) rotate
-   the session and redirect to /; POST /sign-out ends it; POST /whoami
-   answers with the request's `h.ring/session-id`.  Its middleware records
-   `h.ring/endpoint` of each request by URI in `endpoints`."
+   the session's :user and the tab's :draft; GET /sign-in and /page-sign-in
+   (a page route) rotate the session and redirect to /; POST /sign-out ends
+   it; POST /whoami answers with the request's `h.ring/session-id`.  Its
+   middleware records `h.ring/endpoint` of each request by URI in
+   `endpoints`."
   [endpoints & opts]
   (let [app* (atom (state/init-state))]
     [(apply h/create-handler
             [["/" {:name :home
-                   :get  (fn [_] [:p#user (str "user:" @(h/session-cursor :user))])}]
+                   :get  (fn [_] [:div
+                                  [:p#user (str "user:" @(h/session-cursor :user))]
+                                  [:p#draft (str "draft:" @(h/tab-cursor :draft))]])}]
              ["/sign-in" {:hyper/disabled? true
                           :get             (fn [req] (-> (response/redirect "/") (h.ring/rotate-session! req)))}]
              ["/page-sign-in" {:name :page-sign-in
@@ -71,6 +74,15 @@
 (defn- written [{:keys [out]}]
   (.toString ^java.io.ByteArrayOutputStream out "UTF-8"))
 
+(defn- wait-for-written
+  "True once the stream `conn` has written `s`, within 2 seconds."
+  [conn s]
+  (loop [i 0]
+    (cond
+      (str/includes? (written conn) s) true
+      (< i 200)                        (do (Thread/sleep 10) (recur (inc i)))
+      :else                            false)))
+
 (defn- ended? [{:keys [done]}]
   (not= :timeout (deref done 2000 :timeout)))
 
@@ -97,12 +109,13 @@
 
 (defn- signed-in-session
   "Load tabs T1 and T2 into one session holding :user alice, with T1's stream
-   open.  Returns `[cookie session-id t1]`."
+   open and its tab cursor :draft \"hello\".  Returns `[cookie session-id t1]`."
   [handler app*]
   (let [cookie     (cookie-of (load-page! handler nil "T1"))
         session-id (session-id-of cookie)]
     (load-page! handler cookie "T2")
     (swap! app* assoc-in [:sessions session-id :data :user] "alice")
+    (swap! app* assoc-in [:tabs "T1" :data :draft] "hello")
     [cookie session-id (connect! handler app* cookie "T1")]))
 
 ;; ---------------------------------------------------------------------------
@@ -111,7 +124,7 @@
 
 (defn- assert-rotated
   "Asserts that `response`, to a route that rotated session `session-id`
-   of tabs T1 (stream `t1`) and T2, rotated it."
+   of tabs T1 (stream `t1`) and T2 (see `signed-in-session`), rotated it."
   [handler app* cookie session-id t1 response]
   (let [new-cookie (cookie-of response)
         new-id     (session-id-of new-cookie)]
@@ -123,21 +136,35 @@
       (is (not= session-id new-id))
       (is (= #{"path=/" "httponly" "max-age=604800" "samesite=lax"}
              (attributes (set-cookie response)))))
-    (testing "the session has the new id and its data before the response is written"
+    (testing "the session has the new id, its data and its tabs before the response is written"
       (is (not (contains? (:sessions @app*) session-id)))
       (is (= {:user "alice"} (get-in @app* [:sessions new-id :data])))
-      (is (contains? (:tabs @app*) "T2") "while its tabs wait for the response"))
+      (is (= #{"T1" "T2"} (get-in @app* [:sessions new-id :tabs])))
+      (is (some? (get-in @app* [:tabs "T1" :renderer])) "its open stream waits for the response"))
     (written! response)
-    (testing "then every tab of the session reloads and is removed"
+    (testing "then each open stream of the session is told to reconnect, and ends"
       (is (ended? t1))
-      (is (str/includes? (written t1) "window.location.reload()"))
-      (is (empty? (:tabs @app*))))
+      (is (str/includes? (written t1) "window.hyper.reconnect()"))
+      (is (not (str/includes? (written t1) "window.location.reload()"))))
+    (testing "the tabs are kept, with their state"
+      (is (= #{"T1" "T2"} (set (keys (:tabs @app*)))))
+      (is (= "hello" (get-in @app* [:tabs "T1" :data :draft]))))
     (testing "the old id names no session"
       (is (= #{new-id} (set (keys (:sessions @app*))))))
+    (testing "a reconnect with the old cookie is refused with a reload"
+      (let [events (request handler cookie :get "/hyper/events" "tab-id=T1")]
+        (is (string? (:body events)) "no stream is opened")
+        (is (str/includes? (:body events) "window.location.reload()"))))
+    (testing "a reconnect with the new cookie resumes the tab, with its state"
+      (let [t1 (connect! handler app* new-cookie "T1")]
+        (is (wait-for-written t1 "user:alice"))
+        (is (wait-for-written t1 "draft:hello"))
+        (server/cleanup-tab! app* "T1")
+        (is (ended? t1))))
     (testing "a page loaded with the new cookie is of the session, with its data"
       (let [page (load-page! handler new-cookie "B")]
         (is (= new-cookie (cookie-of page)))
-        (is (= #{"B"} (get-in @app* [:sessions new-id :tabs])))
+        (is (= #{"T2" "B"} (get-in @app* [:sessions new-id :tabs])))
         (is (str/includes? (:body page) "user:alice"))))
     (testing "a page loaded with the old cookie gets a new, empty session"
       (let [page (load-page! handler cookie "A")
@@ -170,22 +197,21 @@
     (is (not (contains? (:sessions @app*) (session-id-of cookie))))
     (written! response)))
 
-(defn- rotated-from-route
-  "Rotate a signed-in session from a route, its response written.  Returns
-   `[new-cookie new-id tabless-at]`."
+(defn- rotated-by-a-page-route
+  "Rotate, from a page route, the session of a browser with no other page
+   open, its response written.  Returns `[new-cookie new-id tabless-at]`."
   [handler app*]
-  (let [[cookie _ t1] (signed-in-session handler app*)
-        response      (written! (request handler cookie :get "/sign-in"))
-        new-cookie    (cookie-of response)
-        new-id        (session-id-of new-cookie)]
-    (is (ended? t1))
-    (is (= #{} (get-in @app* [:sessions new-id :tabs])))
+  (let [response   (written! (request handler nil :get "/page-sign-in" "tab-id=P"))
+        new-cookie (cookie-of response)
+        new-id     (session-id-of new-cookie)]
+    (is (= #{} (get-in @app* [:sessions new-id :tabs])) "the page route's tab is gone")
+    (is (empty? (:tabs @app*)))
     [new-cookie new-id (get-in @app* [:sessions new-id :tabless-at])]))
 
 (deftest test-reap-a-session-rotated-from-a-route
-  (testing "a session whose redirect is never followed is removed after the grace period"
+  (testing "a session left without tabs, whose redirect is never followed, is removed after the grace period"
     (let [[handler app*]        (app (atom {}))
-          [_ new-id tabless-at] (rotated-from-route handler app*)
+          [_ new-id tabless-at] (rotated-by-a-page-route handler app*)
           grace-ms              (long (:disconnect-grace-ms @app*))]
       (is (int? tabless-at))
       (server/reap-disconnected-tabs! app* (+ tabless-at grace-ms -1))
@@ -194,19 +220,19 @@
       (is (not (contains? (:sessions @app*) new-id)) "removed once it has passed")))
   (testing "a session whose page loads in time is kept"
     (let [[handler app*]                 (app (atom {}))
-          [new-cookie new-id tabless-at] (rotated-from-route handler app*)
+          [new-cookie new-id tabless-at] (rotated-by-a-page-route handler app*)
           grace-ms                       (long (:disconnect-grace-ms @app*))]
       (load-page! handler new-cookie "B")
       (is (= #{"B"} (get-in @app* [:sessions new-id :tabs])))
       (is (nil? (get-in @app* [:sessions new-id :tabless-at])) "the page's tab clears the stamp")
       (let [b (connect! handler app* new-cookie "B")]
         (server/reap-disconnected-tabs! app* (+ tabless-at (* 2 grace-ms)))
-        (is (= {:user "alice"} (get-in @app* [:sessions new-id :data])))
+        (is (contains? (:sessions @app*) new-id))
         (server/cleanup-tab! app* "B")
         (is (ended? b)))))
   (testing "a session a stream follows the cookie into is kept"
     (let [[handler app*]                 (app (atom {}))
-          [new-cookie new-id tabless-at] (rotated-from-route handler app*)
+          [new-cookie new-id tabless-at] (rotated-by-a-page-route handler app*)
           grace-ms                       (long (:disconnect-grace-ms @app*))]
       ;; A page loaded before the browser had the new cookie.
       (load-page! handler nil "X")
@@ -214,9 +240,19 @@
         (is (= #{"X"} (get-in @app* [:sessions new-id :tabs])))
         (is (nil? (get-in @app* [:sessions new-id :tabless-at])))
         (server/reap-disconnected-tabs! app* (+ tabless-at (* 2 grace-ms)))
-        (is (= {:user "alice"} (get-in @app* [:sessions new-id :data])))
+        (is (contains? (:sessions @app*) new-id))
         (server/cleanup-tab! app* "X")
-        (is (ended? x))))))
+        (is (ended? x)))))
+  (testing "a session whose pages never reconnect is removed with their tabs after the grace period"
+    (let [[handler app*] (app (atom {}))
+          [cookie _ t1]  (signed-in-session handler app*)
+          new-id         (session-id-of (cookie-of (written! (request handler cookie :get "/sign-in"))))
+          grace-ms       (long (:disconnect-grace-ms @app*))]
+      (is (ended? t1))
+      (is (nil? (get-in @app* [:sessions new-id :tabless-at])))
+      (server/reap-disconnected-tabs! app* (+ (System/currentTimeMillis) grace-ms))
+      (is (empty? (:tabs @app*)))
+      (is (empty? (:sessions @app*))))))
 
 ;; ---------------------------------------------------------------------------
 ;; end-session!
@@ -232,10 +268,15 @@
       (let [header (set-cookie response)]
         (is (str/starts-with? header "hyper-session=;"))
         (is (contains? (attributes header) "max-age=0"))))
-    (testing "the session's tabs reload and are removed"
+    (testing "the session's open streams are told to reconnect, and end"
       (is (ended? t1))
-      (is (str/includes? (written t1) "window.location.reload()"))
-      (is (empty? (:tabs @app*))))
+      (is (str/includes? (written t1) "window.hyper.reconnect()"))
+      (is (not (str/includes? (written t1) "window.location.reload()"))))
+    (testing "its tabs are removed, so their pages reload when they reconnect"
+      (is (empty? (:tabs @app*)))
+      (doseq [c [cookie nil]]
+        (is (str/includes? (str (:body (request handler c :get "/hyper/events" "tab-id=T1")))
+                           "window.location.reload()"))))
     (testing "the session is gone"
       (is (not (contains? (:sessions @app*) session-id)))
       (is (empty? (:sessions @app*))))))
@@ -326,15 +367,17 @@
         (is (nil? (:cookies response)))
         (is (not= session-id new-id))
         (is (= {:user "alice"} (get-in @app* [:sessions new-id :data])))
+        (is (= #{"T1" "T2"} (get-in @app* [:sessions new-id :tabs])))
         (written! response)
         (is (ended? t1))
-        (is (empty? (:tabs @app*)))
+        (is (str/includes? (written t1) "window.hyper.reconnect()"))
         (testing "and end-session!"
           (let [response (outside {:request-method :post
                                    :uri            "/out/sign-out"
                                    :headers        {"cookie" (str "hyper-session=" new-id)}})]
             (is (str/starts-with? (set-cookie response) "hyper-session=;"))
-            (is (empty? (:sessions @app*)))))))))
+            (is (empty? (:sessions @app*)))
+            (is (empty? (:tabs @app*)))))))))
 
 (deftest test-without-wrap-hyper
   (doseq [[fn-name f] [["rotate-session!" #(h.ring/rotate-session! {:status 200} %)]

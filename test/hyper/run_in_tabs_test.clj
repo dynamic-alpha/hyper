@@ -17,9 +17,9 @@
   (atom (fn [])))
 
 (defn- app
-  "A hyper handler with a page at / showing the session's :user, with an
-   action running `@admin-action`, and a page at /other; with `opts`.  And
-   its app-state."
+  "A hyper handler with a page at / showing the session's :user and the
+   tab's :draft, with an action running `@admin-action`, and a page at
+   /other; with `opts`.  And its app-state."
   [& opts]
   (let [app* (atom (state/init-state))]
     [(apply h/create-handler
@@ -27,6 +27,7 @@
                    :get  (fn [_]
                            [:div
                             [:p#user (str "user:" @(h/session-cursor :user))]
+                            [:p#draft (str "draft:" @(h/tab-cursor :draft))]
                             [:button {:data-on:click (h/action {:as "admin"} (@admin-action))} "go"]])}]
              ["/other" {:name :other :get (fn [_] [:div "other"])}]]
             :app-state app*
@@ -293,79 +294,89 @@
       (is (= 1 (count @ran)))
       (is (not (contains? (:sessions @app*) id-a)))
       (is (= #{"B1"} (set (keys (:tabs @app*))))))
-    (testing "the tab f ran in deletes the session cookie, then reloads"
+    (testing "the tab f ran in deletes the session cookie, then reconnects"
       (is (ended? (if (= ["A1"] @ran) a1 a2)))
       (let [out    (written (if (= ["A1"] @ran) a1 a2))
             header (set-cookie (post-token! handler cookie-a (token-of out)) "hyper-session")]
-        (is (str/includes? out "window.location.reload()"))
-        (is (< (str/index-of out "hyper/cookies") (str/index-of out "window.location.reload()")))
+        (is (str/includes? out "window.hyper.reconnect()"))
+        (is (not (str/includes? out "window.location.reload()")))
+        (is (< (str/index-of out "hyper/cookies") (str/index-of out "window.hyper.reconnect()")))
         (is (str/starts-with? header "hyper-session=;"))
         (is (contains? (attributes header) "max-age=0"))))
-    (testing "the other tab reloads"
+    (testing "the other tab reconnects"
       (is (ended? (if (= ["A1"] @ran) a2 a1)))
-      (is (str/includes? (written (if (= ["A1"] @ran) a2 a1)) "window.location.reload()")))
+      (is (str/includes? (written (if (= ["A1"] @ran) a2 a1)) "window.hyper.reconnect()")))
+    (testing "their pages reload when they reconnect"
+      (doseq [t ["A1" "A2"]]
+        (is (str/includes? (str (:body (request handler nil {:request-method :get
+                                                             :uri            "/hyper/events"
+                                                             :query-string   (str "tab-id=" t)})))
+                           "window.location.reload()"))))
     (testing "the other session is untouched"
       (is (= {:data {:user "bob"} :tabs #{"B1"}} (get-in @app* [:sessions id-b])))
-      (is (not (str/includes? (written b1) "reload"))))
+      (is (not (str/includes? (written b1) "window.hyper"))))
     (testing "ending it again does nothing"
       (h/run-in-tabs! app* effects/end-session!)
       (is (empty? (:sessions @app*))))
     (is (ended? b1))))
 
-(deftest test-rotate-session-in-a-tab
-  (let [[handler app*] (app)
-        cookie         (cookie-of (load-page! handler nil "T1"))
-        old-id         (session-id-of cookie)
-        _              (load-page! handler cookie "T2")
-        _              (swap! app* assoc-in [:sessions old-id :data :user] "alice")
-        _              (swap! app* assoc-in [:tabs "T1" :data :me] true)
-        t1             (connect! handler app* cookie "T1")
-        t2             (connect! handler app* cookie "T2")]
-    (h/run-in-tabs! app* #(true? @(h/tab-cursor :me))
-                    (fn []
-                      (effects/rotate-session!)
-                      (reset! (h/session-cursor :rotated) true)
-                      (effects/navigate! :other)))
-    (let [new-id (get-in @app* [:tabs "T1" :session-id])]
-      (testing "the tab moves to a new id, with the session's data"
-        (is (not= old-id new-id))
-        (is (= {:data {:user "alice" :rotated true} :tabs #{"T1"}} (get-in @app* [:sessions new-id])))
-        (is (not (contains? (:sessions @app*) old-id))))
-      (testing "the tab is sent a script that collects the new cookie, then changes the URL"
-        (is (wait-for-written t1 "pushState"))
-        (let [out (written t1)]
-          (is (< (str/index-of out "hyper/cookies") (str/index-of out "pushState")))
-          (testing "the other tab waits for the cookie"
-            (is (contains? (:tabs @app*) "T2"))
-            (is (not (ended? t2))))
-          (let [token    (token-of out)
-                response (post-token! handler cookie token)
-                header   (set-cookie response "hyper-session")]
-            (testing "collecting it, with the old cookie, sets the new one"
-              (is (= 204 (:status response)))
-              (is (= (str "hyper-session=" new-id) (cookie-of response)))
-              (is (= #{"path=/" "httponly" "max-age=604800" "samesite=lax"} (attributes header))))
-            (testing "then the session's other tab reloads and is removed"
-              (is (ended? t2))
-              (is (str/includes? (written t2) "window.location.reload()"))
-              (is (= #{"T1"} (set (keys (:tabs @app*))))))
-            (testing "a token works once"
-              (is (= 404 (:status (post-token! handler cookie token)))))))))
+(deftest test-rotate-session-in-a-tab-throws
+  (let [[handler app*]    (app)
+        cookie            (cookie-of (load-page! handler nil "T1"))
+        old-id            (session-id-of cookie)
+        _                 (load-page! handler cookie "T2")
+        _                 (swap! app* assoc-in [:sessions old-id :data :user] "alice")
+        t1                (connect! handler app* cookie "T1")
+        t2                (connect! handler app* cookie "T2")
+        ran               (atom [])
+        caught            (atom [])
+        {:keys [signals]} (t/with-signals
+                            (h/run-in-tabs! app* (fn []
+                                                   (swap! ran conj (:hyper/tab-id context/*request*))
+                                                   (try
+                                                     (effects/rotate-session!)
+                                                     (catch clojure.lang.ExceptionInfo e
+                                                       (swap! caught conj e)
+                                                       (throw e)))
+                                                   (reset! (h/tab-cursor :after) true))))]
+    (testing "the call site sees it, in each tab"
+      (is (= #{"T1" "T2"} (set @ran)))
+      (is (= 2 (count @caught)))
+      (let [e (first @caught)]
+        (is (str/includes? (ex-message e) "run-in-tabs!"))
+        (is (str/includes? (ex-message e) "hyper.ring/rotate-session!"))
+        (is (str/includes? (ex-message e) "end-session!"))
+        (is (= (first @ran) (:hyper/tab-id (ex-data e))))))
+    (testing "the error is logged, with its message, for each tab"
+      (let [logged (filter #(= :hyper.error/run-in-tabs (:id %)) signals)]
+        (is (= 2 (count logged)))
+        (is (every? #(str/includes? (ex-message (:error %)) "rotate-session! can't be called in run-in-tabs!")
+                    logged))))
+    (testing "the session is not rotated, and nothing after the throw ran"
+      (is (= {:data {:user "alice"} :tabs #{"T1" "T2"}} (get-in @app* [:sessions old-id])))
+      (is (= 1 (count (:sessions @app*))))
+      (is (every? #(= old-id (get-in @app* [:tabs % :session-id])) ["T1" "T2"]))
+      (is (empty? (:cookie-tokens @app*)))
+      (is (nil? (get-in @app* [:tabs "T1" :data :after]))))
+    (testing "the tabs' streams stay open"
+      (is (not (ended? t1)))
+      (is (not (str/includes? (written t1) "window.hyper"))))
     (server/cleanup-tab! app* "T1")
-    (is (ended? t1))))
+    (server/cleanup-tab! app* "T2")
+    (is (ended? t1))
+    (is (ended? t2))))
 
-(deftest test-rotate-session-of-a-tab-without-a-stream
-  (let [[handler app*] (app)
-        cookie         (cookie-of (load-page! handler nil "T1"))
-        _              (load-page! handler cookie "T2")
-        _              (swap! app* assoc-in [:tabs "T1" :data :me] true)
-        t2             (connect! handler app* cookie "T2")]
-    (h/run-in-tabs! app* #(true? @(h/tab-cursor :me)) effects/rotate-session!)
-    (testing "the session's other tabs reload at once"
-      (is (ended? t2))
-      (is (= #{"T1"} (set (keys (:tabs @app*))))))
-    (testing "the tab keeps the script collecting the new cookie"
-      (is (token-of (first (get-in @app* [:tabs "T1" :queued-scripts])))))))
+(deftest test-rotate-session-does-not-stop-the-other-tabs
+  (let [app*              (test-app {"A1" ["A" {:n 1} {}] "A2" ["A" {:n 2} {}] "B1" ["B" {:n 3} {}]})
+        {:keys [signals]} (t/with-signals
+                            (h/run-in-tabs! app* (fn []
+                                                   (if (= 1 @(h/tab-cursor :n))
+                                                     (effects/rotate-session!)
+                                                     (reset! (h/tab-cursor :ran) true)))))]
+    (is (= 1 (count (filter #{:hyper.error/run-in-tabs} (signal-ids signals)))))
+    (is (true? (get-in @app* [:tabs "A2" :data :ran])))
+    (is (true? (get-in @app* [:tabs "B1" :data :ran])))
+    (is (= #{"A" "B"} (set (keys (:sessions @app*)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Cookies

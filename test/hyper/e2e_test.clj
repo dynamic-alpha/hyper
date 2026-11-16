@@ -361,13 +361,16 @@
    [:button#retry {:data-on:click (h/reconnect)} "Retry"]])
 
 (defn- sign-out-get [_]
-  (let [user* (h/session-cursor :user "none")]
+  (let [user* (h/session-cursor :user "none")
+        note* (h/tab-cursor :note "")]
     [:div
      [:h1 "Test Sign Out"]
      [:button#sign-in {:data-on:click (h/action (reset! user* "alice"))} "Sign in"]
      [:button#sign-in-rotating {:data-on:click (h/action (reset! user* "alice") (effects/rotate-session!))}
       "Sign in with a new session id"]
      [:button#sign-out {:data-on:click (h/action (effects/end-session!))} "Sign out"]
+     [:button#take-note {:data-on:click (h/action (reset! note* "kept"))} "Take a note"]
+     [:span#note @note*]
      [:span#user @user*]]))
 
 (defn- admin-get [_]
@@ -486,12 +489,13 @@
     {:post (fn [req]
              (-> {:status 302 :headers {"Location" "/slow-redirect?from=sign-out"} :body ""}
                  (h.ring/end-session! req)))}]
-   ;; Slow, so the session's tabs are told to reload while the browser is
-   ;; still following the redirect.
+   ;; Slow, so the session's pages are told to reconnect while the browser
+   ;; is still following the redirect, which ends within their reconnect
+   ;; delay.
    ["/slow-redirect"
     {:hyper/disabled? true
      :get             (fn [req]
-                        (Thread/sleep 1000)
+                        (Thread/sleep 500)
                         {:status  302
                          :headers {"Location" (str "/sign-out?landed=" (get-in req [:query-params "from"]))}
                          :body    ""})}]])
@@ -2020,8 +2024,14 @@
   [ctx]
   (some #(when (= "hyper-session" (.name ^Cookie %)) (.value ^Cookie %)) (.cookies ctx)))
 
-(deftest ^:e2e rotate-session-reloads-the-sessions-other-tabs-test
-  (testing "rotating the session keeps the acting tab, and reloads the others into the new id or a fresh session"
+(defn- stream-reattached?
+  "Whether tab `tab-id` has an open stream other than the one of `renderer`."
+  [tab-id renderer]
+  (let [current (get-in @@test-state* [:tabs tab-id :renderer])]
+    (and (some? current) (not (identical? current renderer)))))
+
+(deftest ^:e2e rotate-session-keeps-the-sessions-tabs-test
+  (testing "rotating the session keeps its tabs and their state in the person's browser, and sends a planted tab to a fresh session"
     (let [browser-info (launch-browser)
           attacker-ctx (new-context browser-info)
           attacker     (new-page attacker-ctx)
@@ -2044,33 +2054,45 @@
               (let [t (tab-id)]
                 (is (wait-for-pred #(some? (get-in @@test-state* [:tabs t :renderer])))))))
           (is (= planted (session-cookie-value ctx)) "the person's tabs joined the planted session")
-          (let [page1-tab (w/with-page page1 (tab-id))
-                page2-tab (w/with-page page2 (tab-id))]
+          (w/with-page page2
+            (w/click "#take-note")
+            (is (wait-for-text "#note" "kept")))
+          (let [page1-tab      (w/with-page page1 (tab-id))
+                page2-tab      (w/with-page page2 (tab-id))
+                attacker-tab   (w/with-page attacker (tab-id))
+                page1-renderer (get-in @@test-state* [:tabs page1-tab :renderer])
+                page2-renderer (get-in @@test-state* [:tabs page2-tab :renderer])]
             (doseq [page [attacker page1 page2]]
               (w/with-page page
                 (eval-js "window.__beforeReload = true")))
             (w/with-page page1
               (w/click "#sign-in-rotating")
               (is (wait-for-text "#user" "alice")))
-            (w/with-page page2
-              (is (wait-for-pred #(nil? (eval-js "window.__beforeReload"))) "the other tab reloaded")
-              (wait-for-sse)
-              (is (wait-for-text "#user" "alice") "into the rotated session, with its data")
-              (is (not= page2-tab (tab-id)) "in a new tab"))
-            (w/with-page attacker
-              (is (wait-for-pred #(nil? (eval-js "window.__beforeReload"))) "the attacker's tab reloaded")
-              (wait-for-sse)
-              (is (wait-for-text "#user" "none") "into a fresh session"))
-            (w/with-page page1
-              (is (true? (eval-js "window.__beforeReload")) "the acting tab did not reload")
-              (is (= page1-tab (tab-id))))
+            (testing "the person's tabs reconnect into the rotated session, keeping their state"
+              (doseq [[page t renderer] [[page1 page1-tab page1-renderer] [page2 page2-tab page2-renderer]]]
+                (is (wait-for-pred #(stream-reattached? t renderer)) "the tab's stream reconnected")
+                (w/with-page page
+                  (is (true? (eval-js "window.__beforeReload")) "without reloading")
+                  (is (= t (tab-id)))
+                  (is (wait-for-text "#user" "alice"))))
+              (w/with-page page2
+                (is (wait-for-text "#note" "kept") "a tab cursor survives")))
+            (testing "the planted tab is refused and reloads into a fresh session"
+              (w/with-page attacker
+                (is (wait-for-pred #(nil? (eval-js "window.__beforeReload"))) "the attacker's page reloaded")
+                (wait-for-sse)
+                (is (wait-for-text "#user" "none"))
+                (is (not= attacker-tab (tab-id)) "in a new tab")
+                (Thread/sleep 2500)
+                (is (= "none" (w/text-content "#user")) "and stays out of the rotated session")))
             (let [new-id (session-cookie-value ctx)]
               (is (not= planted new-id))
               (is (not= new-id (session-cookie-value attacker-ctx)))
               (is (not (contains? (:sessions @@test-state*) planted)) "the planted id names no session")
-              (is (= "alice" (get-in @@test-state* [:sessions new-id :data :user]))))
-            (testing "the acting tab's actions still work"
-              (w/with-page page1
+              (is (= "alice" (get-in @@test-state* [:sessions new-id :data :user])))
+              (is (= new-id (get-in @@test-state* [:tabs page2-tab :session-id]))))
+            (testing "the tabs' actions work in the rotated session"
+              (w/with-page page2
                 (w/click "#sign-out"))
               (doseq [page [page1 page2]]
                 (w/with-page page
@@ -2086,7 +2108,7 @@
   (str/ends-with? (.url page) (str "/sign-out?landed=" from)))
 
 (deftest ^:e2e rotate-session-from-a-route-test
-  (testing "a route reached from a page of the session rotates it, lands on the redirect target and reloads the other tabs into the new id"
+  (testing "a route reached from a page of the session rotates it and lands on the redirect target, while another tab keeps its state without reloading"
     (let [browser-info (launch-browser)
           ctx          (new-context browser-info)
           page1        (new-page ctx)
@@ -2102,11 +2124,14 @@
               (is (wait-for-pred #(some? (get-in @@test-state* [:tabs t :renderer])))))))
         (w/with-page page1
           (w/click "#sign-in"))
-        (let [old-id    (session-cookie-value ctx)
-              page2-tab (w/with-page page2 (tab-id))]
-          (w/with-page page2
-            (is (wait-for-text "#user" "alice"))
-            (eval-js "window.__beforeReload = true"))
+        (w/with-page page2
+          (is (wait-for-text "#user" "alice"))
+          (w/click "#take-note")
+          (is (wait-for-text "#note" "kept"))
+          (eval-js "window.__beforeReload = true"))
+        (let [old-id         (session-cookie-value ctx)
+              page2-tab      (w/with-page page2 (tab-id))
+              page2-renderer (get-in @@test-state* [:tabs page2-tab :renderer])]
           (w/with-page page1
             ;; A link in the page, such as a magic link.
             (eval-js "const a = document.createElement('a');
@@ -2114,19 +2139,22 @@
                       document.body.appendChild(a);")
             (w/click "#magic-link")
             (is (wait-for-pred #(landed? page1 "sign-in") :timeout 10000)
-                "the page lands on the redirect target rather than reloading")
+                "the page lands on the redirect target")
             (wait-for-sse)
             (is (wait-for-text "#user" "alice") "in the rotated session"))
-          (w/with-page page2
-            (is (wait-for-pred #(nil? (eval-js "window.__beforeReload"))) "the other tab reloaded")
-            (wait-for-sse)
-            (is (wait-for-text "#user" "alice") "into the rotated session, with its data")
-            (is (not= page2-tab (tab-id)) "in a new tab"))
+          (testing "the other tab reconnects into the rotated session, keeping its state"
+            (is (wait-for-pred #(stream-reattached? page2-tab page2-renderer)) "the tab's stream reconnected")
+            (w/with-page page2
+              (is (true? (eval-js "window.__beforeReload")) "without reloading")
+              (is (= page2-tab (tab-id)))
+              (is (wait-for-text "#note" "kept") "a tab cursor survives")
+              (is (wait-for-text "#user" "alice"))))
           (let [new-id (session-cookie-value ctx)]
             (is (not= old-id new-id))
             (is (not (contains? (:sessions @@test-state*) old-id)) "the old id names no session")
-            (is (= "alice" (get-in @@test-state* [:sessions new-id :data :user]))))
-          (testing "the reloaded tab's actions work in the rotated session"
+            (is (= "alice" (get-in @@test-state* [:sessions new-id :data :user])))
+            (is (= new-id (get-in @@test-state* [:tabs page2-tab :session-id]))))
+          (testing "the other tab's actions work in the rotated session"
             (w/with-page page2
               (w/click "#sign-out"))
             (doseq [page [page1 page2]]
@@ -2137,7 +2165,7 @@
           (close-browser! browser-info))))))
 
 (deftest ^:e2e end-session-from-a-form-post-test
-  (testing "a sign-out form posted from a page of the session lands on the redirect target and reloads the other tabs into a fresh session"
+  (testing "a sign-out form posted from a page of the session lands on the redirect target, and another tab reconnects and reloads into a fresh session"
     (let [browser-info (launch-browser)
           ctx          (new-context browser-info)
           page1        (new-page ctx)
@@ -2164,11 +2192,12 @@
                       document.body.appendChild(f);")
             (w/click "#form-sign-out")
             (is (wait-for-pred #(landed? page1 "sign-out") :timeout 10000)
-                "the page lands on the redirect target rather than reloading")
+                "the page lands on the redirect target")
             (wait-for-sse)
             (is (wait-for-text "#user" "none") "in a fresh session"))
           (w/with-page page2
-            (is (wait-for-pred #(nil? (eval-js "window.__beforeReload"))) "the other tab reloaded")
+            (is (wait-for-pred #(nil? (eval-js "window.__beforeReload")) :timeout 5000)
+                "the other tab reloaded within a few seconds")
             (wait-for-sse)
             (is (wait-for-text "#user" "none") "into a fresh session"))
           (is (not (contains? (:sessions @@test-state*) old-id)) "the session is gone")

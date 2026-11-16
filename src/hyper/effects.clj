@@ -10,7 +10,7 @@
    - `set-cookie!`     — set an HTTP cookie on the action response
    - `delete-cookie!`  — remove an HTTP cookie
    - `execute-script!` — run arbitrary JS on the client via SSE
-   - `end-session!`    — end the session, reloading its open tabs
+   - `end-session!`    — end the session, signing out its open tabs
    - `rotate-session!` — give the session a new id
 
    These are intentionally few.  If you're reaching for execute-script!
@@ -51,7 +51,7 @@
   "Accumulator for effects emitted during action execution.
 
    Bound to (atom {:cookies {} :scripts []}) by the action handler, and in
-   each tab by `hyper.core/run-in-tabs!`, with
+   each tab by `hyper.core/run-in-tabs!` with :run-in-tabs? true, with
    :session :end or :rotate added by `end-session!` / `rotate-session!`.
    nil outside action execution."
   nil)
@@ -205,10 +205,11 @@
 (defn end-session!
   "End the session of the action's tab once the action has run.
 
-   Every open tab of the session reloads into a fresh session, the session
-   and its data are removed, and the session cookie is deleted.  A page
-   loaded with the old id gets a new session, as with any session cookie the
-   server does not know.  Does nothing when the session is already gone.
+   The session and its data are removed, the session cookie is deleted, and
+   every open page of the session reconnects and reloads into a fresh
+   session.  A page loaded with the old id gets a new session, as with any
+   session cookie the server does not know.  Does nothing when the session
+   is already gone.
 
    Example:
      ;; Sign out
@@ -222,11 +223,17 @@
 
 (defn rotate-session!
   "Give the session of the action's tab a new id once the action has run,
-   keeping its data, and set the session cookie to the new id.  The action's
-   tab moves to the new id; every other tab of the session reloads, keeping
-   the session's data but losing its tab state when its browser has the new
-   cookie, and getting a fresh session otherwise.  The old id names no
-   session afterwards.  `end-session!` in the same action takes precedence.
+   keeping its data and its tabs, and set the session cookie to the new id.
+   Once the action's response has been written, the session's open pages
+   reconnect: in the person's own browser they carry the new cookie and go
+   on with their tab state, and in a browser that still holds the old id
+   they reload into a fresh session.  The old id names no session
+   afterwards.  `end-session!` in the same action takes precedence.
+
+   Throws in code run by `hyper.core/run-in-tabs!`: the server can't tell
+   which browser each of the session's tabs is in, so only the person's own
+   action or route (`hyper.ring/rotate-session!`) can hand the new id to
+   their browser alone.
 
    Example:
      ;; Sign in
@@ -236,6 +243,14 @@
          (effects/rotate-session!)))"
   []
   (let [pending* (require-pending! "rotate-session!")]
+    (when (:run-in-tabs? @pending*)
+      (throw (ex-info (str "rotate-session! can't be called in run-in-tabs!. "
+                           "Rotating a session must happen in the person's own action "
+                           "or route (hyper.ring/rotate-session!), so only their browser "
+                           "gets the new id. To shut other browsers out, end the "
+                           "session with end-session!.")
+                      {:caller       "rotate-session!"
+                       :hyper/tab-id (:hyper/tab-id context/*request*)})))
     (swap! pending* update :session #(or % :rotate))
     nil))
 

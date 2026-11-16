@@ -251,8 +251,9 @@
    a consistent batch, then renders and writes.  The queue replaces the
    previous Semaphore + atoms approach, eliminating all shared mutable state.
    Exits when a :shutdown event is received, after sending the scripts queued
-   with it, or when the connection closes (a write throws, so `send-sse!`
-   returns false).  Each render is of the tab's current session.
+   with it, after the render and scripts of a batch with a :close event, or
+   when the connection closes (a write throws, so `send-sse!` returns
+   false).  Each render is of the tab's current session.
 
    The SSE response headers are set by `sse-events-handler` on the response
    map; here we only write the body (connected event, then render payloads)."
@@ -279,14 +280,14 @@
           ;; Main render loop — tracks the last-sent signal snapshot so
           ;; we only emit datastar-patch-signals for actual changes.
           (loop [last-sent-signals nil]
-            (let [{:keys [idle? shutdown? full-render? dirty-ids
+            (let [{:keys [idle? shutdown? close? full-render? dirty-ids
                           scripts-before-render scripts]}
                   (if heartbeat-ms
                     (rq/drain! render-queue heartbeat-ms)
                     (rq/drain! render-queue))]
               (cond
-                ;; A tab torn down right after a script was queued for it (a
-                ;; reload by effects/end-session!) still gets the script.
+                ;; A tab torn down right after a script was queued for it (the
+                ;; reconnect of a session's end) still gets the script.
                 shutdown?
                 (do (send-pending-scripts! (into scripts-before-render scripts) tab-id
                                            os br-out br-stream)
@@ -341,7 +342,7 @@
                                                                os br-out br-stream)]
                   ;; sent? is true (ok), nil (no render-fn or error), false (connection closed)
                   ;; script-sent? follows the same convention
-                  (when-not (or (false? sent?) (false? script-sent?))
+                  (when-not (or (false? sent?) (false? script-sent?) close?)
                     (Thread/sleep throttle-ms)
                     (recur (or current-signals known-signals)))))))))
       (catch Throwable e
@@ -650,53 +651,73 @@
     (and (some? session-id)
          (= session-id (:hyper/session-id req)))))
 
-(def ^:private reload-js
-  "The script that reloads a tab's page, unless the page is leaving (see
-   `hyper.reload` in `hyper-scripts`)."
-  ;; A page served before hyper.reload existed reloads as it did.
-  "(window.hyper && window.hyper.reload || function () { window.location.reload(); })()")
+(def ^:private reconnect-js
+  "The script that has a tab's page reconnect its event stream (see
+   `hyper.reconnect` in `hyper-scripts`)."
+  "window.hyper.reconnect()")
 
-(defn- reload-and-remove-tabs!
-  "Reload those of tabs `tab-ids` that were open in `state`, remove all of
-   them, then remove session `session-id` unless a tab is in it.  A tab in
-   `scripts-by-tab` is sent its scripts there (or in a delay there) instead
-   of the reload."
-  ([app-state* state session-id tab-ids]
-   (reload-and-remove-tabs! app-state* state session-id tab-ids {}))
-  ([app-state* state session-id tab-ids scripts-by-tab]
-   (let [renderers (keep #(when-let [renderer (get-in state [:tabs % :renderer])]
-                            [% renderer])
-                         tab-ids)
-         deadline  (+ (System/currentTimeMillis) 5000)]
-     ;; A renderer sends the scripts queued ahead of its shutdown.
-     (doseq [[t {:keys [enqueue-scripts! stop!]}] renderers]
-       (when enqueue-scripts!
-         (enqueue-scripts! (force (get scripts-by-tab t [reload-js]))))
-       (when stop! (stop!)))
-     ;; A render still running would write its tab back after the teardown.
-     (doseq [[_ {:keys [stopped]}] renderers
-             :when                 stopped]
-       (deref stopped (max 0 (- deadline (System/currentTimeMillis))) nil))
-     (doseq [t tab-ids]
-       (cleanup-tab! app-state* t))
-     ;; A render or teardown since the session's removal may have written it back.
-     (swap! app-state* (fn [state]
-                         (cond-> state
-                           (empty? (get-in state [:sessions session-id :tabs]))
-                           (update :sessions dissoc session-id)))))))
+(defn- reconnect-tabs!
+  "Close the open event streams of tabs `tab-ids`, each after a render of
+   its tab and `reconnect-js`.  A tab is kept as when its connection drops
+   (see `detach-tab!`)."
+  [app-state* tab-ids]
+  (doseq [tab-id tab-ids
+          :let   [renderer (get-in @app-state* [:tabs tab-id :renderer])
+                  [before] (when renderer
+                             (swap-vals! app-state*
+                                         (fn [state]
+                                           (cond-> state
+                                             (identical? renderer (get-in state [:tabs tab-id :renderer]))
+                                             (-> (update-in [:tabs tab-id] dissoc :renderer)
+                                                 (assoc-in [:tabs tab-id :disconnected-at]
+                                                           (System/currentTimeMillis)))))))]
+          :when  (and renderer (identical? renderer (get-in before [:tabs tab-id :renderer])))]
+    ;; The render gives the page actions of the tab's session as it is now,
+    ;; for clicks before the page reconnects.
+    (let [queue (:render-queue renderer)]
+      (rq/enqueue-full-render! queue)
+      (rq/enqueue-scripts! queue [reconnect-js])
+      (rq/enqueue-close! queue))))
+
+(defn- remove-tabs!
+  "Remove tabs `tab-ids`, closing those that were open in `state` with
+   `reconnect-js`, or with their scripts in `scripts-by-tab` (or in a delay
+   there), then remove session `session-id` unless a tab is in it."
+  [app-state* state session-id tab-ids scripts-by-tab]
+  (let [renderers (keep #(when-let [renderer (get-in state [:tabs % :renderer])]
+                           [% renderer])
+                        tab-ids)
+        deadline  (+ (System/currentTimeMillis) 5000)]
+    ;; A renderer sends the scripts queued ahead of its shutdown.
+    (doseq [[t {:keys [enqueue-scripts! stop!]}] renderers]
+      (when enqueue-scripts!
+        (enqueue-scripts! (force (get scripts-by-tab t [reconnect-js]))))
+      (when stop! (stop!)))
+    ;; A render still running would write its tab back after the teardown.
+    (doseq [[_ {:keys [stopped]}] renderers
+            :when                 stopped]
+      (deref stopped (max 0 (- deadline (System/currentTimeMillis))) nil))
+    (doseq [t tab-ids]
+      (cleanup-tab! app-state* t))
+    ;; A render or teardown since the session's removal may have written it back.
+    (swap! app-state* (fn [state]
+                        (cond-> state
+                          (empty? (get-in state [:sessions session-id :tabs]))
+                          (update :sessions dissoc session-id))))))
 
 (defn end-session!
-  "End session `session-id`: remove it, then reload and remove its tabs,
-   sending a tab in `scripts-by-tab` its scripts there instead of the reload
-   (see `reload-and-remove-tabs!`).  Returns whether the session existed."
+  "End session `session-id`: remove it, then remove its tabs, whose open
+   streams close having their pages reconnect, or with the scripts in
+   `scripts-by-tab` for a tab there (see `remove-tabs!`).  Returns whether
+   the session existed."
   ([app-state* session-id] (end-session! app-state* session-id {}))
   ([app-state* session-id scripts-by-tab]
-   (let [;; Removed before any tab reloads, so a reloaded page starts afresh.
+   (let [;; Removed first, so a page that reloads starts afresh.
          [state] (swap-vals! app-state* update :sessions dissoc session-id)]
      (when (contains? (:sessions state) session-id)
-       (reload-and-remove-tabs! app-state* state session-id
-                                (get-in state [:sessions session-id :tabs])
-                                scripts-by-tab)
+       (remove-tabs! app-state* state session-id
+                     (get-in state [:sessions session-id :tabs])
+                     scripts-by-tab)
        true))))
 
 (defn- end-tab-session!
@@ -706,44 +727,38 @@
    (end-session! app-state* (get-in @app-state* [:tabs tab-id :session-id]) scripts-by-tab)))
 
 (defn rotate-session!
-  "Give session `session-id` a new id, keeping its data, with only tab
-   `tab-id` left in it, or no tab when `tab-id` is nil (see
-   `reap-disconnected-tabs!` for a session left without tabs).  Returns
-   `{:new-id id :reload-others! f}`, where `f` reloads and removes the
-   session's other tabs, or nil when the session is gone or `tab-id` is not
-   in it."
-  [app-state* session-id tab-id]
-  (let [new-id          (state/generate-session-id)
-        ;; Moved before any other tab reloads, so a reloaded page cannot join
-        ;; the old id.
-        [state rotated] (swap-vals! app-state*
-                                    (fn [state]
-                                      (let [session (get-in state [:sessions session-id])]
-                                        (if (and session
-                                                 (or (nil? tab-id)
-                                                     (= session-id (get-in state [:tabs tab-id :session-id]))))
-                                          (cond-> (-> state
-                                                      (update :sessions dissoc session-id)
-                                                      (assoc-in [:sessions new-id]
-                                                                (if tab-id
-                                                                  (-> session
-                                                                      (assoc :tabs #{tab-id})
-                                                                      (dissoc :tabless-at))
-                                                                  (assoc session
-                                                                         :tabs #{}
-                                                                         :tabless-at (System/currentTimeMillis)))))
-                                            tab-id (assoc-in [:tabs tab-id :session-id] new-id))
-                                          state))))]
+  "Give session `session-id` a new id, keeping its data and its tabs.
+   Returns `{:new-id id :reconnect! f}`, where `f` closes the open streams
+   of the session's tabs, having their pages reconnect (see
+   `reconnect-tabs!`), or nil when the session is gone.  A session without
+   tabs is stamped `:tabless-at` (see `reap-disconnected-tabs!`)."
+  [app-state* session-id]
+  (let [new-id  (state/generate-session-id)
+        now     (System/currentTimeMillis)
+        ;; One swap, so no tab is ever of a session that is gone.
+        rotated (swap! app-state*
+                       (fn [state]
+                         (if-let [session (get-in state [:sessions session-id])]
+                           (-> (reduce (fn [state tab-id]
+                                         (cond-> state
+                                           (contains? (:tabs state) tab-id)
+                                           (assoc-in [:tabs tab-id :session-id] new-id)))
+                                       state
+                                       (:tabs session))
+                               (update :sessions dissoc session-id)
+                               (assoc-in [:sessions new-id]
+                                         (cond-> session
+                                           (empty? (:tabs session)) (assoc :tabless-at now))))
+                           state)))]
     (when (contains? (:sessions rotated) new-id)
-      {:new-id         new-id
-       :reload-others! #(reload-and-remove-tabs! app-state* state session-id
-                                                 (disj (get-in state [:sessions session-id :tabs]) tab-id))})))
+      (let [tab-ids (set (get-in rotated [:sessions new-id :tabs]))]
+        {:new-id     new-id
+         :reconnect! #(reconnect-tabs! app-state* tab-ids)}))))
 
 (defn- rotate-tab-session!
-  "Rotate the session of tab `tab-id`, keeping the tab in it, as
-   `rotate-session!` does."
+  "Rotate the session of tab `tab-id`, as `rotate-session!` does."
   [app-state* tab-id]
-  (rotate-session! app-state* (get-in @app-state* [:tabs tab-id :session-id]) tab-id))
+  (rotate-session! app-state* (get-in @app-state* [:tabs tab-id :session-id])))
 
 (defn with-session-cookie-change
   "`response` to `req` with the session cookie set to `new-id`, or deleted
@@ -771,9 +786,9 @@
   "`response` after applying session effect `effect` (:end or :rotate, see
    `effects/end-session!` and `effects/rotate-session!`) of an action of tab
    `tab-id` run for `req`, with the session cookie deleted or set to the new
-   id.  On rotation the session's other tabs are reloaded and removed once
-   the response's body has been written.  `response` as it is when `effect`
-   is nil or the session is gone."
+   id.  On rotation the session's open streams are closed, having their
+   pages reconnect, once the response's body has been written.  `response`
+   as it is when `effect` is nil or the session is gone."
   [response app-state* req tab-id effect]
   (case effect
     nil
@@ -785,12 +800,12 @@
       response)
 
     :rotate
-    (if-let [{:keys [new-id reload-others!]} (rotate-tab-session! app-state* tab-id)]
-      ;; The response goes first, so the browser's other tabs reload with the
+    (if-let [{:keys [new-id reconnect!]} (rotate-tab-session! app-state* tab-id)]
+      ;; The response goes first, so the browser's pages reconnect with the
       ;; new cookie.
       (-> response
           (with-session-cookie-change app-state* req new-id)
-          (then-run reload-others!))
+          (then-run reconnect!))
       response)))
 
 (def ^:private cookie-token-ttl-ms
@@ -808,8 +823,7 @@
    script that has the tab's browser collect them, then runs `scripts`.
    `delivery` has the `:cookies` (as in `effects/set-cookie!`), and
    `:session-id` when the session cookie is to be set to it (or deleted, when
-   nil).  Its `:after`, when given, runs once the cookies are collected or
-   the token expires."
+   nil)."
   [app-state* tab-id delivery scripts]
   (let [token   (generate-cookie-token)
         state   @app-state*
@@ -838,15 +852,11 @@
 
 (defn expire-cookie-tokens!
   "Remove the cookies kept for tabs whose token expired before `now` (epoch
-   millis), running their `:after`."
+   millis)."
   [app-state* now]
-  (let [expired? (fn [[_ {:keys [expires-at]}]] (< expires-at now))
-        [state]  (swap-vals! app-state* update :cookie-tokens
-                             #(into {} (remove expired?) %))]
-    (doseq [[_ {:keys [after]}] (filter expired? (:cookie-tokens state))
-            :when               after]
-      (after))
-    nil))
+  (swap! app-state* update :cookie-tokens
+         #(into {} (remove (fn [[_ {:keys [expires-at]}]] (< expires-at now))) %))
+  nil)
 
 (defn- cookies-handler
   "Handler for the request a tab's browser makes to collect the cookies kept
@@ -854,18 +864,16 @@
    them; a token works once, before it expires, and any other gets a 404."
   [app-state*]
   (fn [req]
-    (let [token                     (get-in req [:query-params "token"])
-          [state]                   (swap-vals! app-state* update :cookie-tokens dissoc token)
-          {:keys [expires-at after]
-           :as   delivery}          (get-in state [:cookie-tokens token])]
+    (let [token               (get-in req [:query-params "token"])
+          [state]             (swap-vals! app-state* update :cookie-tokens dissoc token)
+          {:keys [expires-at]
+           :as   delivery}    (get-in state [:cookie-tokens token])]
       (if (and delivery (<= (System/currentTimeMillis) expires-at))
         (cond-> (effects/apply-cookies-to-response {:status 204} delivery)
-          (contains? delivery :session-id) (with-session-cookie-change app-state* req (:session-id delivery))
-          after                            (then-run after))
-        (do (when after (after))
-            {:status  404
-             :headers {"Content-Type" "application/json"}
-             :body    "{\"error\": \"Unknown token\"}"})))))
+          (contains? delivery :session-id) (with-session-cookie-change app-state* req (:session-id delivery)))
+        {:status  404
+         :headers {"Content-Type" "application/json"}
+         :body    "{\"error\": \"Unknown token\"}"}))))
 
 (defn- open-tab?
   "Whether `state` holds tab `tab-id` and its session."
@@ -916,30 +924,14 @@
   "Apply the effects `pending` that code run in tab `tab-id` outside its
    requests emitted: scripts go to the tab (see `deliver-scripts!`), cookies
    through a script that has its browser collect them (see `cookie-script!`)
-   before the other scripts run, and the session is ended or rotated."
+   before the other scripts run, and the session is ended."
   [app-state* tab-id {:keys [cookies scripts session]}]
   (let [scripts (vec scripts)]
-    (case session
-      :end
+    (if (= :end session)
       (end-tab-session! app-state* tab-id
                         {tab-id (delay [(cookie-script! app-state* tab-id
                                                         {:cookies cookies :session-id nil}
-                                                        (conj scripts reload-js))])})
-
-      :rotate
-      (if-let [{:keys [new-id reload-others!]} (rotate-tab-session! app-state* tab-id)]
-        ;; The other tabs reload once this browser has the new cookie.  A
-        ;; tab without a stream cannot get it: its stream is refused on the
-        ;; old cookie.
-        (let [connected? (some? (get-in @app-state* [:tabs tab-id :renderer]))]
-          (when-not connected? (reload-others!))
-          (deliver-scripts! app-state* tab-id
-                            [(cookie-script! app-state* tab-id
-                                             (cond-> {:cookies cookies :session-id new-id}
-                                               connected? (assoc :after reload-others!))
-                                             scripts)]))
-        (apply-tab-effects! app-state* tab-id {:cookies cookies :scripts scripts}))
-
+                                                        (conj scripts reconnect-js))])})
       (deliver-scripts! app-state* tab-id
                         (if (seq cookies)
                           [(cookie-script! app-state* tab-id {:cookies cookies} scripts)]
@@ -954,7 +946,8 @@
                       (or (nil? pred) (tab-selected? app-state* tab-id pred)))]
     (try
       (let [pending (with-bindings (assoc (tab-bindings app-state* tab-id)
-                                          #'effects/*pending* (effects/init-pending))
+                                          #'effects/*pending* (doto (effects/init-pending)
+                                                                (swap! assoc :run-in-tabs? true)))
                       (try
                         (f)
                         (catch Throwable e
@@ -1038,7 +1031,7 @@
         ;; no session the server holds, is what a browser that drops the
         ;; session cookie leaves behind: a reload would loop.
         (or (nil? tab) (:connection-initialized? tab))
-        (script-stream-response reload-js)
+        (script-stream-response "window.location.reload()")
 
         :else
         unknown-tab-response))))
@@ -1321,9 +1314,8 @@
      `data-hyper-render-version`.
    - hyper.upload(formData, opts): posts a multipart upload to opts.url with
      the tab id and the render opts.el was made on.
-   - hyper.reload(): reloads the page, unless the page is leaving (from
-     `beforeunload` or `pagehide` until `pageshow`, for at most 10s); then
-     it reloads only if the page is still there 10s later.
+   - hyper.reconnect(): re-opens the tab's event stream with the `@get` the
+     page booted with, after a random delay of 1 to 2 seconds.
    - An upload or back/forward navigation answered with a
      `{\"redirect\": url}` body loads url.
    - MutationObserver on #hyper-app watches data-hyper-url attribute changes
@@ -1345,25 +1337,12 @@
      (str "
 (function() {
   window.hyper = window.hyper || {};
-  // A reload would cancel the navigation of a page that is leaving, such as
-  // a form post whose response rotates the session and redirects.  A
-  // navigation can also not happen (a download, a person staying), so the
-  // reload is put off rather than dropped.
-  var leaving = false, leavingTimer = null, leavingMs = 10000;
-  var stopLeaving = function() { leaving = false; clearTimeout(leavingTimer); };
-  var startLeaving = function() {
-    leaving = true;
-    clearTimeout(leavingTimer);
-    leavingTimer = setTimeout(stopLeaving, leavingMs);
-  };
-  window.addEventListener('beforeunload', startLeaving);
-  window.addEventListener('pagehide', startLeaving);
-  window.hyper.reload = function() {
-    if (leaving) {
-      setTimeout(function() { window.location.reload(); }, leavingMs);
-    } else {
-      window.location.reload();
-    }
+  // Setting data-init, even to its own value, has Datastar run it again.
+  // The delay spreads out the reconnects of a server's tabs.
+  window.hyper.reconnect = function() {
+    setTimeout(function() {
+      document.body.setAttribute('data-init', document.body.getAttribute('data-init'));
+    }, 1000 + Math.random() * 1000);
   };
   // A response body of {redirect: url} sends the tab to url with a full page
   // load.  Returns whether it did.
@@ -1455,7 +1434,6 @@
     observer.observe(appEl, { attributes: true, attributeFilter: ['data-hyper-url', 'data-hyper-squint-version'] });
   }
   window.addEventListener('pageshow', function(event) {
-    stopLeaving();
     var nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
     if (event.persisted || (nav && nav.type === 'back_forward')) {
       window.location.reload();
@@ -1684,6 +1662,29 @@ action({
                (assoc-in [tab-id :disconnected-at] (System/currentTimeMillis)))))
     [(assoc req :hyper/tab-id tab-id) new-tab?]))
 
+(defn- remove-page-tab!
+  "Tear down tab `tab-id`, made for page request `req` whose render returned
+   a Ring response.  A session the render rotated is kept for the page the
+   response leads to, stamped `:tabless-at` when the tab was its last (see
+   `reap-disconnected-tabs!`)."
+  [app-state* req tab-id]
+  (let [request-id (:hyper/session-id req)
+        now        (System/currentTimeMillis)]
+    (swap! app-state*
+           (fn [state]
+             (let [session-id (get-in state [:tabs tab-id :session-id])]
+               (if (and (not= request-id session-id)
+                        (contains? (:sessions state) session-id))
+                 (-> state
+                     (assoc-in [:tabs tab-id :session-id] request-id)
+                     (update-in [:sessions session-id]
+                                (fn [session]
+                                  (let [session (update session :tabs disj tab-id)]
+                                    (cond-> session
+                                      (empty? (:tabs session)) (assoc :tabless-at now))))))
+                 state))))
+    (cleanup-tab! app-state* tab-id)))
+
 (defn page-handler
   "Wrap a page render function to provide full HTML response.
    Delegates rendering to render/render-tab so initial page loads share
@@ -1712,7 +1713,7 @@ action({
         (let [result (render/render-tab app-state* session-id tab-id req)]
           ;; Ring response passthrough (e.g. a 302 redirect)
           (if (:status result)
-            (do (when new-tab? (cleanup-tab! app-state* tab-id))
+            (do (when new-tab? (remove-page-tab! app-state* req tab-id))
                 result)
             (-> (page-response result (page-opts app-state* tab-id opts) req tab-id 200 "Hyper App")
                 (with-session-cookie app-state* req))))))))
@@ -1743,7 +1744,7 @@ action({
       (let [result (render/render-tab app-state* session-id tab-id req)]
         ;; Ring response passthrough (e.g. a redirect from render middleware)
         (if (:status result)
-          (do (when new-tab? (cleanup-tab! app-state* tab-id))
+          (do (when new-tab? (remove-page-tab! app-state* req tab-id))
               result)
           (-> (page-response result (page-opts app-state* tab-id opts) req tab-id 404 "Not Found")
               (with-session-cookie app-state* req)))))))

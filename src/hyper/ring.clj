@@ -52,12 +52,13 @@
      (server/endpoint (:base-path @app-state*) (:uri req)))))
 
 (defn rotate-session!
-  "`response` with the request's session given a new id, keeping its data,
-   and the session cookie set to the new id.  Every tab of the session
-   reloads once the response has been written, so in the person's own
-   browser it comes back in the session under the new id.  The old id names
-   no session afterwards.  `response` as it is when the server holds no
-   session for the request.
+  "`response` with the request's session given a new id, keeping its data
+   and its tabs, and the session cookie set to the new id.  Once the
+   response has been written, the session's open pages reconnect: in the
+   person's own browser they carry the new cookie and go on with their tab
+   state, and in a browser that still holds the old id they reload into a
+   fresh session.  The old id names no session afterwards.  `response` as it
+   is when the server holds no session for the request.
 
    Example:
      ;; OAuth callback
@@ -68,21 +69,21 @@
              (h.ring/rotate-session! req))))"
   [response req]
   (let [app-state* (app-state req "rotate-session!")]
-    (if-let [{:keys [new-id reload-others!]}
+    (if-let [{:keys [new-id reconnect!]}
              (when-let [id (held-session-id app-state* req)]
-               (server/rotate-session! app-state* id nil))]
-      ;; The response goes first, so the browser's tabs reload with the new
-      ;; cookie.
+               (server/rotate-session! app-state* id))]
+      ;; The response goes first, so the browser's pages reconnect with the
+      ;; new cookie.
       (-> response
           (server/with-session-cookie-change app-state* req new-id)
-          (server/then-run reload-others!))
+          (server/then-run reconnect!))
       response)))
 
 (defn end-session!
-  "`response` with the request's session ended: every open tab of the
-   session reloads into a fresh session, the session's data is removed and
-   the session cookie is deleted.  `response` as it is when the server holds
-   no session for the request.
+  "`response` with the request's session ended: the session's data is
+   removed, the session cookie is deleted, and the session's open pages
+   reconnect and reload into a fresh session.  `response` as it is when the
+   server holds no session for the request.
 
    Example:
      ;; Sign out from a form post

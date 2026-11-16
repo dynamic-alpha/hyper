@@ -296,11 +296,12 @@
    scripts and `navigate!`'s URL change are sent down the tab's connection,
    or when it has none, kept until it reconnects and dropped if the tab
    expires.  Cookies (`set-cookie!`, `delete-cookie!`, and the session
-   cookie of `end-session!` and `rotate-session!`) are set by a request the
-   tab's browser makes when it gets them, before the tab's other scripts
-   run.  Rotating the session of a tab whose connection dropped signs the
-   person out: its reconnect carries the old cookie and is refused, so it
-   reloads into a fresh session.
+   cookie `end-session!` deletes) are set by a request the tab's browser
+   makes when it gets them, before the tab's other scripts run.
+   `end-session!` has the session's open pages reconnect and reload into a
+   fresh session.  `rotate-session!` throws: the server can't tell which
+   browser each of a session's tabs is in, so a session is rotated in the
+   person's own action or route, where only their browser gets the new id.
 
    Example:
      ;; Revoke a person's access

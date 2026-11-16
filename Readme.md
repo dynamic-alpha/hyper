@@ -189,13 +189,13 @@ without the cookie and are refused. Pass `:same-site :none` with
 ### Signing in and out
 
 Give the session a new id when a person signs in, with
-`effects/rotate-session!`. The session keeps its data, the action's response
-sets the cookie to the new id, and the old id no longer names the session, so
-an id someone learned before sign-in is worthless afterwards. The tab that ran
-the action carries on under the new id. Every other tab of the session
-reloads: in the person's own browser it gets the new cookie and comes back
-signed in, keeping the session's data but losing its tab state, while a tab
-elsewhere that held the old id gets a fresh session:
+`effects/rotate-session!`. The session keeps its data and its tabs, the
+action's response sets the cookie to the new id, and the old id no longer
+names the session, so an id someone learned before sign-in is worthless
+afterwards. Once the response is written, the session's open pages briefly
+reconnect, a second or two later: in the person's own browser they carry the
+new cookie and go on where they were, tab state included, while a page
+elsewhere that held the old id is refused and reloads into a fresh session:
 
 ```clojure
 (h/action
@@ -204,9 +204,10 @@ elsewhere that held the old id gets a fresh session:
     (effects/rotate-session!)))
 ```
 
-End the session when they sign out, with `effects/end-session!`. Every open
-tab of the session reloads into a fresh session, the session's data is
-removed, and the cookie is deleted:
+End the session when they sign out, with `effects/end-session!`. The
+session's data is removed and the cookie is deleted. Its open pages
+reconnect and, as the server no longer has their tabs, reload into a fresh
+session:
 
 ```clojure
 (h/action
@@ -242,17 +243,19 @@ response, so they thread with `->`:
       (h.ring/end-session! req)))
 ```
 
-There is no acting tab, so `rotate-session!` reloads every tab of the
-session once the response has been written, and they come back with the new
-cookie. `end-session!` reloads them into a fresh session and deletes the
-cookie. A tab that is leaving doesn't reload, so a sign-in form posted from
-a Hyper page, or a magic link clicked in one, lands on the redirect target.
-Both do nothing when the server holds no session for the request,
-such as a `form_post` callback arriving without the `SameSite=Lax` cookie.
-They don't write session data: restore it at sign-in from your own cookie,
-as `wrap-rehydrate-session` in [Common patterns](#common-patterns) does.
-A rotated session that no page joins within `:disconnect-grace-ms`, such as
-when the browser never follows the redirect, is removed.
+As from an action, `rotate-session!` keeps the session's tabs, and once the
+response has been written its open pages reconnect with the new cookie,
+keeping their tab state. `end-session!` deletes the cookie, and the
+session's open pages reconnect and reload into a fresh session. A reconnect
+is a background request made a second or two later, so a page that is
+navigating away, such as one that posted a sign-in form or followed a magic
+link, is unaffected and lands on the redirect target. Both do nothing when
+the server holds no session for the request, such as a `form_post` callback
+arriving without the `SameSite=Lax` cookie. They don't write session data:
+restore it at sign-in from your own cookie, as `wrap-rehydrate-session` in
+[Common patterns](#common-patterns) does. A rotated session none of whose
+pages come back within `:disconnect-grace-ms`, such as when the browser never
+follows the redirect, is removed.
 
 Routes and `:middleware` inside `create-handler` work as is. A route outside
 it wraps itself in `hyper.ring.middleware/wrap-hyper`, with the same atom
@@ -307,10 +310,24 @@ yet expired. An exception in one tab is logged and does not stop the others.
 
 Effects act on the tab they run in. Scripts and `navigate!`'s URL change go
 down the tab's connection, or wait for it to reconnect. Cookies, including the
-session cookie of `end-session!` and `rotate-session!`, need a response to the
-tab's own browser: the browser fetches them from Hyper, then runs the tab's
-other scripts. Rotating the session of a tab whose connection dropped signs
-the person out, since its reconnect carries the old cookie.
+session cookie `end-session!` deletes, need a response to the tab's own
+browser: the browser fetches them from Hyper, then runs the tab's other
+scripts. `end-session!` has the session's open pages reconnect and reload
+into a fresh session.
+
+`rotate-session!` throws in `run-in-tabs!`. Rotating protects against session
+fixation only when the new id goes to the one browser that signed in, on the
+response to the person's own action or route (`h.ring/rotate-session!`). In
+`run-in-tabs!` the server can't tell which browser each tab of the session is
+in, so it would hand the new id to a page opened with a planted id too. To
+shut other browsers out, end the session instead.
+
+When a sign-in is approved elsewhere, such as on a phone, with a device code
+or by an admin, have the waiting page make the request itself and rotate
+there: it can poll a route that rotates once the sign-in is approved, or
+`run-in-tabs!`, selecting the waiting tab by its tab state (such as the code
+it shows), can have it run one of its actions with `execute-script!`, and
+that action rotates.
 
 ## Actions
 
@@ -856,7 +873,7 @@ action body:
 | `set-cookie!` | Set an HTTP cookie on the action response |
 | `delete-cookie!` | Remove an HTTP cookie |
 | `execute-script!` | Run arbitrary JS on the client via SSE |
-| `end-session!` | End the session, reloading its open tabs (see [Signing in and out](#signing-in-and-out)) |
+| `end-session!` | End the session, signing out its open tabs (see [Signing in and out](#signing-in-and-out)) |
 | `rotate-session!` | Give the session a new id (see [Signing in and out](#signing-in-and-out)) |
 
 Effects are accumulated during action execution and processed after the action
@@ -1400,8 +1417,8 @@ redirect:
     (effects/navigate! :home)))
 ```
 
-**Logout** — delete the cookie and end the session, which reloads every open
-tab into a fresh session:
+**Logout** — delete the cookie and end the session, which has every open
+page reconnect and reload into a fresh session:
 
 ```clojure
 (h/action {:as "logout"}
@@ -2898,10 +2915,11 @@ The E2E suite covers:
 - **Effects** — `navigate!`, `set-cookie!`, `delete-cookie!`, and
   `execute-script!` are exercised end-to-end, including combined effects in a
   single action
-- **Sign-in and sign-out** — `rotate-session!` keeps the acting tab and
-  reloads the session's other tabs, into the new id in the same browser and a
-  fresh session elsewhere; `end-session!` reloads every tab of the session
-  into a fresh session
+- **Sign-in and sign-out** — `rotate-session!` keeps the session's tabs,
+  which reconnect with their tab state in the same browser, while a page
+  holding a planted id reloads into a fresh session; `end-session!` has every
+  page of the session reconnect and reload into a fresh session; a page
+  signing in or out from a route lands on the redirect target
 
 ## Contributing
 

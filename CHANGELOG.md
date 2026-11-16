@@ -30,36 +30,40 @@
   on a page load stays a redirect, and other responses pass through unchanged.
 
 - Sessions - Actions can end or rotate their session. `effects/end-session!`
-  reloads every open tab of the session into a fresh session, removes the
-  session's data and deletes the session cookie, for signing out.
-  `effects/rotate-session!` gives the session a new id, keeping its data, and
-  sets the cookie to it, for signing in. Both take effect once the action has
-  run, and `hyper.test/test-action` reports them as `:session` (`:end` or
-  `:rotate`) in its `:effects`. A note that rotating reloads every other open
-  tab of the session: in the same browser they come back with the session's
-  data but lose their tab state, and a tab elsewhere holding the old id gets a
-  fresh session. A note too that a page loaded with a session cookie the
-  server does not know now gets a new session id rather than taking on the
-  cookie's.
+  removes the session's data and deletes the session cookie, for signing out;
+  the session's open pages reconnect and reload into a fresh session.
+  `effects/rotate-session!` gives the session a new id, keeping its data and
+  its tabs, and sets the cookie to it, for signing in. Both take effect once
+  the action has run, and `hyper.test/test-action` reports them as `:session`
+  (`:end` or `:rotate`) in its `:effects`. A note that rotating has the
+  session's open pages reconnect a second or two after the response: in the
+  same browser they carry the new cookie and keep their tab state, and a page
+  elsewhere holding the old id reloads into a fresh session. A note too that
+  a page loaded with a session cookie the server does not know now gets a new
+  session id rather than taking on the cookie's.
 
 - Tabs - `h/run-in-tabs!` runs a function in every open tab, or in those where
   a predicate is true, with each tab's context, from an action or a
   background thread: `(h/run-in-tabs! app* #(= user-id (:id
   @(h/session-cursor :user))) effects/end-session!)`. Its effects act on each
-  tab, and the browser fetches its cookies from Hyper. A script from
+  tab, and the browser fetches its cookies from Hyper.
+  `effects/rotate-session!` throws in it: rotate in the person's own action or
+  route (`h.ring/rotate-session!`), so only their browser gets the new id, and
+  end the session to shut other browsers out. A script from
   `execute-script!` for a tab whose connection dropped is now sent when it
   reconnects; before, it was dropped.
 
 - Sessions - Routes can sign in and out with `hyper.ring`, for an OAuth or
   SSO callback, a magic link or a form post: `(-> (redirect "/")
-  (h.ring/rotate-session! req))` gives the request's session a new id and
-  reloads all its tabs once the response is written, and
-  `h.ring/end-session!` ends it. Both do nothing when the server holds no
-  session for the request. A tab that is leaving doesn't reload, so a form
-  posted or a link clicked from a Hyper page lands on the redirect target,
-  and a rotated session no page joins within the disconnect grace period is
-  removed. `h.ring/session-id` and `h.ring/endpoint` let middleware read the
-  request's session and tell Hyper's own requests apart. A route outside
+  (h.ring/rotate-session! req))` gives the request's session a new id, and
+  its open pages reconnect with the new cookie once the response is written,
+  keeping their tab state. `h.ring/end-session!` ends it. Both do nothing
+  when the server holds no session for the request. A reconnect is a
+  background request a second or two later, so a form posted or a link
+  clicked from a Hyper page lands on the redirect target, and a rotated
+  session none of whose pages come back within the disconnect grace period
+  is removed. `h.ring/session-id` and `h.ring/endpoint` let middleware read
+  the request's session and tell Hyper's own requests apart. A route outside
   `create-handler` uses them by wrapping itself in
   `(-> route (hyper.ring.middleware/wrap-hyper app*))`, with the atom passed
   to `create-handler` as `:app-state`.

@@ -266,6 +266,23 @@
         (is (not= :timeout r))
         (is (true? (:shutdown? r)))))))
 
+(deftest test-close-event
+  (testing "close event is surfaced in drain result, after the render and scripts it follows"
+    (let [q (rq/make-queue)]
+      (rq/enqueue-full-render! q)
+      (rq/enqueue-scripts! q ["bye.js"])
+      (rq/enqueue-close! q)
+      (let [result (rq/drain! q)]
+        (is (true? (:close? result)))
+        (is (false? (:shutdown? result)))
+        (is (true? (:full-render? result)))
+        (is (= ["bye.js"] (:scripts result))))))
+  (testing "close is false otherwise"
+    (let [q (rq/make-queue)]
+      (rq/enqueue-full-render! q)
+      (is (false? (:close? (rq/drain! q))))
+      (is (false? (:close? (rq/drain! q 10)))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Producer API returns nil (fire-and-forget)
 ;; ---------------------------------------------------------------------------
@@ -276,7 +293,8 @@
       (is (nil? (rq/enqueue-full-render! q)))
       (is (nil? (rq/enqueue-partial! q "x")))
       (is (nil? (rq/enqueue-scripts! q ["y"])))
-      (is (nil? (rq/enqueue-shutdown! q))))))
+      (is (nil? (rq/enqueue-shutdown! q)))
+      (is (nil? (rq/enqueue-close! q))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Timeout arity (heartbeat)
