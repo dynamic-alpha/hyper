@@ -29,6 +29,19 @@
   the response, and the browser followed the redirect out of sight. A redirect
   on a page load stays a redirect, and other responses pass through unchanged.
 
+- Sessions - Actions can end or rotate their session. `effects/end-session!`
+  reloads every open tab of the session into a fresh session, removes the
+  session's data and deletes the session cookie, for signing out.
+  `effects/rotate-session!` gives the session a new id, keeping its data, and
+  sets the cookie to it, for signing in. Both take effect once the action has
+  run, and `hyper.test/test-action` reports them as `:session` (`:end` or
+  `:rotate`) in its `:effects`. A note that rotating reloads every other open
+  tab of the session: in the same browser they come back with the session's
+  data but lose their tab state, and a tab elsewhere holding the old id gets a
+  fresh session. A note too that a page loaded with a session cookie the
+  server does not know now gets a new session id rather than taking on the
+  cookie's.
+
 ### Bug Fixes
 
 - Session leaks - Fixes an issue where sessions were never cleaned up. A session

@@ -33,6 +33,12 @@
     (is (thrown-with-msg? Exception #"outside action context"
                           (effects/execute-script! "alert(1)"))))
 
+  (testing "end-session! and rotate-session! throw outside action context"
+    (is (thrown-with-msg? Exception #"outside action context"
+                          (effects/end-session!)))
+    (is (thrown-with-msg? Exception #"outside action context"
+                          (effects/rotate-session!))))
+
   (testing "navigate! throws outside action context"
     (is (thrown-with-msg? Exception #"outside action context"
                           (effects/navigate! :home)))))
@@ -162,6 +168,29 @@
       (is (= ["document.getElementById('q').focus()"]
              (get-in after [:effects :scripts]))))))
 
+(deftest test-session-effects-from-action
+  (testing "end-session! and rotate-session! appear in test-action :effects as :session"
+    (let [result (ht/test-page
+                   (fn [_req]
+                     [:div
+                      [:button {:data-on:click (h/action {:as "sign-out"} (effects/end-session!))} "Out"]
+                      [:button {:data-on:click (h/action {:as "sign-in"}
+                                                         (effects/rotate-session!)
+                                                         (reset! (h/session-cursor :user) "alice"))}
+                       "In"]
+                      [:button {:data-on:click (h/action {:as "both"}
+                                                         (effects/end-session!)
+                                                         (effects/rotate-session!))}
+                       "Both"]
+                      [:button {:data-on:click (h/action {:as "noop"})} "Nothing"]]))]
+      (is (= :end (get-in (ht/test-action result "sign-out") [:effects :session])))
+      (let [after (ht/test-action result "sign-in")]
+        (is (= :rotate (get-in after [:effects :session])))
+        (is (= "alice" (get-in after [:cursors :session :user]))))
+      (is (= :end (get-in (ht/test-action result "both") [:effects :session]))
+          "end-session! wins over rotate-session!")
+      (is (not (contains? (:effects (ht/test-action result "noop")) :session))))))
+
 (deftest test-navigate-from-action
   (testing "navigate! in action updates route state and queues pushState script"
     (let [home-page (fn [_req]
@@ -201,7 +230,7 @@
       (state/get-or-create-tab! app-state* session-id tab-id)
       (swap! app-state* assoc-in [:tabs tab-id :renderer]
              {:enqueue-scripts! #(rq/enqueue-scripts! q %)})
-      (watch/setup-watchers! app-state* session-id tab-id #(rq/enqueue-full-render! q))
+      (watch/setup-watchers! app-state* tab-id #(rq/enqueue-full-render! q))
       (try
         (binding [context/*request* {:hyper/app-state  app-state*
                                      :hyper/session-id session-id

@@ -46,15 +46,19 @@
 (defn setup-watchers!
   "Setup a single watcher on app-state that triggers re-renders when
    global, session, tab, route, or signal state changes for this tab.
+   The session is the tab's current one: a session that gets a new id is
+   followed, and re-renders the tab so its actions use the new id.
    Route URL sync is handled client-side via MutationObserver on data-hyper-url.
 
    External-source watches (routes/head Vars, component registry, user
    `h/watch!`, route-level `:watches`) are not managed here — they are subviews
    (see `hyper.subview`), wired/torn down through the subview lifecycle."
-  [app-state* session-id tab-id trigger-render!]
+  [app-state* tab-id trigger-render!]
   (let [watch-key    (keyword (str "render-" tab-id))
         global-path  [:global]
-        session-path [:sessions session-id :data]
+        session      (fn [state]
+                       (let [session-id (get-in state [:tabs tab-id :session-id])]
+                         [session-id (get-in state [:sessions session-id :data])]))
         tab-path     [:tabs tab-id :data]
         route-path   [:tabs tab-id :route]
         signals-path [:tabs tab-id :signals]]
@@ -70,8 +74,8 @@
                    (when (or route-changed?
                              (not= (get-in old-state global-path)
                                    (get-in new-state global-path))
-                             (not= (get-in old-state session-path)
-                                   (get-in new-state session-path))
+                             (not= (session old-state)
+                                   (session new-state))
                              (not= (get-in old-state tab-path)
                                    (get-in new-state tab-path))
                              (not= (get-in old-state signals-path)

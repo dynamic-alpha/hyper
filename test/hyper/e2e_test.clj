@@ -12,7 +12,8 @@
             [hyper.server]
             [hyper.state :as state]
             [wally.main :as w])
-  (:import (com.microsoft.playwright Playwright BrowserType$LaunchOptions)))
+  (:import (com.microsoft.playwright Playwright BrowserType$LaunchOptions)
+           (com.microsoft.playwright.options Cookie)))
 
 ;; ---------------------------------------------------------------------------
 ;; Test routes — defined as a Var so we can redef for live-reload tests
@@ -357,6 +358,16 @@
    [:h1 "Test Reconnect"]
    [:button#retry {:data-on:click (h/reconnect)} "Retry"]])
 
+(defn- sign-out-get [_]
+  (let [user* (h/session-cursor :user "none")]
+    [:div
+     [:h1 "Test Sign Out"]
+     [:button#sign-in {:data-on:click (h/action (reset! user* "alice"))} "Sign in"]
+     [:button#sign-in-rotating {:data-on:click (h/action (reset! user* "alice") (effects/rotate-session!))}
+      "Sign in with a new session id"]
+     [:button#sign-out {:data-on:click (h/action (effects/end-session!))} "Sign out"]
+     [:span#user @user*]]))
+
 (def ^:private refuse-actions-to
   "The location the test middleware redirects action requests to, or nil to
    let them through."
@@ -444,7 +455,11 @@
    ["/reconnect"
     {:name  :reconnect
      :title "Reconnect"
-     :get   #'reconnect-get}]])
+     :get   #'reconnect-get}]
+   ["/sign-out"
+    {:name  :sign-out
+     :title "Sign Out"
+     :get   #'sign-out-get}]])
 
 (def ^:dynamic *test-routes* (default-routes))
 
@@ -1927,4 +1942,104 @@
               "the action did not run"))
         (finally
           (reset! refuse-actions-to nil)
+          (close-browser! browser-info))))))
+
+(deftest ^:e2e end-session-reloads-tabs-into-a-new-session-test
+  (testing "ending the session reloads each of its tabs into a fresh session"
+    (let [browser-info (launch-browser)
+          ctx          (new-context browser-info)
+          page1        (new-page ctx)
+          page2        (new-page ctx)
+          tab-id       #(second (re-find #"tab-id=([^']+)'"
+                                         (str (eval-js "document.body.getAttribute('data-init')"))))]
+      (try
+        (doseq [page [page1 page2]]
+          (w/with-page page
+            (w/navigate (str base-url "/sign-out"))
+            (wait-for-sse)
+            (let [t (tab-id)]
+              (is (wait-for-pred #(some? (get-in @@test-state* [:tabs t :renderer])))))))
+        (let [old-tabs (set (for [page [page1 page2]] (w/with-page page (tab-id))))]
+          (w/with-page page1
+            (w/click "#sign-in"))
+          (doseq [page [page1 page2]]
+            (w/with-page page
+              (is (wait-for-text "#user" "alice"))
+              (eval-js "window.__beforeReload = true")))
+          (w/with-page page1
+            (w/click "#sign-out"))
+          (doseq [page [page1 page2]]
+            (w/with-page page
+              (is (wait-for-pred #(nil? (eval-js "window.__beforeReload"))) "the page reloaded")
+              (wait-for-sse)
+              (is (wait-for-text "#user" "none") "into a session without the old data")
+              (is (not (contains? old-tabs (tab-id))) "in a new tab")))
+          (is (not-any? old-tabs (keys (:tabs @@test-state*))) "the old tabs are gone")
+          (is (not-any? #(= "alice" (get-in % [:data :user])) (vals (:sessions @@test-state*)))
+              "and so is the old session's data"))
+        (finally
+          (close-browser! browser-info))))))
+
+(defn- session-cookie-value
+  "The value of the session cookie of browser context `ctx`."
+  [ctx]
+  (some #(when (= "hyper-session" (.name ^Cookie %)) (.value ^Cookie %)) (.cookies ctx)))
+
+(deftest ^:e2e rotate-session-reloads-the-sessions-other-tabs-test
+  (testing "rotating the session keeps the acting tab, and reloads the others into the new id or a fresh session"
+    (let [browser-info (launch-browser)
+          attacker-ctx (new-context browser-info)
+          attacker     (new-page attacker-ctx)
+          ctx          (new-context browser-info)
+          page1        (new-page ctx)
+          page2        (new-page ctx)
+          tab-id       #(second (re-find #"tab-id=([^']+)'"
+                                         (str (eval-js "document.body.getAttribute('data-init')"))))]
+      (try
+        (w/with-page attacker
+          (w/navigate (str base-url "/sign-out"))
+          (wait-for-sse))
+        ;; The attacker's session id, planted in the person's browser.
+        (let [planted (session-cookie-value attacker-ctx)]
+          (.addCookies ctx [(.setUrl (Cookie. "hyper-session" planted) base-url)])
+          (doseq [page [page1 page2]]
+            (w/with-page page
+              (w/navigate (str base-url "/sign-out"))
+              (wait-for-sse)
+              (let [t (tab-id)]
+                (is (wait-for-pred #(some? (get-in @@test-state* [:tabs t :renderer])))))))
+          (is (= planted (session-cookie-value ctx)) "the person's tabs joined the planted session")
+          (let [page1-tab (w/with-page page1 (tab-id))
+                page2-tab (w/with-page page2 (tab-id))]
+            (doseq [page [attacker page1 page2]]
+              (w/with-page page
+                (eval-js "window.__beforeReload = true")))
+            (w/with-page page1
+              (w/click "#sign-in-rotating")
+              (is (wait-for-text "#user" "alice")))
+            (w/with-page page2
+              (is (wait-for-pred #(nil? (eval-js "window.__beforeReload"))) "the other tab reloaded")
+              (wait-for-sse)
+              (is (wait-for-text "#user" "alice") "into the rotated session, with its data")
+              (is (not= page2-tab (tab-id)) "in a new tab"))
+            (w/with-page attacker
+              (is (wait-for-pred #(nil? (eval-js "window.__beforeReload"))) "the attacker's tab reloaded")
+              (wait-for-sse)
+              (is (wait-for-text "#user" "none") "into a fresh session"))
+            (w/with-page page1
+              (is (true? (eval-js "window.__beforeReload")) "the acting tab did not reload")
+              (is (= page1-tab (tab-id))))
+            (let [new-id (session-cookie-value ctx)]
+              (is (not= planted new-id))
+              (is (not= new-id (session-cookie-value attacker-ctx)))
+              (is (not (contains? (:sessions @@test-state*) planted)) "the planted id names no session")
+              (is (= "alice" (get-in @@test-state* [:sessions new-id :data :user]))))
+            (testing "the acting tab's actions still work"
+              (w/with-page page1
+                (w/click "#sign-out"))
+              (doseq [page [page1 page2]]
+                (w/with-page page
+                  (wait-for-sse)
+                  (is (wait-for-text "#user" "none")))))))
+        (finally
           (close-browser! browser-info))))))

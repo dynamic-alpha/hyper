@@ -61,6 +61,7 @@
   (testing "Middleware reuses existing session from cookie"
     (let [app-state*          (atom (state/init-state))
           existing-session-id "ses_existing_123"
+          _                   (state/get-or-create-session! app-state* existing-session-id)
           handler             (fn [req]
                                 {:status 200
                                  :body   (str "session: " (:hyper/session-id req))})
@@ -70,6 +71,16 @@
 
       (is (nil? (get-in response [:cookies "hyper-session"])))
       (is (.contains (:body response) "session: ses_existing_123")))))
+
+(deftest test-wrap-hyper-context-unknown-session
+  (testing "Middleware gives a cookie naming no session a new session id"
+    (let [app-state* (atom (state/init-state))
+          handler    (fn [req] {:status 200 :body (:hyper/session-id req)})
+          wrapped    ((server/wrap-hyper-context app-state*) handler)
+          response   (wrapped {:cookies {"hyper-session" {:value "ses_unknown"}}})]
+      (is (string/starts-with? (:body response) "ses_"))
+      (is (not= "ses_unknown" (:body response)))
+      (is (empty? (:sessions @app-state*)) "and creates no session"))))
 
 (deftest test-wrap-hyper-context-tab-id-from-query
   (testing "Middleware uses tab-id from query params"
@@ -518,24 +529,26 @@
           (is (seq (:humanized (json/parse-string (.toString output "UTF-8") true)))))))
     (is (zero? @rendered*))))
 
-(def ^:private session-cookie
-  "The cookie of the session the navigation tests' tabs are loaded in."
-  {"cookie" "hyper-session=S"})
+(defn- -session-cookie
+  "The cookie header naming the session whose cookie `response` set."
+  [response]
+  {"cookie" (some #(re-find #"^hyper-session=[^;]+" %)
+                  (get-in response [:headers "Set-Cookie"]))})
 
 (defn- -load-tab!
-  "Loads a page into tab `tab-id` of the session of `session-cookie`."
+  "Loads a page into tab `tab-id` of a new session, and returns the cookie
+   header naming it."
   [handler tab-id]
-  (handler {:uri          "/no-such-page"        :request-method :get
-            :query-string (str "tab-id=" tab-id)
-            :headers      session-cookie}))
+  (-session-cookie
+    (handler {:uri          "/no-such-page"        :request-method :get
+              :query-string (str "tab-id=" tab-id)})))
 
 (defn- -navigate
-  "Posts a navigation of tab `tab-id` of the session of `session-cookie` to
-   `path`."
-  [handler tab-id path]
+  "Posts a navigation of tab `tab-id` to `path`, with cookie header `cookie`."
+  [handler cookie tab-id path]
   (handler {:uri          "/hyper/navigate"             :request-method :post
             :query-params {"path" path "tab-id" tab-id}
-            :headers      session-cookie}))
+            :headers      cookie}))
 
 (deftest invalid-navigation-parameters-do-not-replace-the-tab-route
   (let [app-state* (atom (state/init-state))
@@ -543,9 +556,9 @@
                      [["/items/:id" {:name       :item
                                      :parameters {:path [:map [:id :int]]}
                                      :get        (fn [_] [:p "OK"])}]] app-state*)
-        _          (-load-tab! handler "T")
+        cookie     (-load-tab! handler "T")
         before     (get-in @app-state* [:tabs "T" :route])
-        response   (-navigate handler "T" "/items/not-an-int")]
+        response   (-navigate handler cookie "T" "/items/not-an-int")]
     (is (= 400 (:status response)))
     (is (= {:id ["should be an integer"]}
            (:humanized (json/parse-string (:body response) true))))
@@ -559,14 +572,14 @@
                                      :parameters {:path  [:map [:id :int]]
                                                   :query [:map [:capture :uuid]]}
                                      :get        (fn [_] [:p "OK"])}]] app-state*)
-        _          (-load-tab! handler "T")
-        good       (-navigate handler "T" (str "/items/42?capture=" capture))]
+        cookie     (-load-tab! handler "T")
+        good       (-navigate handler cookie "T" (str "/items/42?capture=" capture))]
     (is (= 200 (:status good)))
     (is (= {:name        :item    :path         "/items/42"
             :path-params {:id 42} :query-params {:capture capture}}
            (get-in @app-state* [:tabs "T" :route])))
     (let [before (get-in @app-state* [:tabs "T" :route])
-          bad    (-navigate handler "T" "/items/42?capture=invalid")]
+          bad    (-navigate handler cookie "T" "/items/42?capture=invalid")]
       (is (= 400 (:status bad)))
       (is (= {:capture ["should be a uuid"]}
              (:humanized (json/parse-string (:body bad) true))))
@@ -599,8 +612,8 @@
    resulting tab route."
   [handler app-state* url]
   (let [tab-id   (str (gensym "tab_"))
-        _        (-load-tab! handler tab-id)
-        response (-navigate handler tab-id url)]
+        cookie   (-load-tab! handler tab-id)
+        response (-navigate handler cookie tab-id url)]
     (is (= 200 (:status response)) url)
     (get-in @app-state* [:tabs tab-id :route])))
 
@@ -775,7 +788,7 @@
         (swap! app-state* assoc-in [:tabs tab-id :renderer]
                {:trigger-render! (fn [])
                 :stop!           #(swap! stopped conj tab-id)})
-        (watch/setup-watchers! app-state* session-id tab-id (fn []))
+        (watch/setup-watchers! app-state* tab-id (fn []))
         (actions/register-action! app-state* session-id tab-id
                                   (fn [_] (println "action")) (str "a-" tab-id "-0")))
 
@@ -1017,8 +1030,8 @@
           routes     [["/" {:name :home
                             :get  (fn [_req] [:div "Home"])}]]
           handler    (server/create-handler routes app-state* {:not-found nil})
-          _          (handler {:uri "/" :request-method :get :query-string "tab-id=T" :headers session-cookie})
-          response   (-navigate handler "T" "/ghost")]
+          cookie     (-session-cookie (handler {:uri "/" :request-method :get :query-string "tab-id=T"}))
+          response   (-navigate handler cookie "T" "/ghost")]
       (is (= 404 (:status response)))
       (is (string/includes? (:body response) "Route not found"))))
 
@@ -1109,7 +1122,7 @@
           q1              (rq/make-queue)]
       (state/get-or-create-tab! app-state* session-id tab-id)
       (swap! app-state* assoc-in [:tabs tab-id :renderer] {:render-queue q1})
-      (watch/setup-watchers! app-state* session-id tab-id trigger-render!)
+      (watch/setup-watchers! app-state* tab-id trigger-render!)
 
       (rendering app-state* session-id tab-id
                  (reset! (h/tab-cursor :n 0) 1))

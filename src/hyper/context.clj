@@ -216,16 +216,19 @@
 (defn require-context!
   "Extract and validate the request context from *request*.
    Throws if called outside a request context or if required keys are missing.
-   Returns a map with :session-id, :tab-id, :app-state*, and :router."
+   Returns a map with :session-id, :tab-id, :app-state*, and :router.
+   :session-id is the tab's current session, or the request's when the tab
+   has none."
   [caller-name]
   (when-not *request*
     (throw (ex-info (str caller-name " called outside request context") {})))
-  (let [session-id (:hyper/session-id *request*)
-        tab-id     (:hyper/tab-id *request*)
+  (let [tab-id     (:hyper/tab-id *request*)
         app-state* (:hyper/app-state *request*)]
     (when-not app-state*
       (throw (ex-info "No app-state in request" {:request *request*})))
-    {:session-id session-id
+    ;; A request bound before the session was rotated still names the old id.
+    {:session-id (or (get-in @app-state* [:tabs tab-id :session-id])
+                     (:hyper/session-id *request*))
      :tab-id     tab-id
      :app-state* app-state*
      :router     (:hyper/router *request*)}))

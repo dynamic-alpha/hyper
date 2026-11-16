@@ -42,7 +42,7 @@
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
 
-      (watch/setup-watchers! app-state* session-id tab-id trigger-render!)
+      (watch/setup-watchers! app-state* tab-id trigger-render!)
 
       ;; Change tab state
       (swap! app-state* assoc-in [:tabs tab-id :data :count] 1)
@@ -82,7 +82,7 @@
              {:trigger-render! trigger-render!
               :stop!           #(reset! stopped? true)})
 
-      (watch/setup-watchers! app-state* session-id tab-id trigger-render!)
+      (watch/setup-watchers! app-state* tab-id trigger-render!)
 
       (is (some? (render/get-render-fn app-state* tab-id)))
       (is (contains? (:tabs @app-state*) tab-id))

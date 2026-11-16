@@ -256,8 +256,9 @@
    Blocks on the render queue until events are available, drains them into
    a consistent batch, then renders and writes.  The queue replaces the
    previous Semaphore + atoms approach, eliminating all shared mutable state.
-   Exits when a :shutdown event is received or the connection closes (a write
-   throws, so `send-sse!` returns false).
+   Exits when a :shutdown event is received, after sending the scripts queued
+   with it, or when the connection closes (a write throws, so `send-sse!`
+   returns false).  Each render is of the tab's current session.
 
    The SSE response headers are set by `sse-events-handler` on the response
    map; here we only write the body (connected event, then render payloads)."
@@ -290,7 +291,12 @@
                     (rq/drain! render-queue heartbeat-ms)
                     (rq/drain! render-queue))]
               (cond
-                shutdown? nil
+                ;; A tab torn down right after a script was queued for it (a
+                ;; reload by effects/end-session!) still gets the script.
+                shutdown?
+                (do (send-pending-scripts! (into scripts-before-render scripts) tab-id
+                                           os br-out br-stream)
+                    nil)
 
                 ;; No events within the heartbeat window — send a keepalive.
                 ;; The write keeps idle connections warm through proxies and
@@ -325,7 +331,9 @@
                                                    (not (seq sig-patches)))
                                             (handle-partial-render app-state* tab-id dirty-ids
                                                                    os br-out br-stream)
-                                            (handle-full-render app-state* session-id tab-id sig-patches
+                                            (handle-full-render app-state*
+                                                                (get-in @app-state* [:tabs tab-id :session-id] session-id)
+                                                                tab-id sig-patches
                                                                 known-signals
                                                                 trigger-render! enqueue-partial!
                                                                 os br-out br-stream))
@@ -384,13 +392,17 @@
                 (not (contains? cookie :secure)) (assoc :secure (boolean (https-request? req)))))))
 
 (defn wrap-hyper-context
-  "Middleware that adds session-id and tab-id to the request."
+  "Middleware that adds session-id and tab-id to the request.  The session id
+   is the session cookie's when it names a session the server holds, and a
+   new one otherwise."
   [app-state*]
   (fn [handler]
     (fn [req]
       (let [cookie-name (:name (:session-cookie @app-state* default-session-cookie-opts))
-            session-id  (or (get-in req [:cookies cookie-name :value])
-                            (generate-session-id))
+            cookie-id   (get-in req [:cookies cookie-name :value])
+            session-id  (if (contains? (:sessions @app-state*) cookie-id)
+                          cookie-id
+                          (generate-session-id))
             tab-id      (or (get-in req [:query-params "tab-id"])
                             (get-in req [:params :tab-id])
                             (generate-tab-id))
@@ -531,7 +543,8 @@
       `conn-id`).
 
    `conn-id` uniquely identifies this connection so a stale half-open
-   connection can't detach a tab whose renderer a newer one already replaced."
+   connection can't detach a tab whose renderer a newer one already replaced.
+   The renderer's `:stopped` promise is delivered once the loop has exited."
   [app-state* session-id tab-id ^java.io.OutputStream os compress? conn-id]
   (let [;; A tab whose SSE watchers were already set up is a reconnect: its
         ;; state/subviews/workers survived the disconnect grace window, so we
@@ -542,6 +555,7 @@
                          :trigger-partial! (tab-trigger-partial! app-state* tab-id)
                          :enqueue-scripts! #(rq/enqueue-scripts! render-queue %)
                          :stop!            #(rq/enqueue-shutdown! render-queue)
+                         :stopped          (promise)
                          :render-queue     render-queue
                          :conn-id          conn-id
                          :thread           (Thread/currentThread)}
@@ -566,7 +580,7 @@
       ;; is attached later.
       (do
         (swap! app-state* assoc-in [:tabs tab-id :connection-initialized?] true)
-        (watch/setup-watchers! app-state* session-id tab-id trigger-render!)
+        (watch/setup-watchers! app-state* tab-id trigger-render!)
         ;; Framework watches as :tab-scoped subviews — set up once at connect,
         ;; survive navigation, torn down on full disconnect:
         ;; - routes/head Vars: re-defs trigger re-renders for all tabs
@@ -589,7 +603,8 @@
                    :id    :hyper.event/tab-disconnect
                    :data  {:hyper/tab-id tab-id}
                    :msg   "Tab disconnected — starting grace window"})
-          (detach-tab! app-state* tab-id))))))
+          (detach-tab! app-state* tab-id))
+        (deliver (:stopped renderer) true)))))
 
 (def ^:private unknown-tab-response
   {:status  404
@@ -602,6 +617,80 @@
   (let [session-id (get-in @app-state* [:tabs tab-id :session-id])]
     (and (some? session-id)
          (= session-id (:hyper/session-id req)))))
+
+(defn- reload-and-remove-tabs!
+  "Reload those of tabs `tab-ids` that were open in `state`, remove all of
+   them, then remove session `session-id` unless a tab is in it."
+  [app-state* state session-id tab-ids]
+  (let [renderers (keep #(get-in state [:tabs % :renderer]) tab-ids)
+        deadline  (+ (System/currentTimeMillis) 5000)]
+    ;; A renderer sends the scripts queued ahead of its shutdown.
+    (doseq [{:keys [enqueue-scripts! stop!]} renderers]
+      (when enqueue-scripts! (enqueue-scripts! ["window.location.reload()"]))
+      (when stop! (stop!)))
+    ;; A render still running would write its tab back after the teardown.
+    (doseq [{:keys [stopped]} renderers
+            :when             stopped]
+      (deref stopped (max 0 (- deadline (System/currentTimeMillis))) nil))
+    (doseq [t tab-ids]
+      (cleanup-tab! app-state* t))
+    ;; A render or teardown since the session's removal may have written it back.
+    (swap! app-state* (fn [state]
+                        (cond-> state
+                          (empty? (get-in state [:sessions session-id :tabs]))
+                          (update :sessions dissoc session-id))))))
+
+(defn- apply-session-effect
+  "`response` after applying session effect `effect` (:end or :rotate, see
+   `effects/end-session!` and `effects/rotate-session!`) of an action of tab
+   `tab-id` run for `req`, with the session cookie deleted or set to the new
+   id.  On rotation the session's other tabs are reloaded and removed once
+   the response's body has been written.  `response` as it is when `effect`
+   is nil or the session is gone."
+  [response app-state* req tab-id effect]
+  (let [session-id     (get-in @app-state* [:tabs tab-id :session-id])
+        {:keys [name]} (:session-cookie @app-state* default-session-cookie-opts)]
+    (cond
+      (or (nil? effect) (not (contains? (:sessions @app-state*) session-id)))
+      response
+
+      (= :end effect)
+      ;; Removed before any tab reloads, so a reloaded page starts afresh.
+      (let [[state] (swap-vals! app-state* update :sessions dissoc session-id)]
+        (reload-and-remove-tabs! app-state* state session-id
+                                 (get-in state [:sessions session-id :tabs]))
+        (-> response
+            (with-session-cookie app-state* req)
+            (update-in [:cookies name] assoc :value "" :max-age 0)))
+
+      :else
+      ;; Moved before any other tab reloads, so a reloaded page cannot join
+      ;; the old id.
+      (let [new-id          (generate-session-id)
+            [state rotated] (swap-vals! app-state*
+                                        (fn [state]
+                                          (let [session (get-in state [:sessions session-id])]
+                                            (if (and session
+                                                     (= session-id (get-in state [:tabs tab-id :session-id])))
+                                              (-> state
+                                                  (update :sessions dissoc session-id)
+                                                  (assoc-in [:sessions new-id] (assoc session :tabs #{tab-id}))
+                                                  (assoc-in [:tabs tab-id :session-id] new-id))
+                                              state))))]
+        (if (contains? (:sessions rotated) new-id)
+          (let [body (:body response)]
+            (-> response
+                (with-session-cookie app-state* (assoc req :hyper/session-id new-id))
+                (assoc :body (reify ring-protocols/StreamableResponseBody
+                               (write-body-to-stream [_ response os]
+                                 ;; Sent first, so the browser's other tabs reload
+                                 ;; with the new cookie.
+                                 (try
+                                   (ring-protocols/write-body-to-stream body response os)
+                                   (finally
+                                     (reload-and-remove-tabs! app-state* state session-id
+                                                              (disj (get-in state [:sessions session-id :tabs]) tab-id)))))))))
+          response)))))
 
 (defn- script-stream-response
   "A response whose event stream runs `js` on the page, then ends."
@@ -786,6 +875,7 @@
    An action that throws is logged and does not stop the ones after it; the
    response is then a 500, still carrying the cookies of those that ran.
    Afterwards renders before `base` are dropped: no click can name them.
+   Then the session is ended or rotated when an action asked for it.
    A tab that is not of the request's session is refused and runs nothing."
   [app-state* req tab-id]
   (let [lock (when (tab-in-session? app-state* req tab-id)
@@ -795,31 +885,38 @@
       (let [{:keys [base actions]} (json/parse-string (read-body req) true)]
         (.lock lock)
         (try
-          (let [last-seq (get-in @app-state* [:tabs tab-id :action-seq] 0)
-                results  (->> actions
-                              (filter #(< last-seq (:seq %)))
-                              (sort-by :seq)
-                              (mapv (fn [{:keys [id seq] :as queued}]
-                                      (swap! app-state* assoc-in [:tabs tab-id :action-seq] seq)
-                                      (try
-                                        {:pending (run-queued-action! app-state* req tab-id queued)}
-                                        (catch Throwable e
-                                          (t/error! {:id   :hyper.error/action-handler
-                                                     :msg  "Error executing action handler"
-                                                     :data {:hyper/action-id id}}
-                                                    e)
-                                          {:error e})))))
-                error    (some :error results)]
-            (actions/evict-renders-before! app-state* tab-id base)
-            (reduce (fn [response {:keys [pending]}]
-                      (cond-> response
-                        pending (effects/apply-cookies-to-response pending)))
-                    (if error
-                      {:status  500
-                       :headers {"Content-Type" "application/json"}
-                       :body    (json/generate-string {:error (or (.getMessage ^Throwable error) (str error))})}
-                      {:status 204})
-                    results))
+          ;; Checked again: a request that waited for the lock may find the
+          ;; session ended or rotated by the one before it.
+          (if-not (tab-in-session? app-state* req tab-id)
+            unknown-tab-response
+            (let [last-seq (get-in @app-state* [:tabs tab-id :action-seq] 0)
+                  results  (->> actions
+                                (filter #(< last-seq (:seq %)))
+                                (sort-by :seq)
+                                (mapv (fn [{:keys [id seq] :as queued}]
+                                        (swap! app-state* assoc-in [:tabs tab-id :action-seq] seq)
+                                        (try
+                                          {:pending (run-queued-action! app-state* req tab-id queued)}
+                                          (catch Throwable e
+                                            (t/error! {:id   :hyper.error/action-handler
+                                                       :msg  "Error executing action handler"
+                                                       :data {:hyper/action-id id}}
+                                                      e)
+                                            {:error e})))))
+                  error    (some :error results)
+                  sessions (set (keep (comp :session :pending) results))]
+              (actions/evict-renders-before! app-state* tab-id base)
+              (-> (reduce (fn [response {:keys [pending]}]
+                            (cond-> response
+                              pending (effects/apply-cookies-to-response pending)))
+                          (if error
+                            {:status  500
+                             :headers {"Content-Type" "application/json"}
+                             :body    (json/generate-string {:error (or (.getMessage ^Throwable error) (str error))})}
+                            {:status 204})
+                          results)
+                  (apply-session-effect app-state* req tab-id
+                                        (or (sessions :end) (sessions :rotate))))))
           (finally
             (.unlock lock)))))))
 
@@ -849,7 +946,8 @@
      to submitted field values by matching input name).
    - Transitions the status ref :processing -> :done (handler return as
      `:result`) / :error, pushing each change to the client over SSE.
-   - Returns 204 (with any cookies from effects), like the action handler.
+   - Returns 204 (with any cookies from effects), and applies a session
+     effect, like the action handler.
 
    Refuses a tab that is not of the request's session, like the action
    handler."
@@ -905,7 +1003,9 @@
                 (when-let [scripts (seq (:scripts pending))]
                   (when-let [renderer (get-in @app-state* [:tabs tab-id :renderer])]
                     ((:enqueue-scripts! renderer) scripts)))
-                (effects/apply-cookies-to-response {:status 204} pending)))
+                (-> {:status 204}
+                    (effects/apply-cookies-to-response pending)
+                    (apply-session-effect app-state* req tab-id (:session pending)))))
             (catch Throwable e
               (t/error! {:id   :hyper.error/upload-handler
                          :msg  "Error executing upload handler"

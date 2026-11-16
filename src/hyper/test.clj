@@ -283,6 +283,9 @@
    - :effects    — Effects accumulated during execution. A map with:
                       :cookies — map of cookie-name to cookie opts
                       :scripts — vector of JS strings to execute
+                      :session — :end after `effects/end-session!`,
+                                 :rotate after `effects/rotate-session!`;
+                                 absent otherwise
                    Effects are collected but NOT applied — this lets tests
                    assert on what effects *would* happen without actually
                    setting cookies or sending SSE events.

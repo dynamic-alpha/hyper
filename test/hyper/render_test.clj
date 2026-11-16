@@ -354,7 +354,7 @@
       (state/get-or-create-tab! app-state* session-id tab-id)
       (render/register-render-fn! app-state* tab-id render-fn)
 
-      (watch/setup-watchers! app-state* session-id tab-id trigger-render!)
+      (watch/setup-watchers! app-state* tab-id trigger-render!)
 
       ;; Do an initial render with 3 items
       (swap! app-state* assoc-in [:tabs tab-id :data :item-count] 3)

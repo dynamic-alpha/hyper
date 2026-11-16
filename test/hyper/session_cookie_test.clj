@@ -44,6 +44,11 @@
   [header]
   (set (map (comp str/lower-case str/trim) (rest (str/split header #";")))))
 
+(defn- cookie-value
+  "The value `Set-Cookie` header `header` sets."
+  [header]
+  (second (re-find #"^[^=]+=([^;]*)" header)))
+
 (defn- load-page!
   "Load / into tab T, with cookie `cookie` and `req` merged in."
   ([handler cookie] (load-page! handler cookie {}))
@@ -146,12 +151,13 @@
       (is (nil? (session-cookie response "hyper-session")))
       (is (= #{"path=/" "httponly" "max-age=60" "samesite=strict"} (attributes header)))
       (testing "and the session is read from the named cookie"
-        (load-page! handler "sid=S" {:query-string "tab-id=T2"})
-        (is (= "S" (get-in @app* [:tabs "T2" :session-id]))))
+        (load-page! handler (str "sid=" (cookie-value header)) {:query-string "tab-id=T2"})
+        (is (= (cookie-value header) (get-in @app* [:tabs "T2" :session-id]))))
       (testing "and not from hyper-session"
-        (let [[handler app*] (app :session {:cookie {:name "sid"}})]
-          (load-page! handler "hyper-session=S")
-          (is (not= "S" (get-in @app* [:tabs "T" :session-id])))))))
+        (let [[handler app*] (app :session {:cookie {:name "sid"}})
+              session-id     (cookie-value (session-cookie (load-page! handler nil {:query-string "tab-id=U"}) "sid"))]
+          (load-page! handler (str "hyper-session=" session-id))
+          (is (not= session-id (get-in @app* [:tabs "T" :session-id])))))))
   (testing ":secure true makes it Secure over HTTP"
     (let [[handler] (app :session {:cookie {:secure true}})]
       (is (contains? (attributes (session-cookie (load-page! handler nil) "hyper-session"))
@@ -168,19 +174,22 @@
                         (app :session {:cookie "sid"}))))
 
 (deftest test-a-page-load-renews-the-cookie
-  (let [[handler] (app)]
+  (let [[handler] (app)
+        cookie    (str "hyper-session=" (cookie-value (session-cookie (load-page! handler nil) "hyper-session")))]
     (testing "a page load with the cookie sets it again, for the same session"
-      (let [header (session-cookie (load-page! handler "hyper-session=S") "hyper-session")]
-        (is (str/starts-with? header "hyper-session=S;"))
+      (let [header (session-cookie (load-page! handler cookie) "hyper-session")]
+        (is (str/starts-with? header (str cookie ";")))
         (is (contains? (attributes header) "max-age=604800"))))
     (testing "so does the not-found page"
-      (let [response (handler (request {:uri "/nowhere"} "hyper-session=S"))]
+      (let [response (handler (request {:uri "/nowhere"} cookie))]
         (is (= 404 (:status response)))
-        (is (str/starts-with? (session-cookie response "hyper-session") "hyper-session=S;"))))))
+        (is (str/starts-with? (session-cookie response "hyper-session") (str cookie ";")))))))
 
 (deftest test-other-requests-do-not-set-the-cookie
   (let [[handler] (app)
-        html      (:body (load-page! handler "hyper-session=S"))
+        page      (load-page! handler nil)
+        html      (:body page)
+        cookie    (str "hyper-session=" (cookie-value (session-cookie page "hyper-session")))
         action-id (second (re-find #"hyperAction\(&apos;(a_T_\d+)" html))
         action    (fn [cookie]
                     (handler (request {:request-method :post
@@ -199,13 +208,13 @@
         events    (fn [cookie]
                     (handler (request {:uri "/hyper/events" :query-string "tab-id=T"} cookie)))]
     (testing "an action, a navigation and the event stream with the cookie"
-      (let [response (action "hyper-session=S")]
+      (let [response (action cookie)]
         (is (= 204 (:status response)))
         (is (empty? (set-cookies response))))
-      (let [response (navigate "hyper-session=S")]
+      (let [response (navigate cookie)]
         (is (= 200 (:status response)))
         (is (empty? (set-cookies response))))
-      (let [response (events "hyper-session=S")]
+      (let [response (events cookie)]
         (is (= 200 (:status response)))
         (is (empty? (set-cookies response)))))
     (testing "an action, a navigation and the event stream refused for lack of the cookie"
@@ -214,4 +223,4 @@
         (is (empty? (set-cookies response)))))
     (testing "a route returning a Ring map, with or without the cookie"
       (is (empty? (set-cookies (handler (request {:uri "/api"} nil)))))
-      (is (empty? (set-cookies (handler (request {:uri "/api"} "hyper-session=S"))))))))
+      (is (empty? (set-cookies (handler (request {:uri "/api"} cookie))))))))

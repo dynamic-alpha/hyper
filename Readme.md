@@ -186,6 +186,44 @@ another site's iframe does not work, since its actions and event stream arrive
 without the cookie and are refused. Pass `:same-site :none` with
 `:secure true` to allow these.
 
+### Signing in and out
+
+Give the session a new id when a person signs in, with
+`effects/rotate-session!`. The session keeps its data, the action's response
+sets the cookie to the new id, and the old id no longer names the session, so
+an id someone learned before sign-in is worthless afterwards. The tab that ran
+the action carries on under the new id. Every other tab of the session
+reloads: in the person's own browser it gets the new cookie and comes back
+signed in, keeping the session's data but losing its tab state, while a tab
+elsewhere that held the old id gets a fresh session:
+
+```clojure
+(h/action
+  (when-let [user (authenticate! @email* @password*)]
+    (reset! (h/session-cursor :user) user)
+    (effects/rotate-session!)))
+```
+
+End the session when they sign out, with `effects/end-session!`. Every open
+tab of the session reloads into a fresh session, the session's data is
+removed, and the cookie is deleted:
+
+```clojure
+(h/action
+  (effects/delete-cookie! "remember-me")
+  (effects/end-session!))
+```
+
+Both take effect once the action has run, so the rest of the action still
+works on the session: a session cursor written after `rotate-session!` ends up
+in the session under its new id, and one written after `end-session!` is
+removed with the session.
+
+A page loaded with a session cookie that names no session the server holds,
+such as the id of an ended or rotated session, gets a new session id, and the
+page sets the cookie to it. Hyper never takes on a session id it does not
+hold.
+
 ## Actions
 
 Actions are server-side functions triggered by user interactions. The `action`
@@ -721,7 +759,7 @@ a snippet of JavaScript on the client.
 (require '[hyper.effects :as effects])
 ```
 
-Hyper provides four effect functions, all of which may only be called inside an
+Hyper provides six effect functions, all of which may only be called inside an
 action body:
 
 | Effect | What it does |
@@ -730,6 +768,8 @@ action body:
 | `set-cookie!` | Set an HTTP cookie on the action response |
 | `delete-cookie!` | Remove an HTTP cookie |
 | `execute-script!` | Run arbitrary JS on the client via SSE |
+| `end-session!` | End the session, reloading its open tabs (see [Signing in and out](#signing-in-and-out)) |
+| `rotate-session!` | Give the session a new id (see [Signing in and out](#signing-in-and-out)) |
 
 Effects are accumulated during action execution and processed after the action
 completes. Cookies are applied to the HTTP response; scripts are delivered to the
@@ -1252,7 +1292,8 @@ for the database connection the auth middleware *reads from*.
 Effects (`set-cookie!`, `delete-cookie!`, `navigate!`) compose naturally with
 middleware. A typical auth flow:
 
-**Login** — set the cookie, update the cursor, redirect:
+**Login** — set the cookie, update the cursor, give the session a new id,
+redirect:
 
 ```clojure
 (h/action {:as "login"}
@@ -1262,17 +1303,19 @@ middleware. A typical auth flow:
     (effects/set-cookie! "auth" token {:http-only true :max-age (* 60 60 24 7)})
     ;; Cursor — immediate reactivity, re-render sees the user right away
     (reset! (h/session-cursor :user) user)
+    ;; New session id — an id known before sign-in no longer names the session
+    (effects/rotate-session!)
     ;; Navigate — redirect to the home page after login
     (effects/navigate! :home)))
 ```
 
-**Logout** — delete the cookie, clear the cursor, redirect:
+**Logout** — delete the cookie and end the session, which reloads every open
+tab into a fresh session:
 
 ```clojure
 (h/action {:as "logout"}
   (effects/delete-cookie! "auth")
-  (reset! (h/session-cursor :user) nil)
-  (effects/navigate! :login))
+  (effects/end-session!))
 ```
 
 **Ring middleware** — hydrate the cursor from the cookie on each HTTP request.
@@ -2663,7 +2706,9 @@ snapshot of cursor state and any effects accumulated during execution:
 ```
 
 The `:effects` map contains `:cookies` (a map of cookie-name → cookie opts) and
-`:scripts` (a vector of JS strings). Effects are collected but **not applied** —
+`:scripts` (a vector of JS strings), and `:session` — `:end` or `:rotate` —
+after `effects/end-session!` or `effects/rotate-session!`. Effects are
+collected but **not applied** —
 this lets tests assert on what effects *would* happen without actually setting
 cookies or sending SSE events:
 
@@ -2762,6 +2807,10 @@ The E2E suite covers:
 - **Effects** — `navigate!`, `set-cookie!`, `delete-cookie!`, and
   `execute-script!` are exercised end-to-end, including combined effects in a
   single action
+- **Sign-in and sign-out** — `rotate-session!` keeps the acting tab and
+  reloads the session's other tabs, into the new id in the same browser and a
+  fresh session elsewhere; `end-session!` reloads every tab of the session
+  into a fresh session
 
 ## Contributing
 

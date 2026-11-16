@@ -10,6 +10,8 @@
    - `set-cookie!`     — set an HTTP cookie on the action response
    - `delete-cookie!`  — remove an HTTP cookie
    - `execute-script!` — run arbitrary JS on the client via SSE
+   - `end-session!`    — end the session, reloading its open tabs
+   - `rotate-session!` — give the session a new id
 
    These are intentionally few.  If you're reaching for execute-script!
    to update UI, consider whether a cursor would be more appropriate.
@@ -48,7 +50,8 @@
 (def ^:no-doc ^:dynamic *pending*
   "Accumulator for effects emitted during action execution.
 
-   Bound to (atom {:cookies {} :scripts []}) by the action handler.
+   Bound to (atom {:cookies {} :scripts []}) by the action handler, with
+   :session :end or :rotate added by `end-session!` / `rotate-session!`.
    nil outside action execution."
   nil)
 
@@ -197,6 +200,43 @@
     (swap! pending* update :scripts conj js)
     nil))
 
+(defn end-session!
+  "End the session of the action's tab once the action has run.
+
+   Every open tab of the session reloads into a fresh session, the session
+   and its data are removed, and the session cookie is deleted.  A page
+   loaded with the old id gets a new session, as with any session cookie the
+   server does not know.  Does nothing when the session is already gone.
+
+   Example:
+     ;; Sign out
+     (h/action
+       (effects/delete-cookie! \"auth\")
+       (effects/end-session!))"
+  []
+  (let [pending* (require-pending! "end-session!")]
+    (swap! pending* assoc :session :end)
+    nil))
+
+(defn rotate-session!
+  "Give the session of the action's tab a new id once the action has run,
+   keeping its data, and set the session cookie to the new id.  The action's
+   tab moves to the new id; every other tab of the session reloads, keeping
+   the session's data but losing its tab state when its browser has the new
+   cookie, and getting a fresh session otherwise.  The old id names no
+   session afterwards.  `end-session!` in the same action takes precedence.
+
+   Example:
+     ;; Sign in
+     (h/action
+       (when-let [user (authenticate! @email* @password*)]
+         (reset! (h/session-cursor :user) user)
+         (effects/rotate-session!)))"
+  []
+  (let [pending* (require-pending! "rotate-session!")]
+    (swap! pending* update :session #(or % :rotate))
+    nil))
+
 ;; ---------------------------------------------------------------------------
 ;; Internal — used by action-handler in server.clj
 ;; ---------------------------------------------------------------------------
@@ -209,7 +249,8 @@
 
 (defn ^:no-doc collect-pending!
   "Drain and return the accumulated effects.  Returns a map with
-   :cookies and :scripts.  Called by action-handler after action execution."
+   :cookies and :scripts, and :session when a session effect was emitted.
+   Called by action-handler after action execution."
   []
   (when *pending*
     @*pending*))

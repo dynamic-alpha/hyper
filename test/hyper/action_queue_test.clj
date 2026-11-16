@@ -12,17 +12,23 @@
             [hyper.subview :as subview]))
 
 (defn- page-handler
-  "A hyper handler serving `page` at /, and its app-state."
+  "A hyper handler serving `page` at /, and its app-state.  The handler sends
+   the session cookie its responses last set, as a browser does."
   [page]
-  (let [app* (atom (state/init-state))]
-    [(h/create-handler [["/" {:name :home :get page}]] :app-state app*) app*]))
-
-(def ^:private session-cookie
-  "The cookie of the session the tests' page loads and posts are made in."
-  {"cookie" "hyper-session=S"})
+  (let [app*    (atom (state/init-state))
+        handler (h/create-handler [["/" {:name :home :get page}]] :app-state app*)
+        cookie  (atom nil)]
+    [(fn [req]
+       (let [response (handler (cond-> req
+                                 @cookie (assoc-in [:headers "cookie"] @cookie)))]
+         (when-let [set-cookie (some #(re-find #"^hyper-session=[^;]+" %)
+                                     (get-in response [:headers "Set-Cookie"]))]
+           (reset! cookie set-cookie))
+         response))
+     app*]))
 
 (defn- get-page [handler]
-  (:body (handler {:request-method :get :uri "/" :query-string "tab-id=T" :headers session-cookie})))
+  (:body (handler {:request-method :get :uri "/" :query-string "tab-id=T"})))
 
 (defn- action-id
   "The id of the action on the element whose text is `label`."
@@ -38,7 +44,7 @@
   (handler {:request-method :post
             :uri            "/hyper/actions"
             :query-string   "tab-id=T"
-            :headers        (assoc session-cookie "content-type" "application/json")
+            :headers        {"content-type" "application/json"}
             :body           (json/generate-string {:base base :actions actions})}))
 
 (defn- queued
