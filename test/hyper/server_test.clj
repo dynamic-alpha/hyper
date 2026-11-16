@@ -1163,8 +1163,10 @@
                                   (catch InterruptedException _
                                     (deliver interrupted true))))))
       (Thread/sleep 50)
-      (swap! app-state* assoc-in [:tabs stale :disconnected-at]
-             (- (System/currentTimeMillis) 200000))
+      ;; As detach-tab! leaves it.
+      (swap! app-state* update-in [:tabs stale] #(-> %
+                                                     (dissoc :renderer)
+                                                     (assoc :disconnected-at (- (System/currentTimeMillis) 200000))))
 
       (server/reap-disconnected-tabs! app-state* (System/currentTimeMillis))
 

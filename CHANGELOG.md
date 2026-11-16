@@ -118,6 +118,13 @@
   than bringing it back. A session is now only created when a page loads into
   it.
 
+- Reaping - A tab whose event stream connects just as its disconnect grace
+  period runs out is now either kept, with its state, or reaped with its
+  stream ended, and the page reloads when it reconnects. Before, the reaper could tear the tab
+  down while its new stream was attaching, leaving the page connected to a
+  tab the server no longer had. This also applied to a page whose stream
+  first connected about one grace period after it was served.
+
 ## 0.3.0 — 2026-11-14
 
 ### Breaking Changes

@@ -247,3 +247,105 @@
       (is (= #{"T"} (get-in @app* [:sessions session-id :tabs])))
       (server/cleanup-tab! app* "T")
       (is (not= :timeout (deref stream 2000 :timeout))))))
+
+(defn- open-stream!
+  "Open the event stream of tab `tab-id` with a session cookie of
+   `session-id`; returns the response and a future of its body's write."
+  [handler tab-id session-id]
+  (let [response (handler {:request-method :get
+                           :uri            "/hyper/events"
+                           :query-string   (str "tab-id=" tab-id)
+                           :headers        {"cookie" (str "hyper-session=" session-id)}})]
+    [response (future
+                (ring-protocols/write-body-to-stream
+                  (:body response) response (java.io.OutputStream/nullOutputStream)))]))
+
+(defn- reap-meeting-stream!
+  "Run the reaper at `now`, opening the event stream of tab `tab-id` with a
+   session cookie of `session-id` as the reaper starts tearing the tab down.
+   Returns the stream's `:status`, and whether it `:ended?` before the
+   teardown went on."
+  [handler app* now tab-id session-id]
+  (let [cleanup-tab! server/cleanup-tab!
+        stream*      (atom nil)]
+    (with-redefs [server/cleanup-tab! (fn [app* t]
+                                        (when (= tab-id t)
+                                          (let [[response body] (open-stream! handler tab-id session-id)]
+                                            (reset! stream* {:status (:status response)
+                                                             :ended? (not= :timeout (deref body 2000 :timeout))})))
+                                        (cleanup-tab! app* t))]
+      (server/reap-disconnected-tabs! app* now))
+    @stream*))
+
+(deftest test-a-tab-whose-stream-attaches-as-the-reaper-runs-is-kept
+  (testing "a reconnected tab whose stamp is not yet cleared"
+    (let [[handler app*] (app)
+          session-id     (session-of (load-page! handler nil "T"))]
+      (disconnect! app* "T" (connect! handler app* "T"))
+      (swap! app* assoc-in [:sessions session-id :data :user] "alice")
+      (swap! app* assoc-in [:tabs "T" :data :draft] "hello")
+      (let [stamp    (get-in @app* [:tabs "T" :disconnected-at])
+            stream   (connect! handler app* "T")
+            renderer (get-in @app* [:tabs "T" :renderer])]
+        (swap! app* assoc-in [:tabs "T" :disconnected-at] stamp)
+        (server/reap-disconnected-tabs! app* (+ stamp grace-ms))
+        (is (identical? renderer (get-in @app* [:tabs "T" :renderer])))
+        (is (= {:draft "hello"} (get-in @app* [:tabs "T" :data])))
+        (is (= #{"T"} (get-in @app* [:sessions session-id :tabs])))
+        (is (= {:user "alice"} (get-in @app* [:sessions session-id :data])))
+        (is (= :timeout (deref stream 0 :timeout)) "its stream runs on")
+        (server/cleanup-tab! app* "T")
+        (is (not= :timeout (deref stream 2000 :timeout))))))
+  (testing "a page whose stream first connects about a grace period after it was served"
+    (let [[handler app*] (app)
+          session-id     (session-of (load-page! handler nil "T"))
+          served-at      (get-in @app* [:tabs "T" :disconnected-at])
+          stream         (connect! handler app* "T")
+          renderer       (get-in @app* [:tabs "T" :renderer])]
+      (swap! app* assoc-in [:tabs "T" :disconnected-at] served-at)
+      (server/reap-disconnected-tabs! app* (+ served-at grace-ms))
+      (is (identical? renderer (get-in @app* [:tabs "T" :renderer])))
+      (is (= #{"T"} (get-in @app* [:sessions session-id :tabs])))
+      (server/cleanup-tab! app* "T")
+      (is (not= :timeout (deref stream 2000 :timeout))))))
+
+(deftest test-a-tab-still-disconnected-after-the-grace-period-is-torn-down
+  (let [[handler app*] (app)
+        session-id     (session-of (load-page! handler nil "T"))]
+    (disconnect! app* "T" (connect! handler app* "T"))
+    (is (contains? (.getWatches app*) :render-T))
+    (server/reap-disconnected-tabs! app* (+ (get-in @app* [:tabs "T" :disconnected-at]) grace-ms))
+    (is (not (contains? (:tabs @app*) "T")))
+    (is (not (contains? (.getWatches app*) :render-T)) "with its watchers")
+    (is (not (contains? (:actions-by-tab @app*) "T")) "and actions")
+    (is (not (contains? (:sessions @app*) session-id)) "and its session, as its last tab")))
+
+(deftest test-a-stream-attaching-to-a-tab-being-reaped-ends
+  (testing "a tab that was connected before"
+    (let [[handler app*] (app)
+          session-id     (session-of (load-page! handler nil "T"))]
+      (disconnect! app* "T" (connect! handler app* "T"))
+      (is (= {:status 200 :ended? true}
+             (reap-meeting-stream! handler app* (+ (get-in @app* [:tabs "T" :disconnected-at]) grace-ms)
+                                   "T" session-id)))
+      (is (empty? (:tabs @app*)))
+      (is (empty? (:sessions @app*)) "the session is not brought back")))
+  (testing "a page whose stream never connected"
+    (let [[handler app*] (app)
+          session-id     (session-of (load-page! handler nil "T"))]
+      (is (= {:status 200 :ended? true}
+             (reap-meeting-stream! handler app* (+ (get-in @app* [:tabs "T" :disconnected-at]) grace-ms)
+                                   "T" session-id)))
+      (is (empty? (:tabs @app*)))
+      (is (empty? (:sessions @app*)))))
+  (testing "a page whose stream never connected, with another session's cookie"
+    (let [[handler app*] (app)
+          session-id     (session-of (load-page! handler nil "T"))
+          served-at      (get-in @app* [:tabs "T" :disconnected-at])
+          other-id       (session-of (load-page! handler nil "U"))]
+      (swap! app* assoc-in [:tabs "U" :disconnected-at] (+ served-at grace-ms))
+      (is (= {:status 404 :ended? true}
+             (reap-meeting-stream! handler app* (+ served-at grace-ms) "T" other-id)))
+      (is (= #{"U"} (set (keys (:tabs @app*)))))
+      (is (= #{"U"} (get-in @app* [:sessions other-id :tabs])) "the tab does not move to it")
+      (is (not (contains? (:sessions @app*) session-id))))))

@@ -482,18 +482,32 @@
   "Fully tear down every tab whose disconnect grace window has elapsed.
 
    A tab is eligible when it carries a `:disconnected-at` stamp older than the
-   configured `:disconnect-grace-ms` (default 3 minutes).  A tab is stamped
-   when its stream drops, and when its page is served without a stream
-   attached.  Connecting clears the stamp, so a tab that came back is never
-   reaped.  A session is removed with its last tab.  `now` is the current
-   epoch-millis (injectable for testing)."
+   configured `:disconnect-grace-ms` (default 3 minutes) and has no stream
+   attached.  A tab is stamped when its stream drops, and when its page is
+   served without a stream attached.  Connecting clears the stamp, so a tab
+   that came back is never reaped.  Eligible tabs are taken out of their
+   sessions at once, so a stream connecting later is refused rather than
+   attached to a tab being torn down.  A session is removed with its last
+   tab.  `now` is the current epoch-millis (injectable for testing)."
   [app-state* now]
   (let [grace-ms (long (get @app-state* :disconnect-grace-ms
-                            default-disconnect-grace-ms))]
-    (doseq [[tab-id tab] (:tabs @app-state*)
-            :let         [disconnected-at (:disconnected-at tab)]
-            :when        (and disconnected-at
-                              (>= (- now disconnected-at) grace-ms))]
+                            default-disconnect-grace-ms))
+        eligible (fn [state]
+                   (for [[tab-id tab] (:tabs state)
+                         :let         [disconnected-at (:disconnected-at tab)]
+                         :when        (and disconnected-at
+                                           (>= (- now disconnected-at) grace-ms)
+                                           (nil? (:renderer tab)))]
+                     tab-id))
+        ;; The session entry stays until its last tab's teardown is done, so
+        ;; :unmount fns still see its data.
+        unlink   (fn [state tab-id]
+                   (let [session-id (get-in state [:tabs tab-id :session-id])]
+                     (cond-> state
+                       (contains? (:sessions state) session-id)
+                       (update-in [:sessions session-id :tabs] disj tab-id))))
+        [before] (swap-vals! app-state* #(reduce unlink % (eligible %)))]
+    (doseq [tab-id (eligible before)]
       (t/log! {:level :info
                :id    :hyper.event/tab-reap
                :data  {:hyper/tab-id tab-id}
@@ -968,10 +982,11 @@
    on the response map here so they are committed before the body streams.
 
    A tab that never connected moves to the request's session when the server
-   holds that session, leaving its former session, which is removed when no
-   tab is left in it.  Any other tab that is not of the request's session is
-   refused.  The refusal reloads the page when the server does not know the
-   tab, or when the tab was connected before; otherwise it is a 404."
+   holds that session and the tab is still in its own, leaving its former
+   session, which is removed when no tab is left in it.  Any other tab that
+   is not of the request's session is refused.  The refusal reloads the page
+   when the server does not know the tab, or when the tab was connected
+   before; otherwise it is a 404."
   [app-state*]
   (fn [req]
     (let [session-id (:hyper/session-id req)
@@ -993,6 +1008,7 @@
                                     former-tabs (disj (get-in state [:sessions former-id :tabs]) tab-id)]
                                 (if (and tab
                                          (not (:connection-initialized? tab))
+                                         (contains? (get-in state [:sessions former-id :tabs]) tab-id)
                                          (not= former-id session-id)
                                          (contains? (:sessions state) session-id))
                                   (-> state
