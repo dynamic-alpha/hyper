@@ -2040,6 +2040,21 @@ action({
               (:cookies resp) (assoc :cookies (:cookies resp))))
           resp)))))
 
+(defn- wrap-refuse-cross-site
+  "`handler`, refusing with a 403 a request to one of hyper's endpoints under
+   `base-path` whose `Sec-Fetch-Site` header is `same-site` or `cross-site`."
+  [handler base-path]
+  (fn [req]
+    (if (and (endpoint base-path (:uri req))
+             (#{"same-site" "cross-site"}
+              (some-> (get-in req [:headers "sec-fetch-site"])
+                      clojure.string/trim
+                      clojure.string/lower-case)))
+      {:status  403
+       :headers {"Content-Type" "application/json"}
+       :body    "{\"error\": \"Cross-site request\"}"}
+      (handler req))))
+
 (defn create-handler
   "Create a Ring handler for the hyper application.
 
@@ -2241,7 +2256,10 @@ action({
            (br/wrap-brotli h)
            (keyword-params/wrap-keyword-params h)
            (params/wrap-params h)
-           (cookies/wrap-cookies h))]
+           (cookies/wrap-cookies h)
+           ;; Outermost, so a refused request reaches no parsing, session or
+           ;; app middleware.
+           (wrap-refuse-cross-site h base-path))]
      ;; Static middleware should be outermost so static requests avoid params/cookies.
      ;; Attach app-state* as metadata so start! can build a stop fn that cleans up.
      (with-meta (wrap-static handler-with-mw opts)

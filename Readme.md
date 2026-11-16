@@ -186,6 +186,12 @@ another site's iframe does not work, since its actions and event stream arrive
 without the cookie and are refused. Pass `:same-site :none` with
 `:secure true` to allow these.
 
+Hyper's own endpoints (actions, uploads, navigation, the event stream and
+cookie requests) also refuse, with a 403, a request whose `Sec-Fetch-Site`
+header is `same-site` or `cross-site`, whatever the cookie. Browsers set this
+header themselves, so it needs no configuration behind a proxy. Page routes
+and your own routes are not affected: a link from another site still works.
+
 ### Signing in and out
 
 Give the session a new id when a person signs in, with

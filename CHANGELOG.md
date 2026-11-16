@@ -143,6 +143,13 @@
   tab the server no longer had. This also applied to a page whose stream
   first connected about one grace period after it was served.
 
+- Cross-site requests - Hyper's actions, uploads, navigations, event streams
+  and cookie requests now answer a request whose `Sec-Fetch-Site` header is
+  `same-site` or `cross-site` with a 403, before the app's `:middleware`
+  runs. Before, another site could send them. A request with `same-origin`,
+  `none` or no such header is served as before, and page routes are not
+  affected.
+
 ## 0.3.0 — 2026-11-14
 
 ### Breaking Changes
