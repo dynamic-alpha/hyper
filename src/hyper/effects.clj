@@ -50,7 +50,8 @@
 (def ^:no-doc ^:dynamic *pending*
   "Accumulator for effects emitted during action execution.
 
-   Bound to (atom {:cookies {} :scripts []}) by the action handler, with
+   Bound to (atom {:cookies {} :scripts []}) by the action handler, and in
+   each tab by `hyper.core/run-in-tabs!`, with
    :session :end or :rotate added by `end-session!` / `rotate-session!`.
    nil outside action execution."
   nil)
@@ -180,7 +181,8 @@
 (defn execute-script!
   "Execute JavaScript on the client from within an action.
 
-   The script is sent via SSE as a Datastar execute-script event.
+   The script is sent via SSE as a Datastar execute-script event.  A tab
+   whose connection dropped gets it when it reconnects.
    Use sparingly — most UI updates are better expressed as cursor
    mutations that the render function responds to.
 

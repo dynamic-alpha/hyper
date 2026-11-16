@@ -276,6 +276,48 @@
           (get-in @app-state [:tabs tab-id :route]))
         (:hyper/route *request*))))
 
+(defn run-in-tabs!
+  "Run `f` in every open tab of `app-state*`, or in those where `pred` is
+   true, like `clojure.core/run!`.  For an application acting on other
+   people's tabs, from an action or a background thread.  Returns nil.
+
+   `pred` and `f` take no arguments.  Each runs with the tab's context, so
+   `tab-cursor`, `session-cursor`, `env` and `route` refer to that tab.
+   `pred` runs like a render: it writes nothing, and the render guard
+   reports its effects (cursor writes, default values).  A `pred` that
+   throws counts as false.
+
+   `f` runs straight away, once in each selected tab, including tabs whose
+   connection dropped within the grace period, one tab after another on the
+   calling thread.  Its cursor writes land in that tab and its session.  An
+   exception in one tab is logged and does not stop the others.
+
+   `f` may use the `hyper.effects` functions, which act on that tab:
+   scripts and `navigate!`'s URL change are sent down the tab's connection,
+   or when it has none, kept until it reconnects and dropped if the tab
+   expires.  Cookies (`set-cookie!`, `delete-cookie!`, and the session
+   cookie of `end-session!` and `rotate-session!`) are set by a request the
+   tab's browser makes when it gets them, before the tab's other scripts
+   run.  Rotating the session of a tab whose connection dropped signs the
+   person out: its reconnect carries the old cookie and is refused, so it
+   reloads into a fresh session.
+
+   Example:
+     ;; Revoke a person's access
+     (h/run-in-tabs! app* #(= user-id (:id @(h/session-cursor :user)))
+       effects/end-session!)
+
+     ;; Send the tabs showing a deleted project elsewhere
+     (h/run-in-tabs! app* #(let [{:keys [name path-params]} (h/route)]
+                             (and (= :project name) (= id (:id path-params))))
+       (fn []
+         (reset! (h/tab-cursor :notice) \"This project was deleted\")
+         (effects/navigate! :projects)))"
+  ([app-state* f]
+   (server/run-in-tabs! app-state* nil f))
+  ([app-state* pred f]
+   (server/run-in-tabs! app-state* pred f)))
+
 ;; ---------------------------------------------------------------------------
 ;; Batched cursor updates
 ;; ---------------------------------------------------------------------------

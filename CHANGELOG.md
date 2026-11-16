@@ -42,6 +42,14 @@
   server does not know now gets a new session id rather than taking on the
   cookie's.
 
+- Tabs - `h/run-in-tabs!` runs a function in every open tab, or in those where
+  a predicate is true, with each tab's context, from an action or a
+  background thread: `(h/run-in-tabs! app* #(= user-id (:id
+  @(h/session-cursor :user))) effects/end-session!)`. Its effects act on each
+  tab, and the browser fetches its cookies from Hyper. A script from
+  `execute-script!` for a tab whose connection dropped is now sent when it
+  reconnects; before, it was dropped.
+
 ### Bug Fixes
 
 - Session leaks - Fixes an issue where sessions were never cleaned up. A session

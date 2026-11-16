@@ -224,6 +224,39 @@ such as the id of an ended or rotated session, gets a new session id, and the
 page sets the cookie to it. Hyper never takes on a session id it does not
 hold.
 
+### Acting on other people's tabs
+
+`h/run-in-tabs!` runs a function in other people's open tabs, from an action
+or a background thread, like `clojure.core/run!`. With a predicate, it runs
+only in the tabs where the predicate is true. Both take no arguments and run
+with the tab's context, so `h/tab-cursor`, `h/session-cursor`, `h/env` and
+`h/route` refer to that tab:
+
+```clojure
+;; Revoke a person's access: each of their tabs reloads into a fresh session
+(h/run-in-tabs! app-state* #(= user-id (:id @(h/session-cursor :user)))
+  effects/end-session!)
+
+;; Send the tabs showing a deleted project elsewhere
+(h/run-in-tabs! app-state* #(let [{:keys [name path-params]} (h/route)]
+                              (and (= :project name) (= id (:id path-params))))
+  (fn []
+    (reset! (h/tab-cursor :notice) "This project was deleted")
+    (effects/navigate! :projects)))
+```
+
+The predicate runs like a render: it writes nothing, and the render guard
+reports a cursor write or a cursor default value in it. The function runs at
+once in each selected tab, including a tab whose connection dropped and has not
+yet expired. An exception in one tab is logged and does not stop the others.
+
+Effects act on the tab they run in. Scripts and `navigate!`'s URL change go
+down the tab's connection, or wait for it to reconnect. Cookies, including the
+session cookie of `end-session!` and `rotate-session!`, need a response to the
+tab's own browser: the browser fetches them from Hyper, then runs the tab's
+other scripts. Rotating the session of a tab whose connection dropped signs
+the person out, since its reconnect carries the old cookie.
+
 ## Actions
 
 Actions are server-side functions triggered by user interactions. The `action`
@@ -844,6 +877,9 @@ fragment that appends a self-removing `<script>` tag to the body.
 Use sparingly — most UI updates are better expressed as cursor mutations that
 the render function responds to. Legitimate uses include focusing an element,
 scrolling to a position, triggering a file download, or clipboard operations.
+
+A script for a tab whose connection dropped is kept until the tab reconnects,
+and dropped if the tab expires first.
 
 ### Composing multiple effects
 

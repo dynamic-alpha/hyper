@@ -7,6 +7,7 @@
    Run with: clojure -M:test --focus :e2e"
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
+            [hyper.context :as context]
             [hyper.core :as h]
             [hyper.effects :as effects]
             [hyper.server]
@@ -368,6 +369,17 @@
      [:button#sign-out {:data-on:click (h/action (effects/end-session!))} "Sign out"]
      [:span#user @user*]]))
 
+(defn- admin-get [_]
+  [:div
+   [:h1 "Test Admin"]
+   [:button#revoke {:data-on:click (h/action
+                                     (h/run-in-tabs! (:hyper/app-state context/*request*)
+                                                     #(= "alice" @(h/session-cursor :user))
+                                                     effects/end-session!)
+                                     (reset! (h/tab-cursor :revoked) "done"))}
+    "Revoke alice"]
+   [:span#revoked @(h/tab-cursor :revoked)]])
+
 (def ^:private refuse-actions-to
   "The location the test middleware redirects action requests to, or nil to
    let them through."
@@ -459,7 +471,11 @@
    ["/sign-out"
     {:name  :sign-out
      :title "Sign Out"
-     :get   #'sign-out-get}]])
+     :get   #'sign-out-get}]
+   ["/admin"
+    {:name  :admin
+     :title "Admin"
+     :get   #'admin-get}]])
 
 (def ^:dynamic *test-routes* (default-routes))
 
@@ -2041,5 +2057,41 @@
                 (w/with-page page
                   (wait-for-sse)
                   (is (wait-for-text "#user" "none")))))))
+        (finally
+          (close-browser! browser-info))))))
+
+(deftest ^:e2e run-in-tabs-ends-another-browsers-session-test
+  (testing "an admin's action ends another browser's session, whose page reloads into a fresh session"
+    (let [browser-info (launch-browser)
+          admin-ctx    (new-context browser-info)
+          admin        (new-page admin-ctx)
+          ctx          (new-context browser-info)
+          page         (new-page ctx)
+          tab-id       #(second (re-find #"tab-id=([^']+)'"
+                                         (str (eval-js "document.body.getAttribute('data-init')"))))]
+      (try
+        (w/with-page page
+          (w/navigate (str base-url "/sign-out"))
+          (wait-for-sse)
+          (w/click "#sign-in")
+          (is (wait-for-text "#user" "alice"))
+          (eval-js "window.__beforeReload = true"))
+        (let [old-id  (session-cookie-value ctx)
+              old-tab (w/with-page page (tab-id))]
+          (w/with-page admin
+            (w/navigate (str base-url "/admin"))
+            (wait-for-sse)
+            (eval-js "window.__beforeReload = true")
+            (w/click "#revoke")
+            (is (wait-for-text "#revoked" "done")))
+          (w/with-page page
+            (is (wait-for-pred #(nil? (eval-js "window.__beforeReload"))) "the page reloaded")
+            (wait-for-sse)
+            (is (wait-for-text "#user" "none") "into a session without the old data")
+            (is (not= old-tab (tab-id)) "in a new tab"))
+          (is (not (contains? (:sessions @@test-state*) old-id)) "the old session is gone")
+          (is (not= old-id (session-cookie-value ctx)) "and the browser's cookie names another")
+          (w/with-page admin
+            (is (true? (eval-js "window.__beforeReload")) "the admin's page did not reload")))
         (finally
           (close-browser! browser-info))))))
