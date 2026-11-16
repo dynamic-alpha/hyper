@@ -219,6 +219,61 @@ works on the session: a session cursor written after `rotate-session!` ends up
 in the session under its new id, and one written after `end-session!` is
 removed with the session.
 
+Many sign-ins and sign-outs happen in a route rather than an action, such as
+an OAuth or SSO callback, a magic link or a form post. There, use
+`hyper.ring` (aliased `h.ring`). `h.ring/rotate-session!` and
+`h.ring/end-session!` take the response and the request and return the
+response, so they thread with `->`:
+
+```clojure
+(require '[hyper.ring :as h.ring])
+
+;; OAuth callback
+(defn oauth-callback [req]
+  (let [user (exchange-code! (get-in req [:params :code]))]
+    (-> (ring.util.response/redirect "/")
+        (set-auth-cookie user)
+        (h.ring/rotate-session! req))))
+
+;; Sign out from a form post
+(defn sign-out [req]
+  (-> (ring.util.response/redirect "/")
+      (clear-auth-cookie)
+      (h.ring/end-session! req)))
+```
+
+There is no acting tab, so `rotate-session!` reloads every tab of the
+session once the response has been written, and they come back with the new
+cookie. `end-session!` reloads them into a fresh session and deletes the
+cookie. A tab that is leaving doesn't reload, so a sign-in form posted from
+a Hyper page, or a magic link clicked in one, lands on the redirect target.
+Both do nothing when the server holds no session for the request,
+such as a `form_post` callback arriving without the `SameSite=Lax` cookie.
+They don't write session data: restore it at sign-in from your own cookie,
+as `wrap-rehydrate-session` in [Common patterns](#common-patterns) does.
+A rotated session that no page joins within `:disconnect-grace-ms`, such as
+when the browser never follows the redirect, is removed.
+
+Routes and `:middleware` inside `create-handler` work as is. A route outside
+it wraps itself in `hyper.ring.middleware/wrap-hyper`, with the same atom
+passed to `create-handler` as `:app-state`. `wrap-hyper` includes Ring's
+`wrap-cookies`, so the cookie these functions set reaches the response:
+
+```clojure
+(def app* (atom (hyper.state/init-state)))
+
+(def app
+  (ring/routes
+    (-> auth-routes (h.ring.middleware/wrap-hyper app*))
+    (h/create-handler routes :app-state app*)))
+```
+
+`h.ring/session-id` is the request's session id when the server holds that
+session, and nil otherwise. `h.ring/endpoint` tells Hyper's own requests
+apart in middleware: `:action`, `:upload`, `:navigate` or `:events`, and nil
+for page and app routes. Every `hyper.ring` function throws for a request
+that has not been through Hyper's handler or `wrap-hyper`.
+
 A page loaded with a session cookie that names no session the server holds,
 such as the id of an ended or rotated session, gets a new session id, and the
 page sets the cookie to it. Hyper never takes on a session id it does not
@@ -1200,7 +1255,7 @@ The execution order for `:middleware` is:
 
 ```
 Request arrives
-  → Hyper built-ins: cookies → params → keyword-params → brotli → hyper-context
+  → Hyper built-ins: cookies → params → keyword-params → brotli → wrap-hyper
   → Your :middleware (first in vector = outermost, runs first)
   → Router dispatch (page-handler, action-handler, etc.)
 ```

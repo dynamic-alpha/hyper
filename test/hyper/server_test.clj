@@ -10,6 +10,7 @@
             [hyper.core :as h]
             [hyper.render :as render]
             [hyper.render.queue :as rq]
+            [hyper.ring.middleware :as h.ring.middleware]
             [hyper.routes :as routes]
             [hyper.server :as server]
             [hyper.state :as state]
@@ -24,8 +25,8 @@
 
 (deftest test-generate-session-id
   (testing "Session ID generation"
-    (let [id1 (server/generate-session-id)
-          id2 (server/generate-session-id)]
+    (let [id1 (state/generate-session-id)
+          id2 (state/generate-session-id)]
       (is (string? id1))
       (is (string? id2))
       (is (.startsWith id1 "ses_"))
@@ -34,22 +35,22 @@
 
 (deftest test-generate-tab-id
   (testing "Tab ID generation"
-    (let [id1 (server/generate-tab-id)
-          id2 (server/generate-tab-id)]
+    (let [id1 (state/generate-tab-id)
+          id2 (state/generate-tab-id)]
       (is (string? id1))
       (is (string? id2))
       (is (.startsWith id1 "tab_"))
       (is (.startsWith id2 "tab_"))
       (is (not= id1 id2)))))
 
-(deftest test-wrap-hyper-context-new-session
+(deftest test-wrap-hyper-new-session
   (testing "Middleware creates new session and tab IDs"
     (let [app-state* (atom (state/init-state))
           handler    (fn [req]
                        {:status 200
                         :body   (str "session: " (:hyper/session-id req)
                                      " tab: " (:hyper/tab-id req))})
-          wrapped    ((server/wrap-hyper-context app-state*) handler)
+          wrapped    (h.ring.middleware/wrap-hyper handler app-state*)
           req        {}
           response   (wrapped req)]
 
@@ -57,7 +58,7 @@
       (is (.contains (:body response) "session: ses_"))
       (is (.contains (:body response) "tab: tab_")))))
 
-(deftest test-wrap-hyper-context-existing-session
+(deftest test-wrap-hyper-existing-session
   (testing "Middleware reuses existing session from cookie"
     (let [app-state*          (atom (state/init-state))
           existing-session-id "ses_existing_123"
@@ -65,30 +66,30 @@
           handler             (fn [req]
                                 {:status 200
                                  :body   (str "session: " (:hyper/session-id req))})
-          wrapped             ((server/wrap-hyper-context app-state*) handler)
+          wrapped             (h.ring.middleware/wrap-hyper handler app-state*)
           req                 {:cookies {"hyper-session" {:value existing-session-id}}}
           response            (wrapped req)]
 
       (is (nil? (get-in response [:cookies "hyper-session"])))
       (is (.contains (:body response) "session: ses_existing_123")))))
 
-(deftest test-wrap-hyper-context-unknown-session
+(deftest test-wrap-hyper-unknown-session
   (testing "Middleware gives a cookie naming no session a new session id"
     (let [app-state* (atom (state/init-state))
           handler    (fn [req] {:status 200 :body (:hyper/session-id req)})
-          wrapped    ((server/wrap-hyper-context app-state*) handler)
+          wrapped    (h.ring.middleware/wrap-hyper handler app-state*)
           response   (wrapped {:cookies {"hyper-session" {:value "ses_unknown"}}})]
       (is (string/starts-with? (:body response) "ses_"))
       (is (not= "ses_unknown" (:body response)))
       (is (empty? (:sessions @app-state*)) "and creates no session"))))
 
-(deftest test-wrap-hyper-context-tab-id-from-query
+(deftest test-wrap-hyper-tab-id-from-query
   (testing "Middleware uses tab-id from query params"
     (let [app-state* (atom (state/init-state))
           handler    (fn [req]
                        {:status 200
                         :body   (str "tab: " (:hyper/tab-id req))})
-          wrapped    ((server/wrap-hyper-context app-state*) handler)
+          wrapped    (h.ring.middleware/wrap-hyper handler app-state*)
           req        {:query-params {"tab-id" "tab_from_query"}}
           response   (wrapped req)]
 

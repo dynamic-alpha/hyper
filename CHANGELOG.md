@@ -50,6 +50,20 @@
   `execute-script!` for a tab whose connection dropped is now sent when it
   reconnects; before, it was dropped.
 
+- Sessions - Routes can sign in and out with `hyper.ring`, for an OAuth or
+  SSO callback, a magic link or a form post: `(-> (redirect "/")
+  (h.ring/rotate-session! req))` gives the request's session a new id and
+  reloads all its tabs once the response is written, and
+  `h.ring/end-session!` ends it. Both do nothing when the server holds no
+  session for the request. A tab that is leaving doesn't reload, so a form
+  posted or a link clicked from a Hyper page lands on the redirect target,
+  and a rotated session no page joins within the disconnect grace period is
+  removed. `h.ring/session-id` and `h.ring/endpoint` let middleware read the
+  request's session and tell Hyper's own requests apart. A route outside
+  `create-handler` uses them by wrapping itself in
+  `(-> route (hyper.ring.middleware/wrap-hyper app*))`, with the atom passed
+  to `create-handler` as `:app-state`.
+
 ### Bug Fixes
 
 - Session leaks - Fixes an issue where sessions were never cleaned up. A session

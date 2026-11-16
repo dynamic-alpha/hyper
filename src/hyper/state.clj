@@ -14,6 +14,7 @@
     :routes <original-routes-vector>
     :routes-source <var-or-routes-vector>}"
   (:require [clojure.string]
+            [compact-uuids.core :as uuid]
             [hyper.context :as context]
             [hyper.utils :as utils]
             [taoensso.telemere :as t]))
@@ -218,6 +219,20 @@
   ([app-state* path default-value]
    (init-default! (global-cursor app-state* path) default-value)))
 
+(defn generate-session-id []
+  (str "ses_" (uuid/str (java.util.UUID/randomUUID))))
+
+(defn generate-tab-id []
+  (str "tab_" (uuid/str (java.util.UUID/randomUUID))))
+
+(def default-session-cookie-opts
+  "The session cookie's name and attributes when `:session` sets none."
+  {:name      "hyper-session"
+   :path      "/"
+   :http-only true
+   :max-age   (* 60 60 24 7)
+   :same-site :lax})
+
 (defn init-state
   "Create initial app state structure."
   []
@@ -257,6 +272,7 @@
                           (= session-id (get-in state [:tabs tab-id :session-id]))
                           (update-in [:sessions session-id]
                                      #(-> (merge {:data {} :tabs #{}} %)
+                                          (dissoc :tabless-at)
                                           (update :tabs (fnil conj #{}) tab-id)))))))
   nil)
 

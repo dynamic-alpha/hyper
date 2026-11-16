@@ -5,7 +5,6 @@
   (:require [cheshire.core :as json]
             [clojure.java.io :as io]
             [clojure.string]
-            [compact-uuids.core :as uuid]
             [dev.onionpancakes.chassis.core :as c]
             [hyper.actions :as actions]
             [hyper.brotli :as br]
@@ -19,6 +18,7 @@
             [hyper.render :as render]
             [hyper.render.error :as render.error]
             [hyper.render.queue :as rq]
+            [hyper.ring.middleware :as h.ring.middleware]
             [hyper.routes :as routes]
             [hyper.signal :as signal]
             [hyper.state :as state]
@@ -43,12 +43,6 @@
             [ring.middleware.resource :as resource]
             [ring.util.response :as ring-response]
             [taoensso.telemere :as t]))
-
-(defn generate-session-id []
-  (str "ses_" (uuid/str (java.util.UUID/randomUUID))))
-
-(defn generate-tab-id []
-  (str "tab_" (uuid/str (java.util.UUID/randomUUID))))
 
 ;; ---------------------------------------------------------------------------
 ;; Per-tab renderer thread
@@ -362,14 +356,6 @@
                  :data  {:hyper/tab-id tab-id}
                  :msg   "Tab renderer closed"})))))
 
-(def ^:private default-session-cookie-opts
-  "The session cookie's name and attributes when `:session` sets none."
-  {:name      "hyper-session"
-   :path      "/"
-   :http-only true
-   :max-age   (* 60 60 24 7)
-   :same-site :lax})
-
 (defn- https-request?
   "True when `req` came over HTTPS, directly or through a proxy that says so
    in `X-Forwarded-Proto`."
@@ -386,35 +372,10 @@
   "`response` with the session cookie of `req` set, with a fresh `Max-Age`.
    It is `Secure` when `req` came over HTTPS, unless `:secure` is set."
   [response app-state* req]
-  (let [{:keys [name] :as cookie} (:session-cookie @app-state* default-session-cookie-opts)]
+  (let [{:keys [name] :as cookie} (:session-cookie @app-state* state/default-session-cookie-opts)]
     (assoc-in response [:cookies name]
               (cond-> (assoc (dissoc cookie :name) :value (:hyper/session-id req))
                 (not (contains? cookie :secure)) (assoc :secure (boolean (https-request? req)))))))
-
-(defn wrap-hyper-context
-  "Middleware that adds session-id and tab-id to the request.  The session id
-   is the session cookie's when it names a session the server holds, and a
-   new one otherwise."
-  [app-state*]
-  (fn [handler]
-    (fn [req]
-      (let [cookie-name (:name (:session-cookie @app-state* default-session-cookie-opts))
-            cookie-id   (get-in req [:cookies cookie-name :value])
-            session-id  (if (contains? (:sessions @app-state*) cookie-id)
-                          cookie-id
-                          (generate-session-id))
-            tab-id      (or (get-in req [:query-params "tab-id"])
-                            (get-in req [:params :tab-id])
-                            (generate-tab-id))
-            req         (assoc req
-                               :hyper/session-id session-id
-                               :hyper/tab-id tab-id
-                               :hyper/app-state app-state*)]
-
-        ;; Add hyper context to telemere for all downstream logging
-        (t/with-ctx+ {:hyper/session-id session-id
-                      :hyper/tab-id     tab-id}
-          (handler req))))))
 
 (def default-datastar-url
   "The URL pages load the Datastar module from by default."
@@ -479,7 +440,8 @@
   nil)
 
 (defn reap-disconnected-tabs!
-  "Fully tear down every tab whose disconnect grace window has elapsed.
+  "Fully tear down every tab whose disconnect grace window has elapsed, and
+   remove every session that has had no tab for as long.
 
    A tab is eligible when it carries a `:disconnected-at` stamp older than the
    configured `:disconnect-grace-ms` (default 3 minutes) and has no stream
@@ -488,7 +450,13 @@
    that came back is never reaped.  Eligible tabs are taken out of their
    sessions at once, so a stream connecting later is refused rather than
    attached to a tab being torn down.  A session is removed with its last
-   tab.  `now` is the current epoch-millis (injectable for testing)."
+   tab.
+
+   A session is eligible when it has no tab and carries a `:tabless-at` stamp
+   as old, such as a session rotated from a route whose redirect the browser
+   never followed.  A tab joining the session clears the stamp.
+
+   `now` is the current epoch-millis (injectable for testing)."
   [app-state* now]
   (let [grace-ms (long (get @app-state* :disconnect-grace-ms
                             default-disconnect-grace-ms))
@@ -505,7 +473,11 @@
                    (let [session-id (get-in state [:tabs tab-id :session-id])]
                      (cond-> state
                        (contains? (:sessions state) session-id)
-                       (update-in [:sessions session-id :tabs] disj tab-id))))
+                       (update-in [:sessions session-id]
+                                  (fn [session]
+                                    (let [session (update session :tabs disj tab-id)]
+                                      (cond-> session
+                                        (empty? (:tabs session)) (assoc :tabless-at now))))))))
         [before] (swap-vals! app-state* #(reduce unlink % (eligible %)))]
     (doseq [tab-id (eligible before)]
       (t/log! {:level :info
@@ -513,6 +485,16 @@
                :data  {:hyper/tab-id tab-id}
                :msg   "Reaping disconnected tab after grace period"})
       (cleanup-tab! app-state* tab-id))
+    (swap! app-state* update :sessions
+           (fn [sessions]
+             (reduce-kv (fn [sessions session-id {:keys [tabs tabless-at]}]
+                          (if (and tabless-at
+                                   (empty? tabs)
+                                   (>= (- now tabless-at) grace-ms))
+                            (dissoc sessions session-id)
+                            sessions))
+                        sessions
+                        sessions)))
     nil))
 
 (declare expire-cookie-tokens!)
@@ -668,6 +650,12 @@
     (and (some? session-id)
          (= session-id (:hyper/session-id req)))))
 
+(def ^:private reload-js
+  "The script that reloads a tab's page, unless the page is leaving (see
+   `hyper.reload` in `hyper-scripts`)."
+  ;; A page served before hyper.reload existed reloads as it did.
+  "(window.hyper && window.hyper.reload || function () { window.location.reload(); })()")
+
 (defn- reload-and-remove-tabs!
   "Reload those of tabs `tab-ids` that were open in `state`, remove all of
    them, then remove session `session-id` unless a tab is in it.  A tab in
@@ -683,7 +671,7 @@
      ;; A renderer sends the scripts queued ahead of its shutdown.
      (doseq [[t {:keys [enqueue-scripts! stop!]}] renderers]
        (when enqueue-scripts!
-         (enqueue-scripts! (force (get scripts-by-tab t ["window.location.reload()"]))))
+         (enqueue-scripts! (force (get scripts-by-tab t [reload-js]))))
        (when stop! (stop!)))
      ;; A render still running would write its tab back after the teardown.
      (doseq [[_ {:keys [stopped]}] renderers
@@ -697,59 +685,78 @@
                            (empty? (get-in state [:sessions session-id :tabs]))
                            (update :sessions dissoc session-id)))))))
 
-(defn- end-tab-session!
-  "End the session of tab `tab-id`: remove it, then reload and remove its
-   tabs, sending a tab in `scripts-by-tab` its scripts there instead of the
-   reload (see `reload-and-remove-tabs!`).  Returns whether the session
-   existed."
-  ([app-state* tab-id] (end-tab-session! app-state* tab-id {}))
-  ([app-state* tab-id scripts-by-tab]
-   (let [session-id (get-in @app-state* [:tabs tab-id :session-id])
-         ;; Removed before any tab reloads, so a reloaded page starts afresh.
-         [state]    (swap-vals! app-state* update :sessions dissoc session-id)]
+(defn end-session!
+  "End session `session-id`: remove it, then reload and remove its tabs,
+   sending a tab in `scripts-by-tab` its scripts there instead of the reload
+   (see `reload-and-remove-tabs!`).  Returns whether the session existed."
+  ([app-state* session-id] (end-session! app-state* session-id {}))
+  ([app-state* session-id scripts-by-tab]
+   (let [;; Removed before any tab reloads, so a reloaded page starts afresh.
+         [state] (swap-vals! app-state* update :sessions dissoc session-id)]
      (when (contains? (:sessions state) session-id)
        (reload-and-remove-tabs! app-state* state session-id
                                 (get-in state [:sessions session-id :tabs])
                                 scripts-by-tab)
        true))))
 
-(defn- rotate-tab-session!
-  "Give the session of tab `tab-id` a new id, keeping its data, with only
-   `tab-id` left in it.  Returns `{:new-id id :reload-others! f}`, where `f`
-   reloads and removes the session's other tabs, or nil when the session is
-   gone."
-  [app-state* tab-id]
-  (let [session-id      (get-in @app-state* [:tabs tab-id :session-id])
-        new-id          (generate-session-id)
+(defn- end-tab-session!
+  "End the session of tab `tab-id`, as `end-session!` does."
+  ([app-state* tab-id] (end-tab-session! app-state* tab-id {}))
+  ([app-state* tab-id scripts-by-tab]
+   (end-session! app-state* (get-in @app-state* [:tabs tab-id :session-id]) scripts-by-tab)))
+
+(defn rotate-session!
+  "Give session `session-id` a new id, keeping its data, with only tab
+   `tab-id` left in it, or no tab when `tab-id` is nil (see
+   `reap-disconnected-tabs!` for a session left without tabs).  Returns
+   `{:new-id id :reload-others! f}`, where `f` reloads and removes the
+   session's other tabs, or nil when the session is gone or `tab-id` is not
+   in it."
+  [app-state* session-id tab-id]
+  (let [new-id          (state/generate-session-id)
         ;; Moved before any other tab reloads, so a reloaded page cannot join
         ;; the old id.
         [state rotated] (swap-vals! app-state*
                                     (fn [state]
                                       (let [session (get-in state [:sessions session-id])]
                                         (if (and session
-                                                 (= session-id (get-in state [:tabs tab-id :session-id])))
-                                          (-> state
-                                              (update :sessions dissoc session-id)
-                                              (assoc-in [:sessions new-id] (assoc session :tabs #{tab-id}))
-                                              (assoc-in [:tabs tab-id :session-id] new-id))
+                                                 (or (nil? tab-id)
+                                                     (= session-id (get-in state [:tabs tab-id :session-id]))))
+                                          (cond-> (-> state
+                                                      (update :sessions dissoc session-id)
+                                                      (assoc-in [:sessions new-id]
+                                                                (if tab-id
+                                                                  (-> session
+                                                                      (assoc :tabs #{tab-id})
+                                                                      (dissoc :tabless-at))
+                                                                  (assoc session
+                                                                         :tabs #{}
+                                                                         :tabless-at (System/currentTimeMillis)))))
+                                            tab-id (assoc-in [:tabs tab-id :session-id] new-id))
                                           state))))]
     (when (contains? (:sessions rotated) new-id)
       {:new-id         new-id
        :reload-others! #(reload-and-remove-tabs! app-state* state session-id
                                                  (disj (get-in state [:sessions session-id :tabs]) tab-id))})))
 
-(defn- with-session-cookie-change
+(defn- rotate-tab-session!
+  "Rotate the session of tab `tab-id`, keeping the tab in it, as
+   `rotate-session!` does."
+  [app-state* tab-id]
+  (rotate-session! app-state* (get-in @app-state* [:tabs tab-id :session-id]) tab-id))
+
+(defn with-session-cookie-change
   "`response` to `req` with the session cookie set to `new-id`, or deleted
    when `new-id` is nil."
   [response app-state* req new-id]
   (if new-id
     (with-session-cookie response app-state* (assoc req :hyper/session-id new-id))
-    (let [{:keys [name]} (:session-cookie @app-state* default-session-cookie-opts)]
+    (let [{:keys [name]} (:session-cookie @app-state* state/default-session-cookie-opts)]
       (-> response
           (with-session-cookie app-state* req)
           (update-in [:cookies name] assoc :value "" :max-age 0)))))
 
-(defn- then-run
+(defn then-run
   "`response`, running `f` once its body has been written."
   [response f]
   (let [body (:body response)]
@@ -917,7 +924,7 @@
       (end-tab-session! app-state* tab-id
                         {tab-id (delay [(cookie-script! app-state* tab-id
                                                         {:cookies cookies :session-id nil}
-                                                        (conj scripts "window.location.reload()"))])})
+                                                        (conj scripts reload-js))])})
 
       :rotate
       (if-let [{:keys [new-id reload-others!]} (rotate-tab-session! app-state* tab-id)]
@@ -1013,7 +1020,7 @@
                                          (contains? (:sessions state) session-id))
                                   (-> state
                                       (assoc-in [:tabs tab-id :session-id] session-id)
-                                      (update-in [:sessions session-id :tabs] (fnil conj #{}) tab-id)
+                                      (update-in [:sessions session-id] #(-> % (dissoc :tabless-at) (update :tabs (fnil conj #{}) tab-id)))
                                       (update :sessions #(if (empty? former-tabs)
                                                            (dissoc % former-id)
                                                            (assoc-in % [former-id :tabs] former-tabs))))
@@ -1031,7 +1038,7 @@
         ;; no session the server holds, is what a browser that drops the
         ;; session cookie leaves behind: a reload would loop.
         (or (nil? tab) (:connection-initialized? tab))
-        (script-stream-response "window.location.reload()")
+        (script-stream-response reload-js)
 
         :else
         unknown-tab-response))))
@@ -1314,6 +1321,9 @@
      `data-hyper-render-version`.
    - hyper.upload(formData, opts): posts a multipart upload to opts.url with
      the tab id and the render opts.el was made on.
+   - hyper.reload(): reloads the page, unless the page is leaving (from
+     `beforeunload` or `pagehide` until `pageshow`, for at most 10s); then
+     it reloads only if the page is still there 10s later.
    - An upload or back/forward navigation answered with a
      `{\"redirect\": url}` body loads url.
    - MutationObserver on #hyper-app watches data-hyper-url attribute changes
@@ -1335,6 +1345,26 @@
      (str "
 (function() {
   window.hyper = window.hyper || {};
+  // A reload would cancel the navigation of a page that is leaving, such as
+  // a form post whose response rotates the session and redirects.  A
+  // navigation can also not happen (a download, a person staying), so the
+  // reload is put off rather than dropped.
+  var leaving = false, leavingTimer = null, leavingMs = 10000;
+  var stopLeaving = function() { leaving = false; clearTimeout(leavingTimer); };
+  var startLeaving = function() {
+    leaving = true;
+    clearTimeout(leavingTimer);
+    leavingTimer = setTimeout(stopLeaving, leavingMs);
+  };
+  window.addEventListener('beforeunload', startLeaving);
+  window.addEventListener('pagehide', startLeaving);
+  window.hyper.reload = function() {
+    if (leaving) {
+      setTimeout(function() { window.location.reload(); }, leavingMs);
+    } else {
+      window.location.reload();
+    }
+  };
   // A response body of {redirect: url} sends the tab to url with a full page
   // load.  Returns whether it did.
   var followRedirect = function(text) {
@@ -1425,6 +1455,7 @@
     observer.observe(appEl, { attributes: true, attributeFilter: ['data-hyper-url', 'data-hyper-squint-version'] });
   }
   window.addEventListener('pageshow', function(event) {
+    stopLeaving();
     var nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
     if (event.persisted || (nav && nav.type === 'back_forward')) {
       window.location.reload();
@@ -1641,7 +1672,7 @@ action({
   (let [session-id (:hyper/session-id req)
         owner      (get-in @app-state* [:tabs (:hyper/tab-id req) :session-id])
         tab-id     (if (and owner (not= owner session-id))
-                     (generate-tab-id)
+                     (state/generate-tab-id)
                      (:hyper/tab-id req))
         new-tab?   (not (contains? (:tabs @app-state*) tab-id))]
     (state/get-or-create-tab! app-state* session-id tab-id)
@@ -1955,6 +1986,17 @@ action({
                       {:datastar-url url})))
     url))
 
+(defn endpoint
+  "The hyper endpoint `uri` names under `base-path`: `:action`, `:upload`,
+   `:navigate`, `:events` or `:cookies`, or nil for any other URI."
+  [base-path uri]
+  (get {(str base-path "/hyper/actions")  :action
+        (str base-path "/hyper/upload")   :upload
+        (str base-path "/hyper/navigate") :navigate
+        (str base-path "/hyper/events")   :events
+        (str base-path "/hyper/cookies")  :cookies}
+       uri))
+
 (defn- wrap-middleware-redirects
   "`handler` wrapped in the app's Ring `middleware`.  A 3xx with a Location
    that the middleware returns for an action, upload, navigation or event
@@ -1965,34 +2007,29 @@ action({
    `cookies-handler`) skips the middleware: its token is its authorization,
    and its cookie may name a session the server no longer holds."
   [handler middleware base-path]
-  (let [own-handler  (fn [req]
-                       (let [resp (handler req)]
-                         (cond-> resp
-                           (map? resp) (vary-meta assoc ::handler-response true))))
-        app-handler  (reduce (fn [h mw] (mw h)) own-handler (reverse (vec middleware)))
-        events-path  (str base-path "/hyper/events")
-        cookies-path (str base-path "/hyper/cookies")
-        fetch-paths  #{(str base-path "/hyper/actions")
-                       (str base-path "/hyper/upload")
-                       (str base-path "/hyper/navigate")}]
+  (let [own-handler (fn [req]
+                      (let [resp (handler req)]
+                        (cond-> resp
+                          (map? resp) (vary-meta assoc ::handler-response true))))
+        app-handler (reduce (fn [h mw] (mw h)) own-handler (reverse (vec middleware)))]
     (fn [req]
-      (let [resp     (if (= cookies-path (:uri req))
+      (let [kind     (endpoint base-path (:uri req))
+            resp     (if (= :cookies kind)
                        (handler req)
                        (app-handler req))
             status   (:status resp)
-            location (when (map? resp) (ring-response/get-header resp "Location"))
-            uri      (:uri req)]
+            location (when (map? resp) (ring-response/get-header resp "Location"))]
         (if (and location
                  (int? status)
                  (<= 300 status 399)
                  (not (::handler-response (meta resp)))
-                 (or (= events-path uri) (contains? fetch-paths uri)))
+                 (#{:action :upload :navigate :events} kind))
           (let [kept (into {}
                            (remove (fn [[k _]]
                                      (#{"location" "content-type" "content-length"}
                                       (clojure.string/lower-case k))))
                            (:headers resp))]
-            (cond-> (update (if (= events-path uri)
+            (cond-> (update (if (= :events kind)
                               (script-stream-response
                                 (str "window.location.assign('" (utils/escape-js-string location) "')"))
                               {:status  200
@@ -2171,7 +2208,7 @@ action({
                                 :source-map? (:source-map? opts)
                                 :param-transformer (or (:param-transformer opts)
                                                        routes/default-malli-transformer)
-                                :session-cookie (merge default-session-cookie-opts (:cookie session)))
+                                :session-cookie (merge state/default-session-cookie-opts (:cookie session)))
          initial-routes  (if (var? routes) @routes routes)
          initial-handler (build-ring-handler initial-routes app-state* page-wrapper system-routes default-handler)
          handler         (if (var? routes)
@@ -2196,10 +2233,10 @@ action({
                            initial-handler)
          handler-with-mw
          (as-> handler h
-           ;; User :middleware runs innermost — after cookies/params/hyper-context
+           ;; User :middleware runs innermost — after cookies/params/wrap-hyper
            ;; are parsed, before routing.  Earlier entries wrap outermost (execute first).
            (wrap-middleware-redirects h middleware base-path)
-           ((wrap-hyper-context app-state*) h)
+           (h.ring.middleware/wrap-hyper h app-state*)
            (br/wrap-brotli h)
            (keyword-params/wrap-keyword-params h)
            (params/wrap-params h)
