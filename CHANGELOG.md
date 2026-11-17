@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Upgrading
+
+- Pages load Datastar v1.0.5 by default. An `h/expr` that compiles to JS
+  with a `;` now starts with `return`, which needs Datastar v1.0.5 or later.
+  Update a self-hosted `:datastar-url` to v1.0.5.
+
 ### Bug Fixes
 
 - Nested regions - A region whose body is only another region (an

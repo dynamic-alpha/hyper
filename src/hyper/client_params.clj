@@ -67,12 +67,12 @@
                        :defined-symbols (defined-client-params)}))))
 
 (defn- expression
-  "`js` as an expression.  An `h/expr` with statements (see
-   `hyper.expr/join-statements`) returns its value through `__hyper_r`,
-   which only works as a whole handler, so it's wrapped in a function."
+  "Returns `js` as an expression.
+   Strips the leading `return ` of an `h/expr` with statements (see
+   `hyper.expr/join-statements`)."
   [js]
-  (if (and (string? js) (str/ends-with? js "return __hyper_r;"))
-    (str "(() => { " js " })()")
+  (if (and (string? js) (str/starts-with? js "return ("))
+    (subs js (count "return "))
     js))
 
 (defn definition

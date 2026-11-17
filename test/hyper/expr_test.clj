@@ -50,15 +50,14 @@
   (testing "multiple statements join with ;"
     (is (= "($a = 1); @get(\"/x\")" (->expr (set! $a 1) (@get "/x")))))
 
-  (testing "a form with a ; returns its value through __hyper_r"
+  (testing "a form with a ; starts with return"
     (let [out (->expr (when-let [x (or $a $b)] x))]
-      (is (str/starts-with? out "var __hyper_r = ((() => {"))
-      (is (str/ends-with? out "; return __hyper_r;"))))
+      (is (str/starts-with? out "return ((() => {"))
+      (is (str/ends-with? out ")"))))
 
-  (testing "earlier statements precede the __hyper_r variable"
+  (testing "forms with a ; join with a comma after return"
     (let [out (->expr (set! $z 1) (when-let [x (or $a $b)] x))]
-      (is (str/starts-with? out "($z = 1); var __hyper_r = ("))
-      (is (str/ends-with? out "; return __hyper_r;"))))
+      (is (str/starts-with? out "return (($z = 1), ("))))
 
   (testing "evt and el pass through as client-side symbols"
     (is (= "(evt.key === \"Enter\")" (->expr (= evt.key "Enter"))))
@@ -126,9 +125,8 @@
 
   (testing "the full guard + assign + action composition"
     (let [query* (sig "q")]
-      (is (= (str "var __hyper_r = ((((evt.key === \"Enter\")) ? "
-                  "((() => { $q = evt.target.value; return @post(\"/search\") })()) : (null))); "
-                  "return __hyper_r;")
+      (is (= (str "return ((((evt.key === \"Enter\")) ? "
+                  "((() => { $q = evt.target.value; return @post(\"/search\") })()) : (null)))")
              (->expr (when (= evt.key "Enter")
                        (reset! query* evt.target.value)
                        (@post "/search")))))))
@@ -282,22 +280,22 @@
                    (is (str/includes? out "@hyperAction('a_t_1', {value:evt.target.value})")))))))
 
 (deftest test-client-param-with-statements
-  ;; An h/expr with a `;` returns through __hyper_r, which only works as a whole
+  ;; An h/expr with a `;` starts with return, which only works as a whole
   ;; handler.  The param is registered only for this test (other tests list the
   ;; defined params), so the forms using it are compiled with eval.
   (let [js (->expr {:meta (or (.-metaKey evt) (.-ctrlKey evt))})]
-    (is (str/ends-with? js "return __hyper_r;"))
+    (is (str/starts-with? js "return ("))
     (.addMethod ^clojure.lang.MultiFn hyper.client-params/client-param '$test-mods
                 (fn [_] {:js js :key "testMods"}))
     (try
-      (let [wrapped (str "(() => { " js " })()")]
+      (let [expression (subs js (count "return "))]
         (testing "an action passes it as an expression"
           (let [app-state* (new-tab)]
             (rendering app-state*
-                       (is (= (str "@hyperAction('a_t_1', {testMods:" wrapped "})")
+                       (is (= (str "@hyperAction('a_t_1', {testMods:" expression "})")
                               (:js (eval `(h/action (prn ~'$test-mods)))))))))
 
         (testing "an expression embeds it as an expression"
-          (is (str/includes? (eval `(->expr (.-meta ~'$test-mods))) (str wrapped ".meta")))))
+          (is (str/includes? (eval `(->expr (.-meta ~'$test-mods))) (str expression ".meta")))))
       (finally
         (remove-method hyper.client-params/client-param '$test-mods)))))

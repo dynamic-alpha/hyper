@@ -300,14 +300,13 @@
           template
           pairs))
 
-;; Datastar adds `return` after the last `;`, even one inside a nested function (datastar#1215).
+;; Datastar splits a value at each `;` unless it starts with `return` (datastar#1215).
 (defn- join-statements
   "Returns jss, the compiled forms, joined with `;`.
-   Returns the last form through `__hyper_r` if any form contains a `;`."
+   Returns `return (js1, js2, ...)` if any form contains a `;`."
   [jss]
   (if (some #(str/includes? % ";") jss)
-    (str (str/join (map #(str % "; ") (butlast jss)))
-         "var __hyper_r = (" (last jss) "); return __hyper_r;")
+    (str "return (" (str/join ", " jss) ")")
     (str/join "; " jss)))
 
 ;; ---------------------------------------------------------------------------
