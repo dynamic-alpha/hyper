@@ -124,8 +124,8 @@
       (is (= (str "(((evt.key === \"Enter\")) ? "
                   "((() => { $q = evt.target.value; return @post(\"/search\") })()) : (null))")
              (str (->expr (when (= evt.key "Enter")
-                       (reset! query* evt.target.value)
-                       (@post "/search"))))))))
+                            (reset! query* evt.target.value)
+                            (@post "/search"))))))))
 
   (testing "reset!/swap! on a non-signal throws at runtime"
     (let [x 5]
@@ -234,7 +234,7 @@
     (let [app-state* (new-tab)]
       (rendering app-state*
                  (let [out (str (h/expr (when (= evt.key "Enter")
-                                     (h/action (reset! (h/tab-cursor :q) 2)))))]
+                                          (h/action (reset! (h/tab-cursor :q) 2)))))]
                    (is (str/includes? out "evt.key === \"Enter\""))
                    (is (str/includes? out "@hyperAction('a_t_1')"))
                    (is (str/includes? out "?"))
@@ -272,7 +272,7 @@
     (let [app-state* (new-tab)]
       (rendering app-state*
                  (let [out (str (h/expr (when (= $key "Enter")
-                                     (h/action (reset! (h/tab-cursor :q) $value)))))]
+                                          (h/action (reset! (h/tab-cursor :q) $value)))))]
                    (is (str/includes? out "evt.key === \"Enter\""))
                    (is (str/includes? out "@hyperAction('a_t_1', {value:evt.target.value})")))))))
 

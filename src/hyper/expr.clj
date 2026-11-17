@@ -342,6 +342,6 @@
                      `(substitute ~template
                                   [~@(map (fn [[ph expr mode]] [ph expr mode]) pairs)]))]
     `(datastar/raw-expr
-      ~(if (seq names)
-         `(use-core-vars! ~(set names) ~js)
-         js))))
+       ~(if (seq names)
+          `(use-core-vars! ~(set names) ~js)
+          js))))
