@@ -614,7 +614,7 @@ dropdown visibility, accordion state, modal toggles:
 ```clojure
 (let [open?* (h/local-signal :open false)]
   [:div
-   ;; Toggle with atom vocabulary — compiles to "$_open = !($_open)"
+   ;; Toggle with atom vocabulary — compiles to "return (($_open = hyper_sc.not($_open)))"
    [:button {:data-on:click (h/expr (swap! open?* not))} "Toggle"]
    ;; data-show needs the expression form (@)
    [:div {:data-show @open?*} "Collapsible content"]])
@@ -776,7 +776,7 @@ strings, eliminating string-concatenation gymnastics in `data-*` attributes:
   [:div
    ;; signals use atom vocabulary — exactly like in actions
    [:button {:data-on:click (h/expr (swap! open?* not))} "Toggle"]
-   ;; → data-on:click="$_open = !($_open)"
+   ;; → data-on:click="return (($_open = hyper_sc.not($_open)))"
 
    [:input {:data-on:keydown
             (h/expr (when (= evt.key "Enter")

@@ -12,7 +12,7 @@
   hyper.uploads): its `:js` must evaluate to a `FormData` object (the request
   body), and its `:key` is the key under which the parsed upload is bound on
   the server (\"form\" or \"files\")."
-  (:require [clojure.string :as str]))
+  (:require [hyper.datastar :as datastar]))
 
 (def ^:private default-client-param-registry
   "The default registry of client params."
@@ -66,20 +66,11 @@
                       {:symbol          symbol
                        :defined-symbols (defined-client-params)}))))
 
-(defn- expression
-  "Returns `js` as an expression.
-   Strips the leading `return ` of an `h/expr` with statements (see
-   `hyper.expr/join-statements`)."
-  [js]
-  (if (and (string? js) (str/starts-with? js "return ("))
-    (subs js (count "return "))
-    js))
-
 (defn definition
   "Client param `sym`'s definition, with its :js an expression that can sit
    in an argument list, an object or another expression."
   [sym]
-  (update (client-param sym) :js expression))
+  (update (client-param sym) :js #(cond-> % (string? %) datastar/expression)))
 
 (defn multipart-param?
   "True when `sym` is a client param whose transport is a multipart/form-data

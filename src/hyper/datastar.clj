@@ -13,7 +13,8 @@
    Signals implement `DatastarExpr` too (yielding their `$ref`), so both ride
    the same splice path; anything that does not implement it falls back to a
    JavaScript literal."
-  (:require [dev.onionpancakes.chassis.core :as c]))
+  (:require [clojure.string :as str]
+            [dev.onionpancakes.chassis.core :as c]))
 
 (defprotocol DatastarExpr
   (-datastar-js [x]
@@ -35,6 +36,14 @@
   "Wrap a finished Datastar expression string as a RawExpr.  Idempotent."
   [js]
   (if (instance? RawExpr js) js (->RawExpr js)))
+
+(defn expression
+  "Returns js, a Datastar expression string, without the leading `return `
+   of an `h/expr` result."
+  [js]
+  (if (str/starts-with? js "return (")
+    (subs js (count "return "))
+    js))
 
 ;; Render a RawExpr in a hiccup attribute exactly as its wrapped string would
 ;; render — delegate to Chassis's String implementation so the JS is escaped

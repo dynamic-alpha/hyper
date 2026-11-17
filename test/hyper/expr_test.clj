@@ -35,32 +35,28 @@
 
 (deftest test-raw-datastar-style
   (testing "set! on $signals"
-    (is (= "($count = 0)" (->expr (set! $count 0)))))
+    (is (= "return (($count = 0))" (->expr (set! $count 0)))))
 
   (testing "kebab-case signal names are preserved"
-    (is (= "($record-id = 5)" (->expr (set! $record-id 5)))))
+    (is (= "return (($record-id = 5))" (->expr (set! $record-id 5)))))
 
   (testing "namespaced signals"
-    (is (= "($person.name = \"alice\")" (->expr (set! $person.name "alice")))))
+    (is (= "return (($person.name = \"alice\"))" (->expr (set! $person.name "alice")))))
 
   (testing "actions"
-    (is (= "@post(\"/update\")" (->expr (@post "/update"))))
-    (is (= "@get(\"/poke\")" (->expr (@get "/poke")))))
+    (is (= "return (@post(\"/update\"))" (->expr (@post "/update"))))
+    (is (= "return (@get(\"/poke\"))" (->expr (@get "/poke")))))
 
-  (testing "multiple statements join with ;"
-    (is (= "($a = 1); @get(\"/x\")" (->expr (set! $a 1) (@get "/x")))))
+  (testing "multiple forms join with a comma"
+    (is (= "return (($a = 1), @get(\"/x\"))" (->expr (set! $a 1) (@get "/x")))))
 
   (testing "a form with a ; starts with return"
     (let [out (->expr (when-let [x (or $a $b)] x))]
       (is (str/starts-with? out "return ((() => {"))
       (is (str/ends-with? out ")"))))
 
-  (testing "forms with a ; join with a comma after return"
-    (let [out (->expr (set! $z 1) (when-let [x (or $a $b)] x))]
-      (is (str/starts-with? out "return (($z = 1), ("))))
-
   (testing "evt and el pass through as client-side symbols"
-    (is (= "(evt.key === \"Enter\")" (->expr (= evt.key "Enter"))))
+    (is (= "return ((evt.key === \"Enter\"))" (->expr (= evt.key "Enter"))))
     (is (str/includes? (->expr (.focus el)) "el.focus()"))))
 
 ;; ---------------------------------------------------------------------------
@@ -75,10 +71,10 @@
       (is (str/includes? out "evt.shiftKey"))))
 
   (testing "not= compiles to hyper_sc._EQ_"
-    (is (= "!hyper_sc._EQ_($name, \"\")" (->expr (not= $name "")))))
+    (is (= "return (!hyper_sc._EQ_($name, \"\"))" (->expr (not= $name "")))))
 
   (testing "str compiles to a template literal"
-    (is (= "`${\"n=\"}${$n??''}`" (->expr (str "n=" $n)))))
+    (is (= "return (`${\"n=\"}${$n??''}`)" (->expr (str "n=" $n)))))
 
   (testing "when compiles to a ternary"
     (let [out (->expr (when $open (@post "/x")))]
@@ -106,22 +102,22 @@
 (deftest test-signal-atom-vocabulary
   (testing "swap! with not — the toggle idiom"
     (let [open?* (local-sig "open" false)]
-      (is (= "($_open = hyper_sc.not($_open))" (->expr (swap! open?* not))))))
+      (is (= "return (($_open = hyper_sc.not($_open)))" (->expr (swap! open?* not))))))
 
   (testing "swap! with inc and with extra args"
     (let [n* (local-sig "n" 0)]
-      (is (= "($_n = ($_n + 1))" (->expr (swap! n* inc))))
-      (is (= "($_n = ($_n + 5))" (->expr (swap! n* + 5))))))
+      (is (= "return (($_n = ($_n + 1)))" (->expr (swap! n* inc))))
+      (is (= "return (($_n = ($_n + 5)))" (->expr (swap! n* + 5))))))
 
   (testing "reset! from a client-side value"
     (let [query* (sig "searchQuery")]
-      (is (= "($searchQuery = evt.target.value)"
+      (is (= "return (($searchQuery = evt.target.value))"
              (->expr (reset! query* evt.target.value))))))
 
   (testing "deref reads as a signal reference"
     (let [name* (sig "userName")]
-      (is (= "!hyper_sc._EQ_($userName, \"\")" (->expr (not= @name* ""))))
-      (is (= "$userName" (->expr @name*)))))
+      (is (= "return (!hyper_sc._EQ_($userName, \"\"))" (->expr (not= @name* ""))))
+      (is (= "return ($userName)" (->expr @name*)))))
 
   (testing "the full guard + assign + action composition"
     (let [query* (sig "q")]
@@ -144,22 +140,22 @@
   (testing "locals splice as JS literals"
     (let [factor 2
           label  "a'b"]
-      (is (= "($scaled = ($raw * 2))" (->expr (set! $scaled (* $raw factor)))))
-      (is (= "($label = 'a\\'b')" (->expr (set! $label label)))
+      (is (= "return (($scaled = ($raw * 2)))" (->expr (set! $scaled (* $raw factor)))))
+      (is (= "return (($label = 'a\\'b'))" (->expr (set! $label label)))
           "strings are escaped JS literals")))
 
   (testing "keyword-call forms evaluate as Clojure"
     (let [person {:id 1234 :name "alice"}]
-      (is (= "($person-id = 1234)" (->expr (set! $person-id (:id person)))))
-      (is (= "($person-name = 'alice')" (->expr (set! $person-name (:name person)))))))
+      (is (= "return (($person-id = 1234))" (->expr (set! $person-id (:id person)))))
+      (is (= "return (($person-name = 'alice'))" (->expr (set! $person-name (:name person)))))))
 
   (testing "explicit unquote still works as the escape hatch"
     (let [v 42]
-      (is (= "($x = 43)" (->expr (set! $x ~(inc v)))))))
+      (is (= "return (($x = 43))" (->expr (set! $x ~(inc v)))))))
 
   (testing "collections splice as JS literals"
     (let [xs [1 2 3]]
-      (is (= "($items = [1, 2, 3])" (->expr (set! $items xs)))))))
+      (is (= "return (($items = [1, 2, 3]))" (->expr (set! $items xs)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Compile-once semantics
@@ -189,9 +185,9 @@
 
 (deftest test-deref-signal-var
   (testing "deref of a top-level var holding a signal splices to a $ref"
-    (is (= "hyper_sc.not($_hyperConnected)"
+    (is (= "return (hyper_sc.not($_hyperConnected))"
            (->expr (not @signal/connected?*))))
-    (is (= "($_hyperConnection === \"reconnecting\")"
+    (is (= "return (($_hyperConnection === \"reconnecting\"))"
            (->expr (= @signal/connection* :reconnecting)))))
 
   (testing "keyword and string tokens compile identically"
@@ -230,7 +226,7 @@
   (testing "a bare action splices its raw @hyperAction(...) into the expression"
     (let [app-state* (new-tab)]
       (rendering app-state*
-                 (is (= "@hyperAction('a_t_1')"
+                 (is (= "return (@hyperAction('a_t_1'))"
                         (h/expr (h/action (reset! (h/tab-cursor :q) 1))))))))
 
   (testing "an action guarded by a client-side condition compiles to a ternary"
@@ -255,10 +251,10 @@
 
 (deftest test-client-params-in-expr
   (testing "client-param symbols expand to their client-side JS"
-    (is (= "(evt.key === \"Enter\")" (->expr (= $key "Enter"))))
-    (is (= "evt.target.checked" (->expr $checked)))
-    (is (= "evt.detail" (->expr $detail)))
-    (is (= "Object.fromEntries(new FormData(evt.target.closest('form')))"
+    (is (= "return ((evt.key === \"Enter\"))" (->expr (= $key "Enter"))))
+    (is (= "return (evt.target.checked)" (->expr $checked)))
+    (is (= "return (evt.detail)" (->expr $detail)))
+    (is (= "return (Object.fromEntries(new FormData(evt.target.closest('form'))))"
            (->expr $form-data))))
 
   (testing "$value assigns a signal the same as evt.target.value"
@@ -267,9 +263,9 @@
              (->expr (reset! q* $value))))))
 
   (testing "non-param $signals still pass through untouched"
-    (is (= "($count = 0)" (->expr (set! $count 0))))
+    (is (= "return (($count = 0))" (->expr (set! $count 0))))
     (let [name* (sig "userName")]
-      (is (= "$userName" (->expr @name*)))))
+      (is (= "return ($userName)" (->expr @name*)))))
 
   (testing "a client-param guard composes with an embedded action's own params"
     (let [app-state* (new-tab)]
@@ -280,7 +276,7 @@
                    (is (str/includes? out "@hyperAction('a_t_1', {value:evt.target.value})")))))))
 
 (deftest test-client-param-with-statements
-  ;; An h/expr with a `;` starts with return, which only works as a whole
+  ;; An h/expr starts with return, which only works as a whole
   ;; handler.  The param is registered only for this test (other tests list the
   ;; defined params), so the forms using it are compiled with eval.
   (let [js (->expr {:meta (or (.-metaKey evt) (.-ctrlKey evt))})]

@@ -502,7 +502,7 @@
                                    :hyper/app-state  app-state*}]
         (let [action-expr (str (hy/action {:when (hy/expr (= evt.key "Enter"))}
                                           (reset! (hy/tab-cursor :val) $value)))]
-          (is (.startsWith action-expr "(evt.key === \"Enter\") && "))
+          (is (.startsWith action-expr "((evt.key === \"Enter\")) && "))
           (is (.contains action-expr "@hyperAction("))))))
 
   (testing ":when guard evaluating to a non-string throws"

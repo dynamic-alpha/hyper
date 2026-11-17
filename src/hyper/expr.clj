@@ -5,8 +5,8 @@
    vocabulary — signals are atoms here exactly as they are in actions:
 
      (let [open?* (h/local-signal :open false)]
-       [:button {:data-on:click (->expr (swap! open?* not))}]   ;; \"$_open = !($_open)\"
-       [:div {:data-show (->expr @open?*)}])                     ;; \"$_open\"
+       [:button {:data-on:click (->expr (swap! open?* not))}]   ;; \"return (($_open = hyper_sc.not($_open)))\"
+       [:div {:data-show (->expr @open?*)}])                     ;; \"return ($_open)\"
 
    The same `(reset! sig v)` form means a server round-trip inside
    `h/action` and an instant client-side assignment inside `->expr` —
@@ -302,12 +302,9 @@
 
 ;; Datastar splits a value at each `;` unless it starts with `return` (datastar#1215).
 (defn- join-statements
-  "Returns jss, the compiled forms, joined with `;`.
-   Returns `return (js1, js2, ...)` if any form contains a `;`."
+  "Returns `return (js1, js2, ...)` for jss, the compiled forms."
   [jss]
-  (if (some #(str/includes? % ";") jss)
-    (str "return (" (str/join ", " jss) ")")
-    (str/join "; " jss)))
+  (str "return (" (str/join ", " jss) ")"))
 
 ;; ---------------------------------------------------------------------------
 ;; The macro
@@ -320,10 +317,10 @@
    actions, but compile to instant client-side signal operations.  Locals
    splice automatically; `evt`, `el`, `$signal` symbols, Datastar actions
    ((@post \"/x\")) and JS interop pass through to the client.  Multiple
-   forms join with `;`.
+   forms join with `,` after a leading `return`.
 
    Examples:
-     (->expr (swap! open?* not))                ;; \"$_open = !($_open)\"
+     (->expr (swap! open?* not))                ;; \"return (($_open = hyper_sc.not($_open)))\"
      (->expr (reset! query* evt.target.value))
      (->expr (when (= evt.key \"Enter\") (@post \"/search\")))
      (->expr (set! $count 0))                   ;; raw Datastar style works too

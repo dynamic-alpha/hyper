@@ -514,9 +514,9 @@
                                         "data-bind=\"sessionCols0Width\"")))
 
         (testing "expr treats it as a signal"
-          (is (= "($sessionCols0Width = 5)" (->expr (reset! w* 5))))
-          (is (= "($sessionCols0Width = ($sessionCols0Width + 1))" (->expr (swap! w* inc))))
-          (is (= "$sessionCols0Width" (->expr @w*))))
+          (is (= "return (($sessionCols0Width = 5))" (->expr (reset! w* 5))))
+          (is (= "return (($sessionCols0Width = ($sessionCols0Width + 1)))" (->expr (swap! w* inc))))
+          (is (= "return ($sessionCols0Width)" (->expr @w*))))
 
         (testing "declares the signal with the current committed value"
           (is (some #(and (= :session-cols-0-width (:path %))

@@ -6,6 +6,7 @@
             [clojure.string :as str]
             [compact-uuids.core :as uuid]
             [hyper.context :as context]
+            [hyper.datastar :as datastar]
             [taoensso.telemere :as t]))
 
 ;; ---------------------------------------------------------------------------
@@ -21,7 +22,7 @@
   [g]
   (cond
     (nil? g)    nil
-    (string? g) (when-not (str/blank? g) g)
+    (string? g) (when-not (str/blank? g) (datastar/expression g))
     :else       (throw (ex-info "action :when guard must evaluate to a string Datastar expression"
                                 {:guard g}))))
 
