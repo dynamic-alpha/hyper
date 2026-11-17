@@ -300,13 +300,6 @@
           template
           pairs))
 
-(defn- join-forms
-  "Returns jss, the compiled forms, as one expression."
-  [jss]
-  (if (next jss)
-    (str "(" (str/join ", " jss) ")")
-    (first jss)))
-
 ;; ---------------------------------------------------------------------------
 ;; The macro
 ;; ---------------------------------------------------------------------------
@@ -318,7 +311,7 @@
    actions, but compile to instant client-side signal operations.  Locals
    splice automatically; `evt`, `el`, `$signal` symbols, Datastar actions
    ((@post \"/x\")) and JS interop pass through to the client.  Multiple
-   forms join with `,`.
+   forms compile as one `do`.
 
    Examples:
      (->expr (swap! open?* not))                ;; \"($_open = hyper_sc.not($_open))\"
@@ -332,10 +325,9 @@
   [& forms]
   (let [env-locals (set (keys &env))
         pairs*     (atom [])
-        forms*     (mapv #(infer-boundary % env-locals pairs*) forms)
-        compiled   (map compile-form* forms*)
-        template   (join-forms (map :js compiled))
-        names      (into #{} (mapcat :used-core-vars) compiled)
+        compiled   (compile-form* (infer-boundary (cons 'do forms) env-locals pairs*))
+        template   (:js compiled)
+        names      (:used-core-vars compiled)
         pairs      @pairs*
         js         (if (empty? pairs)
                      template

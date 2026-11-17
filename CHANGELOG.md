@@ -9,7 +9,7 @@
 - `h/expr` returns an expression object instead of a string. An attribute
   renders it as `return (<expression>)`, which needs Datastar v1.0.5 or
   later. `str` returns the expression.
-- Multiple `h/expr` forms join with `,` instead of `;`.
+- Multiple `h/expr` forms compile as one `do` instead of joining with `;`.
 
 ### Bug Fixes
 

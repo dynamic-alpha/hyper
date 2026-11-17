@@ -48,8 +48,8 @@
     (is (= "@post(\"/update\")" (str (->expr (@post "/update")))))
     (is (= "@get(\"/poke\")" (str (->expr (@get "/poke"))))))
 
-  (testing "multiple forms join with a comma"
-    (is (= "(($a = 1), @get(\"/x\"))" (str (->expr (set! $a 1) (@get "/x"))))))
+  (testing "multiple forms compile as one do"
+    (is (= "(() => { $a = 1; return @get(\"/x\") })()" (str (->expr (set! $a 1) (@get "/x"))))))
 
   (testing "an attribute renders the expression after return"
     (is (= "<div data-text=\"return ($a)\"></div>"
