@@ -6,6 +6,7 @@
             [clojure.string :as str]
             [compact-uuids.core :as uuid]
             [hyper.context :as context]
+            [hyper.datastar :as datastar]
             [taoensso.telemere :as t]))
 
 ;; ---------------------------------------------------------------------------
@@ -16,13 +17,13 @@
 (defn sanitize-guard
   "Validate an action :when guard at runtime.  Returns the guard string,
    nil for nil/blank guards, and throws for anything else — a guard must
-   evaluate to a Datastar expression string (e.g. from `expr` or a raw
-   string)."
+   evaluate to an `h/expr` or a Datastar expression string."
   [g]
   (cond
     (nil? g)    nil
     (string? g) (when-not (str/blank? g) g)
-    :else       (throw (ex-info "action :when guard must evaluate to a string Datastar expression"
+    (datastar/datastar-expr? g) (datastar/-datastar-js g)
+    :else       (throw (ex-info "action :when guard must evaluate to an h/expr or a Datastar expression string"
                                 {:guard g}))))
 
 (defn warn-deprecated-when!

@@ -2,6 +2,7 @@
   "Unit tests for hyper.expr — the Clojure → Datastar expression transpiler."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [dev.onionpancakes.chassis.core :as c]
             [hyper.context :as context]
             [hyper.core :as h]
             [hyper.datastar :as datastar]
@@ -35,34 +36,28 @@
 
 (deftest test-raw-datastar-style
   (testing "set! on $signals"
-    (is (= "($count = 0)" (->expr (set! $count 0)))))
+    (is (= "($count = 0)" (str (->expr (set! $count 0))))))
 
   (testing "kebab-case signal names are preserved"
-    (is (= "($record-id = 5)" (->expr (set! $record-id 5)))))
+    (is (= "($record-id = 5)" (str (->expr (set! $record-id 5))))))
 
   (testing "namespaced signals"
-    (is (= "($person.name = \"alice\")" (->expr (set! $person.name "alice")))))
+    (is (= "($person.name = \"alice\")" (str (->expr (set! $person.name "alice"))))))
 
   (testing "actions"
-    (is (= "@post(\"/update\")" (->expr (@post "/update"))))
-    (is (= "@get(\"/poke\")" (->expr (@get "/poke")))))
+    (is (= "@post(\"/update\")" (str (->expr (@post "/update")))))
+    (is (= "@get(\"/poke\")" (str (->expr (@get "/poke"))))))
 
-  (testing "multiple statements join with ;"
-    (is (= "($a = 1); @get(\"/x\")" (->expr (set! $a 1) (@get "/x")))))
+  (testing "multiple forms compile as one do"
+    (is (= "(() => { $a = 1; return @get(\"/x\") })()" (str (->expr (set! $a 1) (@get "/x"))))))
 
-  (testing "a form with a ; returns its value through __hyper_r"
-    (let [out (->expr (when-let [x (or $a $b)] x))]
-      (is (str/starts-with? out "var __hyper_r = ((() => {"))
-      (is (str/ends-with? out "; return __hyper_r;"))))
-
-  (testing "earlier statements precede the __hyper_r variable"
-    (let [out (->expr (set! $z 1) (when-let [x (or $a $b)] x))]
-      (is (str/starts-with? out "($z = 1); var __hyper_r = ("))
-      (is (str/ends-with? out "; return __hyper_r;"))))
+  (testing "an attribute renders the expression after return"
+    (is (= "<div data-text=\"return ($a)\"></div>"
+           (c/html [:div {:data-text (->expr $a)}]))))
 
   (testing "evt and el pass through as client-side symbols"
-    (is (= "(evt.key === \"Enter\")" (->expr (= evt.key "Enter"))))
-    (is (str/includes? (->expr (.focus el)) "el.focus()"))))
+    (is (= "(evt.key === \"Enter\")" (str (->expr (= evt.key "Enter")))))
+    (is (str/includes? (str (->expr (.focus el))) "el.focus()"))))
 
 ;; ---------------------------------------------------------------------------
 ;; Core references use the hyper_sc alias
@@ -70,34 +65,34 @@
 
 (deftest test-sandbox-safe-output
   (testing "= with a literal compiles to ==="
-    (let [out (->expr (and (= $a 1) (or $b evt.shiftKey)))]
+    (let [out (str (->expr (and (= $a 1) (or $b evt.shiftKey))))]
       (is (str/includes? out "($a === 1)"))
       (is (str/includes? out "&&"))
       (is (str/includes? out "evt.shiftKey"))))
 
   (testing "not= compiles to hyper_sc._EQ_"
-    (is (= "!hyper_sc._EQ_($name, \"\")" (->expr (not= $name "")))))
+    (is (= "!hyper_sc._EQ_($name, \"\")" (str (->expr (not= $name ""))))))
 
   (testing "str compiles to a template literal"
-    (is (= "`${\"n=\"}${$n??''}`" (->expr (str "n=" $n)))))
+    (is (= "`${\"n=\"}${$n??''}`" (str (->expr (str "n=" $n))))))
 
   (testing "when compiles to a ternary"
-    (let [out (->expr (when $open (@post "/x")))]
+    (let [out (str (->expr (when $open (@post "/x"))))]
       (is (str/includes? out "?"))
       (is (str/includes? out "@post"))))
 
   (testing "no squint_core references in any output"
-    (doseq [out [(->expr (and $a $b $c))
-                 (->expr (or $a $b))
-                 (->expr (not $a))
-                 (->expr (= $a $b $c))
-                 (->expr (not= $a $b))
-                 (->expr (str $a "x" $b))
-                 (->expr (when $a (set! $b 1) (set! $c 2)))
-                 (->expr (if $a 1 2))
-                 (->expr (println "dbg" $a))
-                 (->expr (+ $a 1))
-                 (->expr (< $a 5))]]
+    (doseq [out [(str (->expr (and $a $b $c)))
+                 (str (->expr (or $a $b)))
+                 (str (->expr (not $a)))
+                 (str (->expr (= $a $b $c)))
+                 (str (->expr (not= $a $b)))
+                 (str (->expr (str $a "x" $b)))
+                 (str (->expr (when $a (set! $b 1) (set! $c 2))))
+                 (str (->expr (if $a 1 2)))
+                 (str (->expr (println "dbg" $a)))
+                 (str (->expr (+ $a 1)))
+                 (str (->expr (< $a 5)))]]
       (is (not (str/includes? out "squint_core")) out))))
 
 ;; ---------------------------------------------------------------------------
@@ -107,36 +102,35 @@
 (deftest test-signal-atom-vocabulary
   (testing "swap! with not — the toggle idiom"
     (let [open?* (local-sig "open" false)]
-      (is (= "($_open = hyper_sc.not($_open))" (->expr (swap! open?* not))))))
+      (is (= "($_open = hyper_sc.not($_open))" (str (->expr (swap! open?* not)))))))
 
   (testing "swap! with inc and with extra args"
     (let [n* (local-sig "n" 0)]
-      (is (= "($_n = ($_n + 1))" (->expr (swap! n* inc))))
-      (is (= "($_n = ($_n + 5))" (->expr (swap! n* + 5))))))
+      (is (= "($_n = ($_n + 1))" (str (->expr (swap! n* inc)))))
+      (is (= "($_n = ($_n + 5))" (str (->expr (swap! n* + 5)))))))
 
   (testing "reset! from a client-side value"
     (let [query* (sig "searchQuery")]
       (is (= "($searchQuery = evt.target.value)"
-             (->expr (reset! query* evt.target.value))))))
+             (str (->expr (reset! query* evt.target.value)))))))
 
   (testing "deref reads as a signal reference"
     (let [name* (sig "userName")]
-      (is (= "!hyper_sc._EQ_($userName, \"\")" (->expr (not= @name* ""))))
-      (is (= "$userName" (->expr @name*)))))
+      (is (= "!hyper_sc._EQ_($userName, \"\")" (str (->expr (not= @name* "")))))
+      (is (= "$userName" (str (->expr @name*))))))
 
   (testing "the full guard + assign + action composition"
     (let [query* (sig "q")]
-      (is (= (str "var __hyper_r = ((((evt.key === \"Enter\")) ? "
-                  "((() => { $q = evt.target.value; return @post(\"/search\") })()) : (null))); "
-                  "return __hyper_r;")
-             (->expr (when (= evt.key "Enter")
-                       (reset! query* evt.target.value)
-                       (@post "/search")))))))
+      (is (= (str "(((evt.key === \"Enter\")) ? "
+                  "((() => { $q = evt.target.value; return @post(\"/search\") })()) : (null))")
+             (str (->expr (when (= evt.key "Enter")
+                            (reset! query* evt.target.value)
+                            (@post "/search"))))))))
 
   (testing "reset!/swap! on a non-signal throws at runtime"
     (let [x 5]
       (is (thrown-with-msg? Exception #"must be a signal"
-                            (->expr (reset! x 1)))))))
+                            (str (->expr (reset! x 1))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Boundary inference — locals and Clojure data
@@ -146,35 +140,36 @@
   (testing "locals splice as JS literals"
     (let [factor 2
           label  "a'b"]
-      (is (= "($scaled = ($raw * 2))" (->expr (set! $scaled (* $raw factor)))))
-      (is (= "($label = 'a\\'b')" (->expr (set! $label label)))
+      (is (= "($scaled = ($raw * 2))" (str (->expr (set! $scaled (* $raw factor))))))
+      (is (= "($label = 'a\\'b')" (str (->expr (set! $label label))))
           "strings are escaped JS literals")))
 
   (testing "keyword-call forms evaluate as Clojure"
     (let [person {:id 1234 :name "alice"}]
-      (is (= "($person-id = 1234)" (->expr (set! $person-id (:id person)))))
-      (is (= "($person-name = 'alice')" (->expr (set! $person-name (:name person)))))))
+      (is (= "($person-id = 1234)" (str (->expr (set! $person-id (:id person))))))
+      (is (= "($person-name = 'alice')" (str (->expr (set! $person-name (:name person))))))))
 
   (testing "explicit unquote still works as the escape hatch"
     (let [v 42]
-      (is (= "($x = 43)" (->expr (set! $x ~(inc v)))))))
+      (is (= "($x = 43)" (str (->expr (set! $x ~(inc v))))))))
 
   (testing "collections splice as JS literals"
     (let [xs [1 2 3]]
-      (is (= "($items = [1, 2, 3])" (->expr (set! $items xs)))))))
+      (is (= "($items = [1, 2, 3])" (str (->expr (set! $items xs))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Compile-once semantics
 ;; ---------------------------------------------------------------------------
 
 (deftest test-macro-time-compilation
-  (testing "no splices: expansion is a constant string"
-    (is (string? (macroexpand-1 '(hyper.expr/->expr (set! $count 0))))))
+  (testing "no splices: expansion wraps a constant string"
+    (is (= '(hyper.datastar/raw-expr "($count = 0)")
+           (macroexpand-1 '(hyper.expr/->expr (set! $count 0))))))
 
   (testing "with splices: expansion is a substitute call over a compiled template"
     ;; macroexpand-1 has no &env locals, so use the explicit unquote form
     ;; to exercise the splice path.
-    (let [expansion (macroexpand-1 '(hyper.expr/->expr (set! $x ~(compute))))]
+    (let [expansion (second (macroexpand-1 '(hyper.expr/->expr (set! $x ~(compute)))))]
       (is (seq? expansion))
       (is (= 'hyper.expr/substitute (first expansion)))
       (is (string? (second expansion)) "template compiled at expansion, not per call")))
@@ -192,16 +187,16 @@
 (deftest test-deref-signal-var
   (testing "deref of a top-level var holding a signal splices to a $ref"
     (is (= "hyper_sc.not($_hyperConnected)"
-           (->expr (not @signal/connected?*))))
+           (str (->expr (not @signal/connected?*)))))
     (is (= "($_hyperConnection === \"reconnecting\")"
-           (->expr (= @signal/connection* :reconnecting)))))
+           (str (->expr (= @signal/connection* :reconnecting))))))
 
   (testing "keyword and string tokens compile identically"
-    (is (= (->expr (= @signal/connection* :open))
-           (->expr (= @signal/connection* "open")))))
+    (is (= (str (->expr (= @signal/connection* :open)))
+           (str (->expr (= @signal/connection* "open"))))))
 
   (testing "deref of a non-signal var is left to the client (no splice)"
-    (is (str/includes? (->expr (not @some-undefined-thing))
+    (is (str/includes? (str (->expr (not @some-undefined-thing)))
                        "hyper_sc.deref"))))
 
 ;; ---------------------------------------------------------------------------
@@ -233,13 +228,13 @@
     (let [app-state* (new-tab)]
       (rendering app-state*
                  (is (= "@hyperAction('a_t_1')"
-                        (h/expr (h/action (reset! (h/tab-cursor :q) 1))))))))
+                        (str (h/expr (h/action (reset! (h/tab-cursor :q) 1)))))))))
 
   (testing "an action guarded by a client-side condition compiles to a ternary"
     (let [app-state* (new-tab)]
       (rendering app-state*
-                 (let [out (h/expr (when (= evt.key "Enter")
-                                     (h/action (reset! (h/tab-cursor :q) 2))))]
+                 (let [out (str (h/expr (when (= evt.key "Enter")
+                                          (h/action (reset! (h/tab-cursor :q) 2)))))]
                    (is (str/includes? out "evt.key === \"Enter\""))
                    (is (str/includes? out "@hyperAction('a_t_1')"))
                    (is (str/includes? out "?"))
@@ -248,7 +243,7 @@
   (testing "the embedded action is registered in tab state at render time"
     (let [app-state* (new-tab)]
       (rendering app-state*
-                 (h/expr (h/action (reset! (h/tab-cursor :q) 3))))
+                 (str (h/expr (h/action (reset! (h/tab-cursor :q) 3)))))
       (is (contains? (:actions @app-state*) "a_t_1")))))
 
 ;; ---------------------------------------------------------------------------
@@ -257,47 +252,43 @@
 
 (deftest test-client-params-in-expr
   (testing "client-param symbols expand to their client-side JS"
-    (is (= "(evt.key === \"Enter\")" (->expr (= $key "Enter"))))
-    (is (= "evt.target.checked" (->expr $checked)))
-    (is (= "evt.detail" (->expr $detail)))
+    (is (= "(evt.key === \"Enter\")" (str (->expr (= $key "Enter")))))
+    (is (= "evt.target.checked" (str (->expr $checked))))
+    (is (= "evt.detail" (str (->expr $detail))))
     (is (= "Object.fromEntries(new FormData(evt.target.closest('form')))"
-           (->expr $form-data))))
+           (str (->expr $form-data)))))
 
   (testing "$value assigns a signal the same as evt.target.value"
     (let [q* (sig "q")]
-      (is (= (->expr (reset! q* evt.target.value))
-             (->expr (reset! q* $value))))))
+      (is (= (str (->expr (reset! q* evt.target.value)))
+             (str (->expr (reset! q* $value)))))))
 
   (testing "non-param $signals still pass through untouched"
-    (is (= "($count = 0)" (->expr (set! $count 0))))
+    (is (= "($count = 0)" (str (->expr (set! $count 0)))))
     (let [name* (sig "userName")]
-      (is (= "$userName" (->expr @name*)))))
+      (is (= "$userName" (str (->expr @name*))))))
 
   (testing "a client-param guard composes with an embedded action's own params"
     (let [app-state* (new-tab)]
       (rendering app-state*
-                 (let [out (h/expr (when (= $key "Enter")
-                                     (h/action (reset! (h/tab-cursor :q) $value))))]
+                 (let [out (str (h/expr (when (= $key "Enter")
+                                          (h/action (reset! (h/tab-cursor :q) $value)))))]
                    (is (str/includes? out "evt.key === \"Enter\""))
                    (is (str/includes? out "@hyperAction('a_t_1', {value:evt.target.value})")))))))
 
-(deftest test-client-param-with-statements
-  ;; An h/expr with a `;` returns through __hyper_r, which only works as a whole
-  ;; handler.  The param is registered only for this test (other tests list the
+(deftest test-client-param-from-expr
+  ;; The param is registered only for this test (other tests list the
   ;; defined params), so the forms using it are compiled with eval.
-  (let [js (->expr {:meta (or (.-metaKey evt) (.-ctrlKey evt))})]
-    (is (str/ends-with? js "return __hyper_r;"))
+  (let [js (str (->expr {:meta (or (.-metaKey evt) (.-ctrlKey evt))}))]
     (.addMethod ^clojure.lang.MultiFn hyper.client-params/client-param '$test-mods
                 (fn [_] {:js js :key "testMods"}))
     (try
-      (let [wrapped (str "(() => { " js " })()")]
-        (testing "an action passes it as an expression"
-          (let [app-state* (new-tab)]
-            (rendering app-state*
-                       (is (= (str "@hyperAction('a_t_1', {testMods:" wrapped "})")
-                              (:js (eval `(h/action (prn ~'$test-mods)))))))))
-
-        (testing "an expression embeds it as an expression"
-          (is (str/includes? (eval `(->expr (.-meta ~'$test-mods))) (str wrapped ".meta")))))
+      (testing "an action passes it as an expression"
+        (let [app-state* (new-tab)]
+          (rendering app-state*
+                     (is (= (str "@hyperAction('a_t_1', {testMods:" js "})")
+                            (:js (eval `(h/action (prn ~'$test-mods)))))))))
+      (testing "an expression embeds it as an expression"
+        (is (str/includes? (str (eval `(->expr (.-meta ~'$test-mods)))) (str js ".meta"))))
       (finally
         (remove-method hyper.client-params/client-param '$test-mods)))))

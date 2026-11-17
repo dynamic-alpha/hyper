@@ -5,7 +5,7 @@
    vocabulary — signals are atoms here exactly as they are in actions:
 
      (let [open?* (h/local-signal :open false)]
-       [:button {:data-on:click (->expr (swap! open?* not))}]   ;; \"$_open = !($_open)\"
+       [:button {:data-on:click (->expr (swap! open?* not))}]   ;; \"($_open = hyper_sc.not($_open))\"
        [:div {:data-show (->expr @open?*)}])                     ;; \"$_open\"
 
    The same `(reset! sig v)` form means a server round-trip inside
@@ -300,31 +300,21 @@
           template
           pairs))
 
-;; Datastar adds `return` after the last `;`, even one inside a nested function (datastar#1215).
-(defn- join-statements
-  "Returns jss, the compiled forms, joined with `;`.
-   Returns the last form through `__hyper_r` if any form contains a `;`."
-  [jss]
-  (if (some #(str/includes? % ";") jss)
-    (str (str/join (map #(str % "; ") (butlast jss)))
-         "var __hyper_r = (" (last jss) "); return __hyper_r;")
-    (str/join "; " jss)))
-
 ;; ---------------------------------------------------------------------------
 ;; The macro
 ;; ---------------------------------------------------------------------------
 
 (defmacro ->expr
-  "Compile Clojure forms into a Datastar expression string.
+  "Compile Clojure forms into a Datastar expression, a `hyper.datastar/RawExpr`.
 
    Signals use atom vocabulary — reset!, swap!, deref — exactly as in
    actions, but compile to instant client-side signal operations.  Locals
    splice automatically; `evt`, `el`, `$signal` symbols, Datastar actions
    ((@post \"/x\")) and JS interop pass through to the client.  Multiple
-   forms join with `;`.
+   forms compile as one `do`.
 
    Examples:
-     (->expr (swap! open?* not))                ;; \"$_open = !($_open)\"
+     (->expr (swap! open?* not))                ;; \"($_open = hyper_sc.not($_open))\"
      (->expr (reset! query* evt.target.value))
      (->expr (when (= evt.key \"Enter\") (@post \"/search\")))
      (->expr (set! $count 0))                   ;; raw Datastar style works too
@@ -335,15 +325,15 @@
   [& forms]
   (let [env-locals (set (keys &env))
         pairs*     (atom [])
-        forms*     (mapv #(infer-boundary % env-locals pairs*) forms)
-        compiled   (map compile-form* forms*)
-        template   (join-statements (map :js compiled))
-        names      (into #{} (mapcat :used-core-vars) compiled)
+        compiled   (compile-form* (infer-boundary (cons 'do forms) env-locals pairs*))
+        template   (:js compiled)
+        names      (:used-core-vars compiled)
         pairs      @pairs*
         js         (if (empty? pairs)
                      template
                      `(substitute ~template
                                   [~@(map (fn [[ph expr mode]] [ph expr mode]) pairs)]))]
-    (if (seq names)
-      `(use-core-vars! ~(set names) ~js)
-      js)))
+    `(datastar/raw-expr
+       ~(if (seq names)
+          `(use-core-vars! ~(set names) ~js)
+          js))))

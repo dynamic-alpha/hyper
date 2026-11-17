@@ -879,8 +879,10 @@
 ;; ---------------------------------------------------------------------------
 
 (defmacro expr
-  "Compile Clojure forms into a Datastar expression string for use in
+  "Compile Clojure forms into a Datastar expression for use in
    data-* attributes, action :when guards, etc.
+   An attribute renders it as `return (<expression>)`, `str` returns the
+   expression.
 
    Signals use atom vocabulary — the same (reset! sig v) that means a
    server round-trip inside `action` compiles to an instant client-side

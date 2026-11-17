@@ -5,7 +5,7 @@
    `@hyperAction(...)` an `h/action` produces).  It exists so the same value can be
    used in two contexts without the caller choosing between them:
 
-   - as a hiccup attribute value — it renders like the string it wraps,
+   - as a hiccup attribute value — it renders as `return (<js>)`,
      escaped for the HTML attribute context (via Chassis);
    - spliced inside `h/expr` — it contributes its raw JS, not a quoted JS
      string literal (via the `DatastarExpr` protocol).
@@ -36,11 +36,8 @@
   [js]
   (if (instance? RawExpr js) js (->RawExpr js)))
 
-;; Render a RawExpr in a hiccup attribute exactly as its wrapped string would
-;; render — delegate to Chassis's String implementation so the JS is escaped
-;; for the attribute context (quotes, ampersands, …), unlike the raw
-;; AttributeValueFragment path that signal names use.
+;; Datastar splits a value at each `;` unless it starts with `return` (datastar#1215).
 (extend-protocol c/AttributeValue
   RawExpr
   (append-attribute-fragment-to [this sb attr-name]
-    (c/append-attribute-fragment-to (:js this) sb attr-name)))
+    (c/append-attribute-fragment-to (str "return (" (:js this) ")") sb attr-name)))

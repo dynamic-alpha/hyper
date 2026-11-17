@@ -380,7 +380,7 @@
 
 (def default-datastar-url
   "The URL pages load the Datastar module from by default."
-  "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.2/bundles/datastar.js")
+  "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.5/bundles/datastar.js")
 
 (def ^:private webkit-sse-shim-js
   "Inline JS injected into <head> for WebKit/Safari clients: routes the GET SSE

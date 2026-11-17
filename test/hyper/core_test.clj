@@ -505,7 +505,7 @@
           (is (.startsWith action-expr "(evt.key === \"Enter\") && "))
           (is (.contains action-expr "@hyperAction("))))))
 
-  (testing ":when guard evaluating to a non-string throws"
+  (testing ":when guard evaluating to a number throws"
     (let [app-state* (atom (state/init-state))
           session-id "test-session-js"
           tab-id     "test_tab_js"]
@@ -514,7 +514,7 @@
                                    :hyper/tab-id     tab-id
                                    :hyper/app-state  app-state*}]
         (is (thrown-with-msg?
-              Exception #"must evaluate to a string"
+              Exception #"must evaluate to an h/expr"
               (hy/action {:when 42} (reset! (hy/tab-cursor :val) $value))))))))
 
 (deftest test-base-path-action
