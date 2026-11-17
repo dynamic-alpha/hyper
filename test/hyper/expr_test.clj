@@ -276,7 +276,7 @@
                    (is (str/includes? out "evt.key === \"Enter\""))
                    (is (str/includes? out "@hyperAction('a_t_1', {value:evt.target.value})")))))))
 
-(deftest test-client-param-with-statements
+(deftest test-client-param-from-expr
   ;; The param is registered only for this test (other tests list the
   ;; defined params), so the forms using it are compiled with eval.
   (let [js (str (->expr {:meta (or (.-metaKey evt) (.-ctrlKey evt))}))]

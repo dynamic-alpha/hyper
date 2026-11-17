@@ -5,7 +5,7 @@
    `@hyperAction(...)` an `h/action` produces).  It exists so the same value can be
    used in two contexts without the caller choosing between them:
 
-   - as a hiccup attribute value — it renders like the string it wraps,
+   - as a hiccup attribute value — it renders as `return (<js>)`,
      escaped for the HTML attribute context (via Chassis);
    - spliced inside `h/expr` — it contributes its raw JS, not a quoted JS
      string literal (via the `DatastarExpr` protocol).

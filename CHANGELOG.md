@@ -7,8 +7,8 @@
 - Pages load Datastar v1.0.5 by default. Update a self-hosted
   `:datastar-url` to v1.0.5.
 - `h/expr` returns an expression object instead of a string. An attribute
-  renders it as `return (<expression>)`, which needs Datastar v1.0.5 or
-  later. `str` returns the expression.
+  renders it, and an `h/action`, as `return (<expression>)`, which needs
+  Datastar v1.0.5 or later. `str` returns the expression.
 - Multiple `h/expr` forms compile as one `do` instead of joining with `;`.
 
 ### Bug Fixes
