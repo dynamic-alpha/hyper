@@ -398,7 +398,8 @@
    extending Watchable).  The body is a hiccup expression.  When it returns a
    single element, the region's stable ID is set as that element's `:id` (an
    existing `:id` is kept).  Any other body — a seq of elements, text, or nil —
-   is wrapped in a div carrying the ID.
+   is wrapped in a div carrying the ID, styled `display: contents` so it does
+   not take part in layout.
 
    When any dep changes, only this component re-renders and a targeted Datastar
    fragment is sent — the rest of the page is untouched.  During full page

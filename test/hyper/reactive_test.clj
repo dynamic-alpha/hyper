@@ -82,7 +82,7 @@
           "must not leak the internal attribute map")
       ;; A stable empty anchor carrying the region id must remain so a later
       ;; dep change can target it with a partial fragment.
-      (is (re-find #"<div id=\"r_test-tab_\d+\"></div>" html)
+      (is (re-find #"<div id=\"r_test-tab_\d+\" style=\"display: contents\"></div>" html)
           "should emit an empty anchor div carrying the region id"))))
 
 (deftest test-reactive-seq-body
@@ -96,7 +96,7 @@
           html   (:body-html result)]
       (is (not (str/includes? html "{:id"))
           "must not leak the internal attribute map")
-      (is (re-find #"<div id=\"r_test-tab_\d+\"><p>one</p><p>two</p></div>" html)
+      (is (re-find #"<div id=\"r_test-tab_\d+\" style=\"display: contents\"><p>one</p><p>two</p></div>" html)
           "should wrap the seq in an anchor div carrying the region id")))
 
   (testing "a string body is wrapped in an anchor"
@@ -104,7 +104,7 @@
                    (fn [_req]
                      (let [count* (h/tab-cursor :count 0)]
                        [:div (h/reactive [count*] (str "Count: " @count*))])))]
-      (is (re-find #"<div id=\"r_test-tab_\d+\">Count: 0</div>" (:body-html result))))))
+      (is (re-find #"<div id=\"r_test-tab_\d+\" style=\"display: contents\">Count: 0</div>" (:body-html result))))))
 
 (deftest test-reactive-caching
   (testing "reactive returns cached HTML when deps unchanged"

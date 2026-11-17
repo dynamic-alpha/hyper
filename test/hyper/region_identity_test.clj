@@ -110,6 +110,31 @@
           (is (re-find (re-pattern (str "id=\"" leaf-id "\"")) frag)
               "the keyed descendant keeps its full-render id"))))))
 
+(deftest test-region-whose-body-is-a-region
+  (testing "a region whose body is only another region gets its own element,
+            and the inner region keeps its id"
+    (doseq [[label render! outer-re inner-re]
+            [["positional"
+              #(h/reactive [(atom 1)] (h/reactive [(atom 2)] [:p "x"]))
+              #"_1$" #"_2$"]
+             ["keyed"
+              #(h/reactive {:key :outer} [(atom 1)]
+                           (h/reactive {:key :inner} [(atom 2)] [:p "x"]))
+              #"_outer$" #"_inner$"]]]
+      (testing label
+        (let [app-state* (new-tab)
+              hiccup     (rendering app-state* "t" (render!))
+              subviews   (get-in @app-state* [:tabs "t" :subviews])
+              outer-id   (first (filter #(re-find outer-re %) (keys subviews)))
+              inner-id   (first (filter #(re-find inner-re %) (keys subviews)))]
+          (is (= [:div {:id outer-id :style "display: contents"} [:p {:id inner-id} "x"]] hiccup))
+          (is (re-find (re-pattern (str "^<div [^>]*id=\"" outer-id "\" style=\"display: contents\"><p id=\"" inner-id "\">"))
+                       (subview/partial-render app-state* "t" outer-id))
+              "a partial render of the outer region keeps both ids")
+          (is (re-find (re-pattern (str "^<p [^>]*id=\"" inner-id "\""))
+                       (subview/partial-render app-state* "t" inner-id))
+              "a partial render of the inner region targets its own element"))))))
+
 (deftest test-duplicate-key-throws
   (testing "two regions resolving to the same id in one render throw"
     (let [app-state* (new-tab)]

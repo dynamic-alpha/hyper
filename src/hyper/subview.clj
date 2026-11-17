@@ -78,21 +78,26 @@
   "Resolve a region's id and ensure the hiccup root carries it as `:id` (the
    morph anchor).  Precedence: `explicit-id` > the root element's `:id` >
    `fallback-id`.  A body that is not a single rooted element (nil, a seq,
-   text) is wrapped in a div carrying the id, so the region still
-   has a stable anchor for later partial fragments.  Returns `[id hiccup]`."
-  [explicit-id fallback-id hiccup]
-  (if-not (element? hiccup)
-    (let [id (or explicit-id fallback-id)]
-      [id (if (nil? hiccup) [:div {:id id}] [:div {:id id} hiccup])])
-    (let [[tag & more] hiccup
-          has-attrs?   (map? (first more))
-          attrs        (if has-attrs? (first more) {})
-          children     (if has-attrs? (next more) more)
-          root-id      (some-> (:id attrs) str)
-          id           (or explicit-id root-id fallback-id)]
-      (if (= id root-id)
-        [id hiccup]
-        [id (into [tag (assoc attrs :id id)] children)]))))
+   text), or whose root is the element of one of `nested-ids` (a region the
+   body drew), is wrapped in a div carrying the id, so the region still has a
+   stable anchor of its own for later partial fragments.  The wrapper is
+   `display: contents`, so it does not take part in layout.  Returns
+   `[id hiccup]`."
+  [explicit-id fallback-id nested-ids hiccup]
+  (let [[tag & more] (when (element? hiccup) hiccup)
+        has-attrs?   (map? (first more))
+        attrs        (if has-attrs? (first more) {})
+        root-id      (some-> (:id attrs) str)]
+    (if (or (not (element? hiccup))
+            (contains? (set nested-ids) root-id))
+      (let [id      (or explicit-id fallback-id)
+            wrapper [:div {:id id :style "display: contents"}]]
+        [id (if (nil? hiccup) wrapper (conj wrapper hiccup))])
+      (let [children (if has-attrs? (next more) more)
+            id       (or explicit-id root-id fallback-id)]
+        (if (= id root-id)
+          [id hiccup]
+          [id (into [tag (assoc attrs :id id)] children)])))))
 
 (defn- merge-root-attrs
   "Merge `attrs` into the attribute map of hiccup's root element, which
@@ -228,7 +233,7 @@
         path                         (cond-> context/*region-path* token (conj token))
         dep-vals                     (mapv deref deps)
         [body action-idx nested-ids] (run-region-body path render-fn)
-        [id hiccup]                  (resolve-region-id explicit-id fallback-id body)
+        [id hiccup]                  (resolve-region-id explicit-id fallback-id nested-ids body)
         html                         (c/html hiccup)]
     (check-region-unique! tab-id id)
     (register-subview! app-state* tab-id id
@@ -281,7 +286,7 @@
           (let [body         (binding [context/*region-path* (:region-path spec [])]
                                (render-fn))
                 drawn        @context/*registered-subview-ids*
-                [_id hiccup] (resolve-region-id sid sid body)
+                [_id hiccup] (resolve-region-id sid sid drawn body)
                 sig-attrs    (signal/format-signal-attrs @context/*declared-signals*)
                 hiccup       (cond-> hiccup sig-attrs (merge-root-attrs sig-attrs))
                 html         (c/html hiccup)
@@ -630,7 +635,7 @@
         ;; after this is then a genuine change the watch (or wiring) reacts to.
         dep-vals                     (mapv deref deps)
         [body action-idx nested-ids] (run-region-body path #(render-fn (first dep-vals)))
-        [id hiccup]                  (resolve-region-id component-id component-id body)
+        [id hiccup]                  (resolve-region-id component-id component-id nested-ids body)
         html                         (c/html hiccup)
         _                            (check-region-unique! tab-id id)
         ;; The stored render-fn re-coordinates (so a partial re-render from a

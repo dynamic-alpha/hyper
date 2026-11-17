@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+- Nested regions - A region whose body is only another region (an
+  `h/reactive` or `h/async` with nothing around it) no longer fails with
+  "Duplicate region id". Each region now gets its own element and keeps its
+  own id. Before, with `:key`s, the outer region's id replaced the inner
+  region's id. The outer region is wrapped in a div.
+
+- Region wrappers - The div Hyper wraps a region's body in (when the body is
+  a seq, text, nil, or another region) is now `display: contents`, so it no
+  longer affects flex or grid layout. Browser tests that wait for such a
+  region's element to be visible need to wait for its children instead.
+
 ## 0.4.0 — 2026-11-16
 
 ### Upgrading
