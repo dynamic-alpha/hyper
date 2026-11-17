@@ -22,7 +22,8 @@
   [g]
   (cond
     (nil? g)    nil
-    (string? g) (when-not (str/blank? g) (datastar/expression g))
+    (string? g) (when-not (str/blank? g) g)
+    (datastar/datastar-expr? g) (datastar/-datastar-js g)
     :else       (throw (ex-info "action :when guard must evaluate to a string Datastar expression"
                                 {:guard g}))))
 

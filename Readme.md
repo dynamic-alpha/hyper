@@ -614,7 +614,7 @@ dropdown visibility, accordion state, modal toggles:
 ```clojure
 (let [open?* (h/local-signal :open false)]
   [:div
-   ;; Toggle with atom vocabulary — compiles to "return (($_open = hyper_sc.not($_open)))"
+   ;; Toggle with atom vocabulary — compiles to "($_open = hyper_sc.not($_open))"
    [:button {:data-on:click (h/expr (swap! open?* not))} "Toggle"]
    ;; data-show needs the expression form (@)
    [:div {:data-show @open?*} "Collapsible content"]])

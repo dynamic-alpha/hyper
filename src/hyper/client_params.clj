@@ -11,8 +11,7 @@
   switches the action's transport to a multipart/form-data upload (see
   hyper.uploads): its `:js` must evaluate to a `FormData` object (the request
   body), and its `:key` is the key under which the parsed upload is bound on
-  the server (\"form\" or \"files\")."
-  (:require [hyper.datastar :as datastar]))
+  the server (\"form\" or \"files\").")
 
 (def ^:private default-client-param-registry
   "The default registry of client params."
@@ -70,7 +69,7 @@
   "Client param `sym`'s definition, with its :js an expression that can sit
    in an argument list, an object or another expression."
   [sym]
-  (update (client-param sym) :js #(cond-> % (string? %) datastar/expression)))
+  (update (client-param sym) :js #(some-> % str)))
 
 (defn multipart-param?
   "True when `sym` is a client param whose transport is a multipart/form-data

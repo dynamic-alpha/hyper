@@ -4,11 +4,12 @@
 
 ### Upgrading
 
-- Pages load Datastar v1.0.5 by default. Every `h/expr` result now starts
-  with `return`, which needs Datastar v1.0.5 or later. Update a self-hosted
+- Pages load Datastar v1.0.5 by default. Update a self-hosted
   `:datastar-url` to v1.0.5.
-- Multiple `h/expr` forms join with `,` instead of `;`. Code that builds a
-  larger expression from an `h/expr` string must drop the leading `return `.
+- `h/expr` returns an expression object instead of a string. An attribute
+  renders it as `return (<expression>)`, which needs Datastar v1.0.5 or
+  later. `str` returns the expression.
+- Multiple `h/expr` forms join with `,` instead of `;`.
 
 ### Bug Fixes
 

@@ -5,8 +5,8 @@
    vocabulary — signals are atoms here exactly as they are in actions:
 
      (let [open?* (h/local-signal :open false)]
-       [:button {:data-on:click (->expr (swap! open?* not))}]   ;; \"return (($_open = hyper_sc.not($_open)))\"
-       [:div {:data-show (->expr @open?*)}])                     ;; \"return ($_open)\"
+       [:button {:data-on:click (->expr (swap! open?* not))}]   ;; \"($_open = hyper_sc.not($_open))\"
+       [:div {:data-show (->expr @open?*)}])                     ;; \"$_open\"
 
    The same `(reset! sig v)` form means a server round-trip inside
    `h/action` and an instant client-side assignment inside `->expr` —
@@ -300,27 +300,28 @@
           template
           pairs))
 
-;; Datastar splits a value at each `;` unless it starts with `return` (datastar#1215).
-(defn- join-statements
-  "Returns `return (js1, js2, ...)` for jss, the compiled forms."
+(defn- join-forms
+  "Returns jss, the compiled forms, as one expression."
   [jss]
-  (str "return (" (str/join ", " jss) ")"))
+  (if (next jss)
+    (str "(" (str/join ", " jss) ")")
+    (first jss)))
 
 ;; ---------------------------------------------------------------------------
 ;; The macro
 ;; ---------------------------------------------------------------------------
 
 (defmacro ->expr
-  "Compile Clojure forms into a Datastar expression string.
+  "Compile Clojure forms into a Datastar expression, a `hyper.datastar/RawExpr`.
 
    Signals use atom vocabulary — reset!, swap!, deref — exactly as in
    actions, but compile to instant client-side signal operations.  Locals
    splice automatically; `evt`, `el`, `$signal` symbols, Datastar actions
    ((@post \"/x\")) and JS interop pass through to the client.  Multiple
-   forms join with `,` after a leading `return`.
+   forms join with `,`.
 
    Examples:
-     (->expr (swap! open?* not))                ;; \"return (($_open = hyper_sc.not($_open)))\"
+     (->expr (swap! open?* not))                ;; \"($_open = hyper_sc.not($_open))\"
      (->expr (reset! query* evt.target.value))
      (->expr (when (= evt.key \"Enter\") (@post \"/search\")))
      (->expr (set! $count 0))                   ;; raw Datastar style works too
@@ -333,13 +334,14 @@
         pairs*     (atom [])
         forms*     (mapv #(infer-boundary % env-locals pairs*) forms)
         compiled   (map compile-form* forms*)
-        template   (join-statements (map :js compiled))
+        template   (join-forms (map :js compiled))
         names      (into #{} (mapcat :used-core-vars) compiled)
         pairs      @pairs*
         js         (if (empty? pairs)
                      template
                      `(substitute ~template
                                   [~@(map (fn [[ph expr mode]] [ph expr mode]) pairs)]))]
-    (if (seq names)
-      `(use-core-vars! ~(set names) ~js)
-      js)))
+    `(datastar/raw-expr
+      ~(if (seq names)
+         `(use-core-vars! ~(set names) ~js)
+         js))))
