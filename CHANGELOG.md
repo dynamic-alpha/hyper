@@ -13,6 +13,10 @@
 
 ### Bug Fixes
 
+- Component attributes - An `h/expr` or `h/action` passed as a `defc`
+  attribute renders as `return (<expression>)`, the same as any other
+  attribute, instead of as JSON.
+
 - Nested regions - A region whose body is only another region (an
   `h/reactive` or `h/async` with nothing around it) no longer fails with
   "Duplicate region id". Each region now gets its own element and keeps its

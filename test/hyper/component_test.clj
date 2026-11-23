@@ -4,9 +4,12 @@
    macro-time hiccup compilation, and bundle assembly."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [dev.onionpancakes.chassis.core :as c]
             [hyper.component :as hc]
             [hyper.component.bundle :as hcb]
             [hyper.component.hiccup :as hch]
+            [hyper.datastar :as datastar]
+            [hyper.expr :refer [->expr]]
             [hyper.signal :as signal]
             [squint.compiler.source-map :as sm]))
 
@@ -106,6 +109,19 @@
       (is (= "wide" (:class out)))
       (is (= "color:red" (:style out)))
       (is (= "@post('/x')" (:data-on:gauge-selected out))))))
+
+(deftest test-attrs-datastar-expr
+  (testing "a Datastar expression in a component data attr serializes as it renders in a Datastar attribute"
+    (let [e   (->expr (.preventDefault evt)
+                      (when-let [x (or $a $b)] (set! $c x) (@post "/z")))
+          out (hc/attrs {:on-pick      e
+                         :data-on:pick e
+                         :on-action    (datastar/raw-expr "@hyperAction('a_t_1')")})]
+      (is (= (str "return (" e ")") (:on-pick out)))
+      (is (= (c/html [:x {:data-on:pick e}])
+             (c/html [:x {:data-on:pick (:on-pick out)}]))
+          "same attribute text as a data-on:* binding")
+      (is (= "return (@hyperAction('a_t_1'))" (:on-action out))))))
 
 (deftest test-attrs-signal-link
   (testing "signal object as attr value generates the live-link triple"

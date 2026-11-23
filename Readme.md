@@ -339,8 +339,8 @@ that action rotates.
 
 Actions are server-side functions triggered by user interactions. The `action`
 macro captures the current session and tab context at render time, registers a
-handler on the server, and returns a Datastar expression string that can be
-bound to any event attribute.
+handler on the server, and returns a Datastar expression that can be bound to
+any event attribute.
 
 ```clojure
 (defn counter [req]
@@ -767,8 +767,8 @@ beyond it.
 ## Expressions
 
 `expr` compiles Clojure s-expressions into
-[Datastar expression](https://data-star.dev/guide/datastar_expressions)
-strings, eliminating string-concatenation gymnastics in `data-*` attributes:
+[Datastar expressions](https://data-star.dev/guide/datastar_expressions),
+eliminating string-concatenation gymnastics in `data-*` attributes:
 
 ```clojure
 (let [open?*  (h/local-signal :open false)
@@ -2161,11 +2161,30 @@ keyword type).
 ### Events are the channel out
 
 `emit` (in scope in every segment) dispatches a bubbling, composed
-`CustomEvent` that crosses the shadow boundary. The server catches it with
-an ordinary `data-on:*` action; the payload arrives via the `$detail`
-client param as an idiomatic Clojure map. Parent elements can also
-intercept events before (or instead of) the server — composition is just
-DOM event bubbling.
+`CustomEvent` that crosses the shadow boundary. Bind it where you use the
+component, with a `data-on:<event>` attribute.
+
+Handle it on the server with an `h/action`; the payload arrives via the
+`$detail` client param as an idiomatic Clojure map:
+
+```clojure
+(temp-gauge {:value @temp* :max 40 :label "CPU"
+             :data-on:gauge-selected (h/action (handle-selection! $detail))})
+```
+
+Handle it on the client with an [`h/expr`](#expressions); `$detail` is the
+event's JS payload:
+
+```clojure
+(let [selected* (h/local-signal :selected nil)]
+  [:div
+   (temp-gauge {:value @temp* :max 40 :label "CPU"
+                :data-on:gauge-selected (h/expr (reset! selected* (.-label $detail)))})
+   [:span {:data-text @selected*}]])
+```
+
+Parent elements can also intercept events before the server — composition
+is just DOM event bubbling.
 
 ### JS libraries: `:require`
 

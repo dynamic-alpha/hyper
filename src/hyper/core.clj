@@ -758,7 +758,7 @@
 
 (defmacro ^{:hyper/datastar-expr true} action
   "Create a server action expression for use in Datastar event attributes.
-   Returns a Datastar expression string that can be bound to any event.
+   Returns a Datastar expression that can be bound to any event.
 
    The action is registered with the current session/tab context
    and can access state via cursors. Action IDs are deterministic

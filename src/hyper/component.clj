@@ -31,8 +31,10 @@
             [clojure.string :as str]
             [clojure.walk :as walk]
             [hyper.component.hiccup :as hiccup]
+            [hyper.datastar :as datastar]
             [hyper.signal :as signal]
-            [squint.compiler :as squint]))
+            [squint.compiler :as squint])
+  (:import [hyper.datastar RawExpr]))
 
 ;; ---------------------------------------------------------------------------
 ;; Component registry
@@ -425,13 +427,19 @@
 
    The emitted server-side function accepts a map argument followed by any
    number of child elements.  Pass your attribute values (including
-   `data-on:*` action bindings) in the map; children are appended to the
-   host element's light DOM (projected through any `<slot>` the component
-   renders):
+   `data-on:*` bindings for emitted events) in the map; children are
+   appended to the host element's light DOM (projected through any `<slot>`
+   the component renders):
 
+     ;; handle an emitted event on the server
      (my-component {:value  @cursor*
                     :label  \"CPU\"
                     :data-on:selected (h/action (handle! $detail))})
+
+     ;; or on the client
+     (my-component {:value  @cursor*
+                    :label  \"CPU\"
+                    :data-on:selected (h/expr (reset! selected* (.-label $detail)))})
 
      (my-component {:label \"CPU\"}
        [:span \"slotted child\"]
@@ -521,16 +529,19 @@
 
 (defn attr-value
   "Serialize a single component attribute value for HTML.
-   Strings pass through raw (human-readable attributes); collections get
-   deterministic JSON; keywords serialize as their name."
+   Strings pass through raw (human-readable attributes); Datastar
+   expressions (`h/expr`, `h/action`) serialize as they render in a Datastar
+   attribute, `return (<expression>)`; collections get deterministic JSON;
+   keywords serialize as their name."
   [v]
   (cond
-    (nil? v)     nil
-    (string? v)  v
-    (keyword? v) (name v)
-    (number? v)  (str v)
-    (boolean? v) (str v)
-    :else        (stable-json v)))
+    (nil? v)              nil
+    (string? v)           v
+    (instance? RawExpr v) (str "return (" (datastar/-datastar-js v) ")")
+    (keyword? v)          (name v)
+    (number? v)           (str v)
+    (boolean? v)          (str v)
+    :else                 (stable-json v)))
 
 (defn- signal-link-attrs
   "Generate the attribute triple that live-links a component attribute to a

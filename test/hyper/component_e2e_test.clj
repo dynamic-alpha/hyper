@@ -140,10 +140,31 @@
      [:span#selected-value (str (get @selected* :value "none"))]
      [:span#selected-label (str (get @selected* :label "none"))]]))
 
+;; Emits an event that the host binds with an h/expr.
+(hc/defc e2e-expr-emitter
+  [{:keys [label]}]
+  (event ::emit [_e] (emit "picked" {}))
+  (render
+    [:button#fwd-emit {:on {:click ::emit}} label]))
+
+(defn- expr-forwarding-get [_]
+  (let [log* (h/local-signal :log "")]
+    ;; Both expressions compile to nested functions with statements, which
+    ;; Datastar's `;` splitting breaks for value-returning attributes
+    ;; (data-text) unless the attribute starts with `return`.
+    [:div
+     (e2e-expr-emitter {:label          "emit"
+                        :data-on:picked (h/expr (swap! log* str "c")
+                                                (when-let [x (or @log* "")] (reset! log* (str x "d"))))})
+     [:span#fwd-log {:data-text (h/expr (when-let [x (or @log* nil)] (str "log:" x)))}]]))
+
 (def ^:private routes
   [["/components" {:name  :components
                    :title "Components"
-                   :get   #'components-get}]])
+                   :get   #'components-get}]
+   ["/expr-forwarding" {:name  :expr-forwarding
+                        :title "Expression forwarding"
+                        :get   #'expr-forwarding-get}]])
 
 ;; ---------------------------------------------------------------------------
 ;; Server lifecycle (own port — independent of hyper.e2e-test's server)
@@ -396,4 +417,28 @@
       (finally
         ;; Restore the original component for other tests in this namespace.
         (swap! hc/registry* assoc "e2e-gauge" original)
+        (e2e/close-browser! browser-info)))))
+
+(deftest ^:e2e expr-statements-test
+  ;; An h/expr that compiles to statements runs in Datastar, both in an event
+  ;; handler and in a value-returning attribute.
+  (let [browser-info (e2e/launch-browser)
+        ctx          (e2e/new-context browser-info)
+        page         (e2e/new-page ctx)
+        log          #(e2e/eval-js "document.querySelector('#fwd-log').textContent")]
+    (try
+      (w/with-page page
+        (w/navigate (str base-url "/expr-forwarding"))
+        (e2e/wait-for-sse)
+        (is (e2e/wait-for-text "#fwd-emit" "emit"))
+
+        (testing "data-text evaluates a when-let expression"
+          (e2e/wait-for-pred #(= "log:" (log)))
+          (is (= "log:" (log))))
+
+        (testing "emit -> host data-on runs a multi-form h/expr"
+          (w/click "#fwd-emit")
+          (e2e/wait-for-pred #(= "log:cd" (log)))
+          (is (= "log:cd" (log)))))
+      (finally
         (e2e/close-browser! browser-info)))))
