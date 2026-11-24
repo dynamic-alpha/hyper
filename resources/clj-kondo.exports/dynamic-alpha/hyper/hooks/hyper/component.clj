@@ -265,7 +265,9 @@
         _                        (validate-component! node binding-vec segments)
         _                        (validate-events! segments)
         _                        (validate-aliases! opts-node segments)
-        let-node                 (api/list-node
+        ;; Lint segments as CLJS, they run in the browser.
+        let-node                 (vary-meta
+                                  (api/list-node
                                    (list*
                                      (api/token-node 'let)
                                      (api/vector-node
@@ -287,6 +289,7 @@
                                        (api/token-node 'ctx)
                                        (api/token-node 'children)
                                        (map rewrite-segment segments))))
+                                  assoc :clj-kondo/lang :cljs)
         arglist                  (api/vector-node
                                    (concat (:children (or binding-vec
                                                           (api/vector-node [])))

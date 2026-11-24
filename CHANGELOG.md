@@ -28,6 +28,10 @@
   longer affects flex or grid layout. Browser tests that wait for such a
   region's element to be visible need to wait for its children instead.
 
+- clj-kondo hooks - `defc` segments are linted as ClojureScript, so
+  `this-as`, `js-obj` and `array` resolve. This takes a clj-kondo release
+  with `:clj-kondo/lang` support. Older versions lint the segments as before.
+
 ## 0.4.0 — 2026-11-16
 
 ### Upgrading
