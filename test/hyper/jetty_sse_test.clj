@@ -164,6 +164,47 @@
         (finally
           (h/stop! stop))))))
 
+(defn- sse-stream-compression
+  "`[content-encoding quality]` of the SSE stream a handler made with
+   `handler-opts` opens for a client that accepts br, where quality is what
+   the stream compresses at."
+  [& handler-opts]
+  (let [port       (free-port)
+        quality    (promise)
+        out-stream br/compress-out-stream
+        handler    (apply h/create-handler
+                          [["/" {:name :home :get (fn [_] [:div "hi"])}]]
+                          handler-opts)
+        stop       (h/start! handler {:port port})
+        client     (cookie-client)
+        base       (str "http://localhost:" port)]
+    (try
+      (with-redefs [br/compress-out-stream (fn [out & {:as opts}]
+                                             (deliver quality (:quality opts))
+                                             (out-stream out opts))]
+        (GET client (str base "/?tab-id=T") (HttpResponse$BodyHandlers/ofString))
+        (let [resp                (GET-br client (str base "/hyper/events?tab-id=T")
+                                          (HttpResponse$BodyHandlers/ofInputStream))
+              {:keys [text stop]} (sse-reader (.body ^java.net.http.HttpResponse resp))]
+          (try
+            (wait-until text seq 5000)
+            [(-> resp .headers (.firstValue "content-encoding") (.orElse nil))
+             (deref quality 1000 nil)]
+            (finally
+              (stop)))))
+      (finally
+        (h/stop! stop)))))
+
+(deftest sse-brotli-quality
+  (testing "the SSE stream compresses at quality 5 by default"
+    (is (= ["br" 5] (sse-stream-compression))))
+
+  (testing "the SSE stream compresses at the handler's :brotli quality"
+    (is (= ["br" 9] (sse-stream-compression :brotli {:quality 9}))))
+
+  (testing "a false :brotli leaves the SSE stream uncompressed"
+    (is (= [nil nil] (sse-stream-compression :brotli false)))))
+
 (defn- post-action!
   "POST action `action-id` of tab `tab-id`'s latest page render, numbered
    `seq`, with `signals`, as the queue @hyperAction posts."

@@ -257,10 +257,10 @@
 
    The SSE response headers are set by `sse-events-handler` on the response
    map; here we only write the body (connected event, then render payloads)."
-  [app-state* session-id tab-id ^java.io.OutputStream os compress?
+  [app-state* session-id tab-id ^java.io.OutputStream os br-quality
    render-queue]
-  (let [br-out           (when compress? (br/byte-array-out-stream))
-        br-stream        (when br-out (br/compress-out-stream br-out :window-size 18))
+  (let [br-out           (when br-quality (br/byte-array-out-stream))
+        br-stream        (when br-out (br/compress-out-stream br-out :window-size 18 :quality br-quality))
         throttle-ms      (long (or (get @app-state* :render-throttle-ms)
                                    default-render-throttle-ms))
         ;; Heartbeat keepalive interval (ms).  nil / non-positive disables it,
@@ -566,7 +566,7 @@
    `conn-id` uniquely identifies this connection so a stale half-open
    connection can't detach a tab whose renderer a newer one already replaced.
    The renderer's `:stopped` promise is delivered once the loop has exited."
-  [app-state* session-id tab-id ^java.io.OutputStream os compress? conn-id]
+  [app-state* session-id tab-id ^java.io.OutputStream os br-quality conn-id]
   (let [;; A tab whose SSE watchers were already set up is a reconnect: its
         ;; state/subviews/workers survived the disconnect grace window, so we
         ;; only re-attach a renderer rather than rebuild reactivity.
@@ -626,7 +626,7 @@
         ;; Kick the initial full render, then run the loop until shutdown/disconnect.
         (rq/enqueue-full-render! render-queue)
         (try
-          (-renderer-loop! app-state* session-id tab-id os compress? render-queue)
+          (-renderer-loop! app-state* session-id tab-id os br-quality render-queue)
           (finally
             ;; Only the connection that is currently attached may detach the tab —
             ;; a stale half-open connection whose renderer was already replaced by a
@@ -991,14 +991,15 @@
   (fn [req]
     (let [session-id (:hyper/session-id req)
           tab-id     (:hyper/tab-id req)
-          compress?  (br/accepts-br? req)
+          br-quality (when (br/accepts-br? req)
+                       (br/quality (:brotli @app-state*)))
           ;; Identity for THIS SSE connection, so a stale half-open connection
           ;; can't detach a tab whose renderer a newer connection took over.
           conn-id    (str (random-uuid))
           headers    (cond-> {"Content-Type"      "text/event-stream"
                               "Cache-Control"     "no-cache, no-transform"
                               "X-Accel-Buffering" "no"}
-                       compress? (assoc "Content-Encoding" "br"))
+                       br-quality (assoc "Content-Encoding" "br"))
           ;; Tabs of one browser loaded at once each start their own session,
           ;; and the browser keeps only the last session cookie.
           state      (swap! app-state*
@@ -1025,7 +1026,7 @@
          :headers headers
          :body    (reify ring-protocols/StreamableResponseBody
                     (write-body-to-stream [_ _response os]
-                      (run-sse-loop! app-state* session-id tab-id os compress? conn-id)))}
+                      (run-sse-loop! app-state* session-id tab-id os br-quality conn-id)))}
 
         ;; A tab of another session that never connected, with a request of
         ;; no session the server holds, is what a browser that drops the
@@ -2142,6 +2143,10 @@ action({
    - :upload-expires-in TTL (seconds) for upload temp files before they are
                         reaped.  Default 3600 (1 hour).  Move/stream :tempfile
                         to permanent storage in your handler.
+   - :brotli            Brotli compression of pages, other string responses
+                        and SSE streams: a map whose `:quality` (0-11,
+                        default 5) is the compression quality, or false for
+                        no compression.
    - :session           Map of session settings.  `:cookie` is a map of Ring
                         cookie attributes merged over the session cookie's
                         defaults: `:name` \"hyper-session\", `:path` \"/\",
@@ -2165,6 +2170,7 @@ action({
                               heartbeat-ms        default-heartbeat-ms
                               upload-expires-in   3600}
                        :as   opts}]
+   (br/check-setting (:brotli opts))
    (when-not (or (nil? session) (map? session))
      (throw (ex-info ":session must be a map, such as {:cookie {:same-site :strict}}."
                      {:session session})))
@@ -2219,6 +2225,7 @@ action({
                                 :not-found not-found
                                 :disconnect-grace-ms disconnect-grace-ms
                                 :heartbeat-ms heartbeat-ms
+                                :brotli (:brotli opts)
                                 :open-when-hidden? (get opts :open-when-hidden? true)
                                 :tree-shake? (:tree-shake? opts)
                                 :source-map? (:source-map? opts)
@@ -2253,7 +2260,7 @@ action({
            ;; are parsed, before routing.  Earlier entries wrap outermost (execute first).
            (wrap-middleware-redirects h middleware base-path)
            (h.ring.middleware/wrap-hyper h app-state*)
-           (br/wrap-brotli h)
+           (br/wrap-brotli h (:brotli opts))
            (keyword-params/wrap-keyword-params h)
            (params/wrap-params h)
            (cookies/wrap-cookies h)

@@ -2732,6 +2732,14 @@ after a server redeploy where client code may have changed).
 Hyper uses [brotli4j](https://github.com/hyperxpro/Brotli4j) to compress both
 initial page responses and streaming SSE updates.
 
+Both are compressed at quality 5 by default. `:brotli` sets the quality, from 0
+to 11, or `false` turns compression off. Compressing large pages at high quality
+can be slow, so tune the quality for your pages.
+
+```clojure
+(h/create-handler routes :brotli {:quality 6})
+```
+
 ## clj-kondo
 
 Hyper ships with clj-kondo config. Import it with:

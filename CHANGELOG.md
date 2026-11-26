@@ -10,6 +10,17 @@
   renders it, and an `h/action`, as `return (<expression>)`, which needs
   Datastar v1.0.5 or later. `str` returns the expression.
 - Multiple `h/expr` forms compile as one `do` instead of joining with `;`.
+- Page responses are brotli-compressed at quality 5 instead of 11, the same
+  quality as the event stream. Large pages are sent much sooner and are
+  somewhat larger. `:brotli {:quality 11}` restores the old page quality, but
+  also applies it to the event stream, where it is much slower.
+
+### Features
+
+- Brotli quality - `create-handler` takes `:brotli`, the compression quality
+  for both page responses and the event stream:
+  `(h/create-handler routes :brotli {:quality 6})`. The quality is from 0 to
+  11 and defaults to 5. `:brotli false` turns compression off.
 
 ### Bug Fixes
 

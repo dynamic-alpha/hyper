@@ -1,7 +1,8 @@
 (ns hyper.brotli-test
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [hyper.brotli :as br]))
+            [hyper.brotli :as br]
+            [hyper.core :as h]))
 
 ;; ---------------------------------------------------------------------------
 ;; One-shot compression
@@ -204,3 +205,56 @@
     (let [handler  (br/wrap-brotli (fn [_req] nil))
           response (handler {:headers {"accept-encoding" "br"}})]
       (is (nil? response)))))
+
+(defn- compressed-quality
+  "`[content-encoding quality]` of the response `handler` gives a GET of
+   `uri` that accepts br, where quality is what the body was compressed at."
+  [handler uri]
+  (let [quality  (atom nil)
+        compress br/compress]
+    (with-redefs [br/compress (fn [data & {:as opts}]
+                                (reset! quality (:quality opts))
+                                (compress data opts))]
+      (let [response (handler {:request-method :get
+                               :uri            uri
+                               :headers        {"accept-encoding" "br"}})]
+        [(get-in response [:headers "Content-Encoding"]) @quality]))))
+
+(deftest test-wrap-brotli-setting
+  (let [page (fn [_req] {:status 200 :body "<html>hello</html>"})]
+    (testing "compresses at quality 5 without a setting"
+      (is (= ["br" 5] (compressed-quality (br/wrap-brotli page) "/")))
+      (is (= ["br" 5] (compressed-quality (br/wrap-brotli page {}) "/"))))
+
+    (testing "compresses at the setting's quality"
+      (is (= ["br" 0] (compressed-quality (br/wrap-brotli page {:quality 0}) "/")))
+      (is (= ["br" 11] (compressed-quality (br/wrap-brotli page {:quality 11}) "/"))))
+
+    (testing "does not compress with a false setting"
+      (is (= [nil nil] (compressed-quality (br/wrap-brotli page false) "/"))))
+
+    (testing "rejects a setting that is not false or a map with a quality from 0 to 11"
+      (doseq [setting [true {:quality 12} {:quality -1} {:quality 5.5} :fast]]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #":brotli must be false or a map"
+                              (br/wrap-brotli page setting)))))))
+
+(defn- brotli-page [_req] [:div "hello"])
+
+(deftest test-create-handler-brotli
+  (let [routes [["/" {:name :home :get brotli-page}]]]
+    (testing "pages compress at quality 5 by default"
+      (let [handler (h/create-handler routes)]
+        (is (= ["br" 5] (compressed-quality handler "/")))
+        (is (= ["br" 5] (compressed-quality handler "/missing")))))
+
+    (testing "the handler's :brotli sets the quality of pages"
+      (let [handler (h/create-handler routes :brotli {:quality 9})]
+        (is (= ["br" 9] (compressed-quality handler "/")))
+        (is (= ["br" 9] (compressed-quality handler "/missing")))))
+
+    (testing "a false :brotli turns compression off"
+      (is (= [nil nil] (compressed-quality (h/create-handler routes :brotli false) "/"))))
+
+    (testing "an invalid :brotli is rejected when the handler is created"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #":brotli must be false or a map"
+                            (h/create-handler routes :brotli {:quality 12}))))))

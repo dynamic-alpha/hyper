@@ -1066,6 +1066,10 @@
                           and to encode them into the URLs Hyper builds, so values
                           round-trip.  Defaults to `default-malli-transformer`;
                           compose with it to add custom encodings.
+   - :brotli            — Brotli compression of pages, other string responses
+                          and SSE streams: a map whose `:quality` (0-11,
+                          default 5) is the compression quality, or false for
+                          no compression.
    - :session           — Map of session settings.  `:cookie` is a map of Ring
                           cookie attributes merged over the session cookie's
                           defaults: `:name` \"hyper-session\", `:path` \"/\",
@@ -1129,6 +1133,7 @@
                            render-guard (assoc :render-guard render-guard)
                            param-transformer (assoc :param-transformer param-transformer)
                            (contains? opts :session) (assoc :session session)
+                           (contains? opts :brotli) (assoc :brotli (:brotli opts))
                            ;; File-upload limits for the /hyper/upload route.
                            max-file-size (assoc :max-file-size max-file-size)
                            max-file-count (assoc :max-file-count max-file-count)

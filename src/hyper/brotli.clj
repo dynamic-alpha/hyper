@@ -16,7 +16,7 @@
 
 (defn encoder-params
   "Build encoder parameters.
-   quality: 0-11 (default 5 for streaming, 11 for static)
+   quality: 0-11 (default 5)
    window-size: 0 or 10-24 (default 24)"
   ^Encoder$Parameters [{:keys [quality window-size]}]
   (doto (Encoder$Parameters/new)
@@ -25,8 +25,7 @@
     (.setQuality (or quality 5))))
 
 (defn compress
-  "One-shot compress a string or byte array. Returns a byte array.
-   Suitable for full page responses where max compression is preferred."
+  "One-shot compress a string or byte array. Returns a byte array."
   ^bytes [data & {:as opts}]
   (let [input (if (string? data)
                 (.getBytes ^String data "UTF-8")
@@ -118,23 +117,54 @@
   (when-let [accept (get-in req [:headers "accept-encoding"])]
     (some? (re-find #"\bbr\b" accept))))
 
+(def default-quality
+  "The quality responses and SSE streams are compressed at when the brotli
+   setting gives none."
+  5)
+
+(defn check-setting
+  "Returns `setting` when it is nil, false, or a map whose `:quality`, when
+   present, is an integer from 0 to 11, and throws otherwise."
+  [setting]
+  (when-not (or (nil? setting)
+                (false? setting)
+                (and (map? setting)
+                     (or (not (contains? setting :quality))
+                         (and (int? (:quality setting))
+                              (<= 0 (:quality setting) 11)))))
+    (throw (ex-info (str ":brotli must be false or a map with an integer :quality from 0 to 11, "
+                         "such as {:quality 6}.")
+                    {:brotli setting})))
+  setting)
+
+(defn quality
+  "The quality the brotli `setting` compresses at, or nil when it is false."
+  [setting]
+  (when-not (false? setting)
+    (:quality setting default-quality)))
+
 (defn wrap-brotli
   "Ring middleware that compresses response bodies with brotli.
    Only compresses when:
    - Client sends Accept-Encoding: br
    - Response body is a string (typical for HTML/JSON)
    - Response is not already encoded
+   - `setting` is not false
 
-   Uses quality 11 (max) for one-shot responses since they're not
-   latency-sensitive like streaming SSE."
-  [handler]
-  (fn [req]
-    (let [response (handler req)]
-      (if (and response
-               (accepts-br? req)
-               (string? (:body response))
-               (not (get-in response [:headers "Content-Encoding"])))
-        (-> response
-            (update :body #(compress % :quality 11))
-            (assoc-in [:headers "Content-Encoding"] "br"))
-        response))))
+   `setting` is a map whose `:quality` (0-11, default `default-quality`) is
+   the compression quality, or false for no compression."
+  ([handler]
+   (wrap-brotli handler nil))
+  ([handler setting]
+   (if-let [quality (quality (check-setting setting))]
+     (fn [req]
+       (let [response (handler req)]
+         (if (and response
+                  (accepts-br? req)
+                  (string? (:body response))
+                  (not (get-in response [:headers "Content-Encoding"])))
+           (-> response
+               (update :body #(compress % :quality quality))
+               (assoc-in [:headers "Content-Encoding"] "br"))
+           response)))
+     handler)))
